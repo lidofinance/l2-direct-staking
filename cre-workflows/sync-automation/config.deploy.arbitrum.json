@@ -1,0 +1,7 @@
+{
+  "receiverAddress": "0xYOUR_CRE_RECEIVER_ADDRESS",
+  "chainSelectorName": "ethereum-mainnet-arbitrum-1",
+  "writeGasLimit": "500000",
+  "targetAddress": "0xYOUR_SYNC_TRIGGER_ADDRESS",
+  "schedule": "0 */5 * * * *"
+}

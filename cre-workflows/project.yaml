@@ -1,0 +1,27 @@
+# ==========================================================================
+# CRE PROJECT SETTINGS FILE
+# ==========================================================================
+# Project-specific settings for CRE CLI targets.
+
+# ==========================================================================
+default: &default
+  cre-cli:
+    don-family: "zone-a"
+  rpcs:
+    - chain-name: ethereum-mainnet-optimism-1
+      url: "${L2_OPTIMISM_RPC_URL}"
+    - chain-name: ethereum-mainnet
+      url: "${L1_RPC_URL}"
+    - chain-name: ethereum-testnet-sepolia-optimism-1
+      url: "${L2_OPTIMISM_SEPOLIA_RPC_URL}"
+    - chain-name: ethereum-testnet-sepolia
+      url: "${L1_SEPOLIA_RPC_URL}"
+
+# ==========================================================================
+simulate-settings: *default
+
+# ==========================================================================
+test-settings: *default
+
+# ==========================================================================
+production-settings: *default

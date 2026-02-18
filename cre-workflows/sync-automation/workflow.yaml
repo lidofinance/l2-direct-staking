@@ -1,0 +1,32 @@
+# ==========================================================================
+# CRE WORKFLOW SETTINGS FILE — Lido Direct Staking Sync Automation
+# ==========================================================================
+# The workflow polls SyncTrigger.shouldSync() and, when needed,
+# encodes a triggerSync() call and delivers it via the CRE Receiver.
+
+# ==========================================================================
+test-settings:
+  user-workflow:
+    workflow-name: "lido-sync-automation-test"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.test.json"
+    secrets-path: ""
+
+# ==========================================================================
+simulate-settings:
+  user-workflow:
+    workflow-name: "lido-sync-automation-simulate"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.simulate.json"
+    secrets-path: ""
+
+# ==========================================================================
+production-settings:
+  user-workflow:
+    workflow-name: "lido-sync-automation-production"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.deploy.json"
+    secrets-path: ""

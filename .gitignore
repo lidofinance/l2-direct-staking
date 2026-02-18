@@ -1,0 +1,15 @@
+.env
+out
+abi/*.json
+cache
+node_modules
+
+/.obsidian
+
+.DS_Store
+/broadcast/
+/script/optimism/state-mate/abi
+/docs/cla-cre-migration
+
+# CRE workflow build artifacts
+cre-workflows/**/dist

@@ -1,0 +1,16 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+libs = ["lib"]
+solc = "0.8.20"
+evm_version = "paris"
+
+[rpc_endpoints]
+mainnet = "${L1_RPC_URL}"
+optimism = "${L2_OPTIMISM_RPC_URL}"
+arbitrum = "${L2_ARBITRUM_RPC_URL}"
+linea = "${L2_LINEA_RPC_URL}"
+base = "${L2_BASE_RPC_URL}"
+sepolia = "${L1_SEPOLIA_RPC_URL}"
+optimism_sepolia = "${L2_OPTIMISM_SEPOLIA_RPC_URL}"

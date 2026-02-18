@@ -1,0 +1,17 @@
+{
+  "name": "lido-sync-automation",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "postinstall": "bunx cre-setup",
+    "test": "bun test"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.0.9"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.21"
+  }
+}

@@ -1,0 +1,6 @@
+@csr/=lib/chainlink-csr/contracts/
+@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+@chainlink/contracts-ccip/=lib/chainlink-local/lib/ccip/contracts/
+@chainlink/contracts/=lib/chainlink-local/lib/ccip/contracts/
+forge-std/=lib/chainlink-local/lib/forge-std/src/

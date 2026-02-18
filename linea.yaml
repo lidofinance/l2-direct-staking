@@ -1,0 +1,9 @@
+parameters:
+  - &wstethL2 "0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F"
+  - &wethL2 "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
+
+deployed:
+  l1:
+    - &l1LidoCustomReceiver "0x6F357d53d6bE3238180316BA5F8f11467e164588"
+  l2:
+    - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
