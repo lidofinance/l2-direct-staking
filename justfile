@@ -231,6 +231,11 @@ _optimism-state-update-config rpc_url='':
       die "Failed to resolve sync trigger address. Set L2_STATE_MATE_SYNC_TRIGGER or run migrate first."
     fi
 
+    CRE_RECEIVER_ADDRESS="${L2_STATE_MATE_CRE_RECEIVER:-}"
+    if [[ -z "$CRE_RECEIVER_ADDRESS" ]]; then
+      CRE_RECEIVER_ADDRESS="$(read_saved_output_var L2_STATE_MATE_CRE_RECEIVER 2>/dev/null || true)"
+    fi
+
     rendered_config="$STATE_MATE_WORK_DIR/optimism.yaml"
     sed \
       -e "s|__L2_CUSTOM_SENDER__|${L2_CUSTOM_SENDER}|g" \
@@ -241,6 +246,7 @@ _optimism-state-update-config rpc_url='':
       -e "s|__L2_LIDO_DEPLOYER__|${L2_LIDO_DEPLOYER_ADDRESS_RESOLVED}|g" \
       -e "s|__L2_ORACLE_POOL__|${ORACLE_POOL_ADDRESS}|g" \
       -e "s|__L2_SYNC_TRIGGER__|${SYNC_TRIGGER_ADDRESS}|g" \
+      -e "s|__L2_CRE_RECEIVER__|${CRE_RECEIVER_ADDRESS:-null}|g" \
       "$STATE_MATE_TEMPLATE" >"$rendered_config"
     mv "$rendered_config" "$STATE_MATE_CONFIG"
     echo "Regenerated state-mate config: ${STATE_MATE_CONFIG} (rpc: ${RPC_URL})"
@@ -389,7 +395,7 @@ _acceptance-test:
     die() { echo "FAIL: $*" >&2; exit 1; }
 
     # Validate parallel arrays have consistent length
-    for arr_name in NET_RPC_ENVS NET_GOVS NET_SCRIPTS NET_TESTS NET_SM_DIRS NET_SM_TMPLS NET_SENDERS NET_PROXIES; do
+    for arr_name in NET_RPC_ENVS NET_GOVS NET_SCRIPTS NET_TESTS NET_SM_DIRS NET_SM_TMPLS NET_SENDERS NET_PROXIES NET_LOLS; do
       eval "arr_len=\${#${arr_name}[@]}"
       [[ "$arr_len" -eq "$NET_COUNT" ]] || die "Array $arr_name has $arr_len elements, expected $NET_COUNT"
     done
@@ -562,7 +568,7 @@ _acceptance-test:
       name="${NET_NAMES[$i]}"
       fork_url="${L2_FORK_URLS[$i]}"
       gov="${NET_GOVS[$i]}"
-      liq_owner="${L2_LIQUIDITY_OWNER:-$gov}"
+      liq_owner="${NET_LOLS[$i]}"
 
       sm_template="$ROOT_DIR/${NET_SM_DIRS[$i]}/${NET_SM_TMPLS[$i]}"
       sm_config="$ROOT_DIR/${NET_SM_DIRS[$i]}/$name.yaml"
@@ -577,6 +583,7 @@ _acceptance-test:
         -e "s|__L2_LIDO_DEPLOYER__|${DEPLOYER_ADDR}|g" \
         -e "s|__L2_ORACLE_POOL__|${DEPLOYED_POOLS[$i]}|g" \
         -e "s|__L2_SYNC_TRIGGER__|${DEPLOYED_TRIGGERS[$i]}|g" \
+        -e "s|__L2_CRE_RECEIVER__|${DEPLOYED_RECEIVERS[$i]}|g" \
         "$sm_template" >"$sm_config"
 
       substep "$name: running state-mate checks"

@@ -33,6 +33,7 @@ deployed:
     - *l2ProxyAdmin
     - *l2OraclePool
     - *l2SyncTrigger
+    - *l2CreReceiver
 
 l1:
   rpcUrl: L1_RPC_URL
@@ -111,10 +112,13 @@ l2:
         shouldSync:
           result: [false, 0]
 
-    # CREReceiver — set l2CreReceiver address after Stage 3 deployment to enable these checks
     creReceiver:
       name: CREReceiver
       address: *l2CreReceiver
       checks:
         owner: *l2LiquidityOwner
         getForwarder: null # CRE Forwarder (KeystoneForwarder) address
+        getExpectedAuthor: "0x0000000000000000000000000000000000000000" # disabled by default
+        supportsInterface:
+          - args: ["0x21a4cdb3"] # IReceiver
+            result: true
