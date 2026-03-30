@@ -6,6 +6,15 @@ import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {IReceiver} from "src/cre/interfaces/IReceiver.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
+/// @notice Harness to expose internal functions for testing
+contract CREReceiverHarness is CREReceiver {
+    constructor(address forwarder_) CREReceiver(forwarder_) {}
+
+    function extractWorkflowOwner(bytes calldata metadata) external pure returns (address) {
+        return _extractWorkflowOwner(metadata);
+    }
+}
+
 /// @notice Dummy target that records calls for assertion
 contract MockTarget {
     event Called(uint256 value);
@@ -169,6 +178,18 @@ contract CREReceiverTest is Test {
         vm.prank(forwarder);
         receiver.onReport(metadata, report);
         assertEq(target.lastValue(), 99);
+    }
+
+    // ─── Short metadata ─────────────────────────────────────────────────
+
+    function test_extractWorkflowOwner_revertsOnShortMetadata() public {
+        CREReceiverHarness harness = new CREReceiverHarness(forwarder);
+        // Metadata too short — only 10 bytes instead of required 62
+        bytes memory shortMetadata = new bytes(10);
+
+        // Should revert with out-of-bounds, not silently return garbage
+        vm.expectRevert();
+        harness.extractWorkflowOwner(shortMetadata);
     }
 
     // ─── Admin: setForwarder ───────────────────────────────────────────

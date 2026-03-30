@@ -131,9 +131,7 @@ contract CREReceiver is IReceiver, Ownable {
     ///      Layout: bytes32 workflowId | bytes10 workflowName | address workflowOwner
     function _extractWorkflowOwner(bytes calldata metadata) internal pure returns (address workflowOwner) {
         // workflowOwner starts at offset 42 (32 + 10) and is 20 bytes
-        assembly {
-            workflowOwner := shr(96, calldataload(add(metadata.offset, 42)))
-        }
+        workflowOwner = address(uint160(bytes20(metadata[42:62])));
     }
 
     /// @notice Rescue ETH accidentally sent to the contract
