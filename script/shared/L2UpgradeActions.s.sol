@@ -43,8 +43,8 @@ contract L2UpgradeActions {
         uint128 minSyncAmount;
         uint128 maxSyncAmount;
         uint48 minSyncDelay;
-        address oldSyncAutomation; // Previous SyncAutomation to revoke SYNC_ROLE from (address(0) to skip)
-        address oldSyncAutomation2; // Second old automation if any (Linea has Gelato + CL); address(0) to skip
+        address oldChainlinkAutomation; // Old Chainlink Automation to revoke SYNC_ROLE from (address(0) to skip)
+        address oldGelatoAutomation; // Old Gelato automation, Linea only (address(0) to skip)
     }
 
     event L2OraclePoolDeployed(address indexed oraclePool, address indexed owner);
@@ -56,7 +56,7 @@ contract L2UpgradeActions {
     event L2SyncTriggerDeployed(address indexed syncTrigger, address indexed customSender, address indexed owner);
     event L2CREReceiverDeployed(address indexed creReceiver, address indexed creForwarder);
     event L2SyncRoleGranted(address indexed customSender, address indexed syncTrigger);
-    event L2SyncRoleRevoked(address indexed customSender, address indexed oldSyncAutomation);
+    event L2SyncRoleRevoked(address indexed customSender, address indexed oldAutomation);
     event L2SyncTriggerConfigured(
         address indexed syncTrigger, uint128 minSyncAmount, uint128 maxSyncAmount, uint48 minSyncDelay
     );
@@ -145,12 +145,12 @@ contract L2UpgradeActions {
         emit L2SyncRoleGranted(customSender, syncTrigger);
     }
 
-    function revokeSyncRole(address customSender, address oldSyncAutomation) public {
+    function revokeSyncRole(address customSender, address oldAutomation) public {
         _requireNonZeroL2(customSender);
-        _requireNonZeroL2(oldSyncAutomation);
+        _requireNonZeroL2(oldAutomation);
 
-        IAccessControl(customSender).revokeRole(SYNC_ROLE, oldSyncAutomation);
-        emit L2SyncRoleRevoked(customSender, oldSyncAutomation);
+        IAccessControl(customSender).revokeRole(SYNC_ROLE, oldAutomation);
+        emit L2SyncRoleRevoked(customSender, oldAutomation);
     }
 
     function configureSyncTrigger(address syncTrigger, L2UpgradeConfig memory cfg) public {
@@ -183,11 +183,11 @@ contract L2UpgradeActions {
     ) public {
         setOraclePool(cfg.customSender, newPool);
         grantSyncRole(cfg.customSender, newSyncTrigger);
-        if (cfg.oldSyncAutomation != address(0)) {
-            revokeSyncRole(cfg.customSender, cfg.oldSyncAutomation);
+        if (cfg.oldChainlinkAutomation != address(0)) {
+            revokeSyncRole(cfg.customSender, cfg.oldChainlinkAutomation);
         }
-        if (cfg.oldSyncAutomation2 != address(0)) {
-            revokeSyncRole(cfg.customSender, cfg.oldSyncAutomation2);
+        if (cfg.oldGelatoAutomation != address(0)) {
+            revokeSyncRole(cfg.customSender, cfg.oldGelatoAutomation);
         }
         configureSyncTrigger(newSyncTrigger, cfg);
         if (creReceiver != address(0)) {

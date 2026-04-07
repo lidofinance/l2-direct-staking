@@ -60,8 +60,8 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
             minSyncDelay: C.L2_SYNC_DELAY,
-            oldSyncAutomation: address(0), // Sepolia handles retirement separately via _retireBootstrapSyncAutomation
-            oldSyncAutomation2: address(0)
+            oldChainlinkAutomation: address(0), // Sepolia handles retirement separately via _retireBootstrapSyncAutomation
+            oldGelatoAutomation: address(0)
         });
     }
 

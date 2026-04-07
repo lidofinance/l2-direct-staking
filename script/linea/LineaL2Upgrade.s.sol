@@ -40,8 +40,8 @@ contract LineaL2Defaults is L2UpgradeActions {
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
             minSyncDelay: C.L2_SYNC_DELAY,
-            oldSyncAutomation: C.L2_OLD_SYNC_AUTOMATION,
-            oldSyncAutomation2: C.L2_OLD_GELATO_SYNC_AUTOMATION
+            oldChainlinkAutomation: C.L2_OLD_CHAINLINK_AUTOMATION,
+            oldGelatoAutomation: C.L2_OLD_GELATO_AUTOMATION
         });
     }
 }

@@ -76,8 +76,8 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
     uint48 internal L2_SYNC_DELAY;
 
     // Old sync automations (to verify revocation)
-    address internal L2_OLD_SYNC_AUTOMATION;
-    address internal L2_OLD_SYNC_AUTOMATION2;
+    address internal L2_OLD_CHAINLINK_AUTOMATION;
+    address internal L2_OLD_GELATO_AUTOMATION;
 
     // ──────────────── Fork state ────────────────────────────────────────
 
@@ -172,7 +172,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         vm.expectRevert(abi.encodeWithSelector(ACCESS_CONTROL_UNAUTHORIZED_SELECTOR, account, role));
     }
 
-    function _deployL2PoolAsLidoDeployer(L2UpgradeConfig memory cfg)
+    function _deployL2Pool(L2UpgradeConfig memory cfg)
         internal
         returns (PausableImmutableOraclePool newPool)
     {
@@ -180,7 +180,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         newPool = deployPool(cfg);
     }
 
-    function _deployL2SyncTriggerAsLidoDeployer(L2UpgradeConfig memory cfg)
+    function _deployL2SyncTrigger(L2UpgradeConfig memory cfg)
         internal
         returns (address newSyncTrigger)
     {
@@ -197,8 +197,8 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
-        newPool = _deployL2PoolAsLidoDeployer(cfg);
-        newSyncTrigger = _deployL2SyncTriggerAsLidoDeployer(cfg);
+        newPool = _deployL2Pool(cfg);
+        newSyncTrigger = _deployL2SyncTrigger(cfg);
 
         vm.startPrank(INITIAL_OWNER);
         executeMigrationSteps(cfg, address(newPool), newSyncTrigger, address(0));
@@ -219,8 +219,8 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
         // Stage 1: Deploy (as Lido Deployer)
-        newPool = _deployL2PoolAsLidoDeployer(cfg);
-        newSyncTrigger = _deployL2SyncTriggerAsLidoDeployer(cfg);
+        newPool = _deployL2Pool(cfg);
+        newSyncTrigger = _deployL2SyncTrigger(cfg);
         address creForwarderAddr = makeAddr("creForwarder");
         newCREReceiver = deployCREReceiver(creForwarderAddr);
         transferCREReceiverOwnership(address(newCREReceiver), lidoL2LiquidityOwner);
@@ -283,16 +283,16 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
     }
 
     function _verifyOldAutomationsRevoked() internal {
-        if (L2_OLD_SYNC_AUTOMATION != address(0)) {
+        if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
             assertFalse(
-                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_SYNC_AUTOMATION),
-                "L2 sender: old sync automation should not have SYNC_ROLE"
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION),
+                "L2 sender: old Chainlink automation should not have SYNC_ROLE"
             );
         }
-        if (L2_OLD_SYNC_AUTOMATION2 != address(0)) {
+        if (L2_OLD_GELATO_AUTOMATION != address(0)) {
             assertFalse(
-                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_SYNC_AUTOMATION2),
-                "L2 sender: old sync automation 2 should not have SYNC_ROLE"
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION),
+                "L2 sender: old Gelato automation should not have SYNC_ROLE"
             );
         }
     }

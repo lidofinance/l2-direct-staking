@@ -35,7 +35,7 @@ Lido Deployer  CREReceiver.transferOwnership(liquidityOwner)
 ```
 Initial Owner  CustomSender.setOraclePool(newPool)
 Initial Owner  CustomSender.grantRole(SYNC_ROLE, syncTrigger)
-Initial Owner  CustomSender.revokeRole(SYNC_ROLE, oldSyncAutomation)
+Initial Owner  CustomSender.revokeRole(SYNC_ROLE, oldChainlinkAutomation)
 Initial Owner  SyncTrigger.setFeeOtoD(encodedFee)
 Initial Owner  SyncTrigger.setFeeDtoO(encodedFee)
 Initial Owner  SyncTrigger.setAmounts(minSyncAmount, maxSyncAmount)
@@ -596,7 +596,7 @@ After all stages complete, verify the post-migration state for each network:
 | CustomSender admin | L2CustomSender | `hasRole(DEFAULT_ADMIN_ROLE, govExecutor)` | `true` |
 | CustomSender old admin removed | L2CustomSender | `hasRole(DEFAULT_ADMIN_ROLE, initialOwner)` | `false` |
 | SYNC_ROLE granted | L2CustomSender | `hasRole(SYNC_ROLE, syncTrigger)` | `true` |
-| Old SYNC_ROLE revoked | L2CustomSender | `hasRole(SYNC_ROLE, oldSyncAutomation)` | `false` |
+| Old SYNC_ROLE revoked | L2CustomSender | `hasRole(SYNC_ROLE, oldChainlinkAutomation)` | `false` |
 | ProxyAdmin owner | L2ProxyAdmin | `owner()` | L2 Governance Executor |
 | OraclePool set | L2CustomSender | `getOraclePool()` | new pool address |
 | SyncTrigger owner | SyncTrigger | `owner()` | L2 Governance Executor |

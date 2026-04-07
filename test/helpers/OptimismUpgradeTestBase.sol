@@ -44,7 +44,7 @@ abstract contract OptimismUpgradeTestBase is UpgradeTestBase, OptimismL2Defaults
         L2_SYNC_DELAY = C.L2_SYNC_DELAY;
 
         // Old sync automations (to verify revocation)
-        L2_OLD_SYNC_AUTOMATION = C.L2_OLD_SYNC_AUTOMATION;
+        L2_OLD_CHAINLINK_AUTOMATION = C.L2_OLD_CHAINLINK_AUTOMATION;
 
         super.setUp();
     }

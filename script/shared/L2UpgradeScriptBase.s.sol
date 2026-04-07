@@ -73,6 +73,22 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return vm.envOr("L2_LIQUIDITY_OWNER", _defaultLiquidityOwner());
     }
 
+    // ── Deploy helper ────────────────────────────────────────────────
+
+    function _deployAll(L2UpgradeConfig memory cfg, address creForwarder, address liquidityOwner)
+        internal
+        returns (address oraclePool, address syncTrigger, address creReceiverAddr)
+    {
+        PausableImmutableOraclePool pool = deployPool(cfg);
+        SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
+        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
+        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
+
+        oraclePool = address(pool);
+        syncTrigger = address(deployedSyncTrigger);
+        creReceiverAddr = address(deployedCREReceiver);
+    }
+
     // ── Stage 1: Lido Deployer ───────────────────────────────────────
 
     /// @notice Deploy new OraclePool, SyncTrigger, and CREReceiver; transfer CREReceiver to LOL multisig. Actor: Lido Deployer.
@@ -86,15 +102,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(lidoDeployerPrivateKey);
-        PausableImmutableOraclePool pool = deployPool(cfg);
-        SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
-        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
-        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
+        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, liquidityOwner);
         vm.stopBroadcast();
-
-        oraclePool = address(pool);
-        syncTrigger = address(deployedSyncTrigger);
-        creReceiverAddr = address(deployedCREReceiver);
     }
 
     // ── Stage 2: Initial Owner ───────────────────────────────────────
@@ -146,19 +155,12 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(lidoDeployerPrivateKey);
-        PausableImmutableOraclePool pool = deployPool(cfg);
-        SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
-        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
-        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
+        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, liquidityOwner);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, address(pool), address(deployedSyncTrigger), address(deployedCREReceiver));
+        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr);
         vm.stopBroadcast();
-
-        oraclePool = address(pool);
-        syncTrigger = address(deployedSyncTrigger);
-        creReceiverAddr = address(deployedCREReceiver);
     }
 
     /// @notice Deploy + migrate with impersonated initial owner (anvil only).
@@ -172,18 +174,11 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(lidoDeployerPrivateKey);
-        PausableImmutableOraclePool pool = deployPool(cfg);
-        SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
-        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
-        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
+        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, liquidityOwner);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwner);
-        executeMigrationSteps(cfg, address(pool), address(deployedSyncTrigger), address(deployedCREReceiver));
+        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr);
         vm.stopBroadcast();
-
-        oraclePool = address(pool);
-        syncTrigger = address(deployedSyncTrigger);
-        creReceiverAddr = address(deployedCREReceiver);
     }
 }

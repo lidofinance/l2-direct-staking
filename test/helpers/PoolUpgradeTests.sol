@@ -654,11 +654,11 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
 
         // Old automation is blocked from calling sync
-        if (L2_OLD_SYNC_AUTOMATION != address(0)) {
+        if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
             (bytes memory feeOtoD, bytes memory feeDtoO) = _defaultSyncFees();
-            vm.deal(L2_OLD_SYNC_AUTOMATION, 1 ether);
-            _expectAccessControlUnauthorized(L2_OLD_SYNC_AUTOMATION, SYNC_ROLE);
-            vm.prank(L2_OLD_SYNC_AUTOMATION);
+            vm.deal(L2_OLD_CHAINLINK_AUTOMATION, 1 ether);
+            _expectAccessControlUnauthorized(L2_OLD_CHAINLINK_AUTOMATION, SYNC_ROLE);
+            vm.prank(L2_OLD_CHAINLINK_AUTOMATION);
             ICustomSender(L2_CUSTOM_SENDER).sync{value: 0.1 ether}(
                 ETH_CCIP_CHAIN_SELECTOR, 1 ether, feeOtoD, feeDtoO
             );
