@@ -10,7 +10,9 @@ parameters:
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
   - &l2OraclePool "0x4c2f7092c2ae51d986befee378e50bd4db99c901"
   - &l2SyncTrigger "0x7a9ec1d04904907de0ed7b6839ccdd59c3716ac9"
-  - &l2CreReceiver null # set after CREReceiver deployment (Stage 3)
+  - &l2OldSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
+  - &l2OldGelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe"
+  - &l2CreReceiver null # set after CREReceiver deployment (Stage 1)
   - &l2Weth "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
   - &l2Wsteth "0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F"
   - &l2LinkToken "0xa18152629128738a5c081eb226335FEd4B9C95e9"
@@ -64,6 +66,10 @@ l2:
             result: false
           - args: [*SYNC_ROLE, *l2SyncTrigger]
             result: true
+          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
+            result: false
+          - args: [*SYNC_ROLE, *l2OldGelatoSyncAutomation]
+            result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
         supportsInterface:
@@ -111,7 +117,7 @@ l2:
         shouldSync:
           result: [false, 0]
 
-    # CREReceiver — set l2CreReceiver address after Stage 3 deployment to enable these checks
+    # CREReceiver — set l2CreReceiver address after Stage 1 deployment to enable these checks
     creReceiver:
       name: CREReceiver
       address: *l2CreReceiver

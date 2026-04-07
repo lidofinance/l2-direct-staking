@@ -12,6 +12,7 @@ import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
 import {L1UpgradeActions} from "script/shared/L1UpgradeActions.s.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
@@ -73,6 +74,10 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
     uint128 internal L2_SYNC_MIN_AMOUNT;
     uint128 internal L2_SYNC_MAX_AMOUNT;
     uint48 internal L2_SYNC_DELAY;
+
+    // Old sync automations (to verify revocation)
+    address internal L2_OLD_SYNC_AUTOMATION;
+    address internal L2_OLD_SYNC_AUTOMATION2;
 
     // ──────────────── Fork state ────────────────────────────────────────
 
@@ -183,21 +188,6 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         newSyncTrigger = address(deploySyncTrigger(cfg));
     }
 
-    function _migrateL2ContractsAsInitialOwner(
-        L2UpgradeConfig memory cfg,
-        address newPool,
-        address newSyncTrigger
-    ) internal {
-        vm.startPrank(INITIAL_OWNER);
-        setOraclePool(cfg.customSender, newPool);
-        grantSyncRole(cfg.customSender, newSyncTrigger);
-        configureSyncTrigger(newSyncTrigger, cfg);
-        migrateSenderAdmin(cfg);
-        transferProxyAdminOwnership(cfg);
-        transferSyncTriggerOwnership(newSyncTrigger, cfg.governanceExecutor);
-        vm.stopPrank();
-    }
-
     function _deployAndMigrateL2WithSyncTrigger()
         internal
         returns (PausableImmutableOraclePool newPool, address newSyncTrigger)
@@ -209,11 +199,36 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
 
         newPool = _deployL2PoolAsLidoDeployer(cfg);
         newSyncTrigger = _deployL2SyncTriggerAsLidoDeployer(cfg);
-        _migrateL2ContractsAsInitialOwner(cfg, address(newPool), newSyncTrigger);
+
+        vm.startPrank(INITIAL_OWNER);
+        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, address(0));
+        vm.stopPrank();
     }
 
     function _deployAndMigrateL2() internal returns (PausableImmutableOraclePool newPool) {
         (newPool,) = _deployAndMigrateL2WithSyncTrigger();
+    }
+
+    function _deployAndMigrateL2Production()
+        internal
+        returns (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver)
+    {
+        vm.selectFork(l2Fork);
+
+        L2UpgradeConfig memory cfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+
+        // Stage 1: Deploy (as Lido Deployer)
+        newPool = _deployL2PoolAsLidoDeployer(cfg);
+        newSyncTrigger = _deployL2SyncTriggerAsLidoDeployer(cfg);
+        address creForwarderAddr = makeAddr("creForwarder");
+        newCREReceiver = deployCREReceiver(creForwarderAddr);
+        transferCREReceiverOwnership(address(newCREReceiver), lidoL2LiquidityOwner);
+
+        // Stage 2: Migrate using production function (as Initial Owner)
+        vm.startPrank(INITIAL_OWNER);
+        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, address(newCREReceiver));
+        vm.stopPrank();
     }
 
     function _deployAndMigrateL1() internal {
@@ -262,6 +277,26 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         );
     }
 
+    function _verifySyncTriggerConfig(address syncTrigger, address expectedForwarder) internal {
+        _verifySyncTriggerConfig(syncTrigger);
+        assertEq(ISyncTrigger(syncTrigger).getForwarder(), expectedForwarder, "sync trigger forwarder");
+    }
+
+    function _verifyOldAutomationsRevoked() internal {
+        if (L2_OLD_SYNC_AUTOMATION != address(0)) {
+            assertFalse(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_SYNC_AUTOMATION),
+                "L2 sender: old sync automation should not have SYNC_ROLE"
+            );
+        }
+        if (L2_OLD_SYNC_AUTOMATION2 != address(0)) {
+            assertFalse(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_SYNC_AUTOMATION2),
+                "L2 sender: old sync automation 2 should not have SYNC_ROLE"
+            );
+        }
+    }
+
     function _provisionPoolAndAccumulateWeth(PausableImmutableOraclePool newPool, uint256 stakeAmount)
         internal
         returns (uint256 poolWeth)
@@ -299,6 +334,12 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
             ICustomReceiver(L1_LIDO_CUSTOM_RECEIVER).getAdapter(L2_CCIP_CHAIN_SELECTOR),
             L1_ADAPTER,
             "L1 receiver adapter should still be the L1 adapter"
+        );
+
+        assertEq(
+            ICustomReceiver(L1_LIDO_CUSTOM_RECEIVER).getSender(L2_CCIP_CHAIN_SELECTOR),
+            abi.encode(L2_CUSTOM_SENDER),
+            "L1 receiver: sender mapping for L2 should be unchanged"
         );
 
         assertTrue(

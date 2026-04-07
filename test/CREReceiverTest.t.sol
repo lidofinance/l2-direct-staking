@@ -34,6 +34,25 @@ contract MockTarget {
     }
 }
 
+/// @notice Malicious target that re-enters CREReceiver.onReport during execution
+contract ReentrantTarget {
+    address private _receiver;
+    address private _forwarder;
+
+    constructor(address receiver_, address forwarder_) {
+        _receiver = receiver_;
+        _forwarder = forwarder_;
+    }
+
+    function attack() external {
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), address(0));
+        bytes memory report = abi.encode(address(this), abi.encodeWithSignature("noop()"));
+        IReceiver(_receiver).onReport(metadata, report);
+    }
+
+    function noop() external {}
+}
+
 /**
  * @title CREReceiverTest
  * @notice Unit tests for the CREReceiver contract covering:
@@ -279,6 +298,29 @@ contract CREReceiverTest is Test {
     function test_withdrawETH_revertsOnInsufficientBalance() public {
         vm.expectRevert(CREReceiver.ETHTransferFailed.selector);
         receiver.withdrawETH(payable(makeAddr("recipient")), 1 ether);
+    }
+
+    // ─── Edge cases ─────────────────────────────────────────────────────
+
+    function test_onReport_reentrancyBlockedByForwarderCheck() public {
+        // Deploy a malicious target that re-enters CREReceiver.onReport
+        ReentrantTarget reentrant = new ReentrantTarget(address(receiver), forwarder);
+
+        bytes memory data = abi.encodeCall(ReentrantTarget.attack, ());
+        bytes memory report = abi.encode(address(reentrant), data);
+        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
+
+        // The reentrant call will fail because msg.sender inside the re-entry
+        // is the ReentrantTarget, not the forwarder
+        vm.prank(forwarder);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CREReceiver.CallExecutionFailed.selector,
+                address(reentrant),
+                abi.encodeWithSelector(CREReceiver.UnauthorizedForwarder.selector, address(reentrant), forwarder)
+            )
+        );
+        receiver.onReport(metadata, report);
     }
 
     // ─── Helpers ───────────────────────────────────────────────────────

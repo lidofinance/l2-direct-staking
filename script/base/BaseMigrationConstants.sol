@@ -24,6 +24,9 @@ library BaseMigrationConstants {
     address internal constant L2_CCIP_ROUTER = 0x881e3A65B4d4a04dD529061dd0071cf975F58bCD;
     address internal constant L2_LINK_TOKEN = 0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196;
 
+    // Old SyncAutomation (to be retired during migration — revoke SYNC_ROLE)
+    address internal constant L2_OLD_SYNC_AUTOMATION = 0x3776CC14ce997827F7A87091018Daa1739dc2790;
+
     // L2 SyncTrigger defaults
     // Current mainnet values: https://basescan.org/address/0x3776CC14ce997827F7A87091018Daa1739dc2790#readContract (getFeeOtoD / getFeeDtoO)
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;

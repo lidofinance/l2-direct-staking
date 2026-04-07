@@ -517,28 +517,8 @@ _acceptance-test:
       )
       pool_addr="$(compute_create_address "$DEPLOYER_ADDR" "$deployer_nonce")"
       trigger_addr="$(compute_create_address "$DEPLOYER_ADDR" "$((deployer_nonce + 1))")"
-      echo "  OraclePool: $pool_addr  SyncTrigger: $trigger_addr"
-
-      # Deploy CREReceiver
-      substep "Deploy CREReceiver"
-      cre_fwd="${L2_CRE_FORWARDER:-$DEPLOYER_ADDR}"
-      recv_nonce="$(cast nonce "$DEPLOYER_ADDR" --rpc-url "$fork_url" | tr -d '\r\n')"
-      cast send --unlocked --from "$DEPLOYER_ADDR" --rpc-url "$fork_url" \
-        --create "${CRE_RECEIVER_BYTECODE}$(cast abi-encode 'x(address)' "$cre_fwd" | cut -c3-)" >/dev/null
-      recv_addr="$(compute_create_address "$DEPLOYER_ADDR" "$recv_nonce")"
-      echo "  CREReceiver: $recv_addr"
-
-      # Stage 3: finalize SyncTrigger + CREReceiver
-      substep "Stage 3: finalize SyncTrigger + CREReceiver"
-      lol="${NET_LOLS[$i]}"
-      cast send --unlocked --from "$DEPLOYER_ADDR" --rpc-url "$fork_url" \
-        "$trigger_addr" "setForwarder(address)" "$recv_addr" >/dev/null
-      cast send --unlocked --from "$DEPLOYER_ADDR" --rpc-url "$fork_url" \
-        "$trigger_addr" "transferOwnership(address)" "$gov" >/dev/null
-      cast send --unlocked --from "$DEPLOYER_ADDR" --rpc-url "$fork_url" \
-        "$recv_addr" "transferOwnership(address)" "$lol" >/dev/null
-      echo "  SyncTrigger: forwarder → $recv_addr, owner → $gov"
-      echo "  CREReceiver: owner → $lol"
+      recv_addr="$(compute_create_address "$DEPLOYER_ADDR" "$((deployer_nonce + 2))")"
+      echo "  OraclePool: $pool_addr  SyncTrigger: $trigger_addr  CREReceiver: $recv_addr"
 
       DEPLOYED_POOLS+=("$pool_addr")
       DEPLOYED_TRIGGERS+=("$trigger_addr")
@@ -770,14 +750,7 @@ sepolia-upgrade-l2:
         --rpc-url "$L2_OPTIMISM_SEPOLIA_RPC_URL" \
         --broadcast --non-interactive -vvv
 
-# Step 3: Finalize CRE setup on OP Sepolia (set forwarder + transfer ownership)
-sepolia-finalize-cre:
-    forge script script/optimism/sepolia/SepoliaL2Upgrade.s.sol:SepoliaL2UpgradeScript \
-        --sig "runFinalizeSyncTrigger()" \
-        --rpc-url "$L2_OPTIMISM_SEPOLIA_RPC_URL" \
-        --broadcast --non-interactive -vvv
-
-# Step 4: Run L1 upgrade on Sepolia (migrate receiver admin + proxy admin)
+# Step 3: Run L1 upgrade on Sepolia (migrate receiver admin + proxy admin)
 sepolia-upgrade-l1:
     forge script script/optimism/sepolia/SepoliaL1Upgrade.s.sol:SepoliaL1UpgradeScript \
         --sig "run()" \

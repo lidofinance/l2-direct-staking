@@ -39,7 +39,9 @@ contract LineaL2Defaults is L2UpgradeActions {
             feeDtoO: FeeCodec.encodeLineaL1toL2(),
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
-            minSyncDelay: C.L2_SYNC_DELAY
+            minSyncDelay: C.L2_SYNC_DELAY,
+            oldSyncAutomation: C.L2_OLD_SYNC_AUTOMATION,
+            oldSyncAutomation2: C.L2_OLD_GELATO_SYNC_AUTOMATION
         });
     }
 }
@@ -57,10 +59,5 @@ contract LineaL2UpgradeScript is L2UpgradeScriptBase, LineaL2Defaults {
 
     function _defaultLiquidityOwner() internal pure override returns (address) {
         return C.LIQUIDITY_OWNER;
-    }
-
-    function _sweepOldPool(address recipient) internal override {
-        sweepOldPool(C.L2_OLD_ORACLE_POOL, C.L2_WSTETH, recipient);
-        sweepOldPool(C.L2_OLD_ORACLE_POOL, C.L2_WETH, recipient);
     }
 }

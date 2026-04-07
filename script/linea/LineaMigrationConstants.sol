@@ -24,6 +24,10 @@ library LineaMigrationConstants {
     address internal constant L2_CCIP_ROUTER = 0x549FEB73F2348F6cD99b9fc8c69252034897f06C;
     address internal constant L2_LINK_TOKEN = 0xa18152629128738a5c081eb226335FEd4B9C95e9;
 
+    // Old SyncAutomations (to be retired during migration — revoke SYNC_ROLE)
+    address internal constant L2_OLD_SYNC_AUTOMATION = 0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace;
+    address internal constant L2_OLD_GELATO_SYNC_AUTOMATION = 0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe;
+
     // L2 SyncTrigger defaults
     // Current mainnet values: https://lineascan.build/address/0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace#readContract (getFeeOtoD / getFeeDtoO)
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;

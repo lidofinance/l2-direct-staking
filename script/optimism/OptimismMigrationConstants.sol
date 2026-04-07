@@ -24,6 +24,9 @@ library OptimismMigrationConstants {
     address internal constant L2_CCIP_ROUTER = 0x3206695CaE29952f4b0c22a169725a865bc8Ce0f;
     address internal constant L2_LINK_TOKEN = 0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6;
 
+    // Old SyncAutomation (to be retired during migration — revoke SYNC_ROLE)
+    address internal constant L2_OLD_SYNC_AUTOMATION = 0x3776CC14ce997827F7A87091018Daa1739dc2790;
+
     // L2 SyncTrigger defaults
     // Current mainnet values: https://optimistic.etherscan.io/address/0x3776CC14ce997827F7A87091018Daa1739dc2790#readContract (getFeeOtoD / getFeeDtoO)
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
