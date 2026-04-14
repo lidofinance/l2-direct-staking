@@ -14,12 +14,12 @@ Migrate Direct Staking ownership, admin roles, and liquidity management to Lido 
 
 Stages are batched by actor to minimise handoffs. Each actor completes all their work before the next actor starts.
 
-| Stage                  | Actor             | Networks                                   | Script / action                          | What it does                                                                                                                |
-| ---------------------- | ----------------- | ------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 1. Deploy              | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `runDeploy()`                            | Deploy new OraclePool, SyncTrigger, CREReceiver; configure SyncTrigger and transfer ownership to final owners               |
-| 2. Migrate             | **Initial Owner** | Optimism, Arbitrum, Base, Linea + Ethereum | `runMigrate()` + `L1UpgradeScript.run()` | L2: swap oracle pool, grant/revoke SYNC_ROLE, migrate admin to final owners. L1 (once): migrate admin to Lido DAO Agent     |
-| 3. Deploy CRE workflow | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `cre workflow deploy`                    | Deploy TypeScript workflow on Chainlink CRE DON                                                                             |
-| 4. Validate            | **Any operator**  | all                                        | Manual / cast calls                      | Verify roles, ownership, CRE routing, cancel legacy CLA upkeeps                                                             |
+| Stage                  | Actor             | Networks                                   | Script / action                          | What it does                                                                                                            |
+| ---------------------- | ----------------- | ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1. Deploy              | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `runDeploy()`                            | Deploy new OraclePool, SyncTrigger, CREReceiver; configure SyncTrigger and transfer ownership to final owners           |
+| 2. Migrate             | **Initial Owner** | Optimism, Arbitrum, Base, Linea + Ethereum | `runMigrate()` + `L1UpgradeScript.run()` | L2: swap oracle pool, grant/revoke SYNC_ROLE, migrate admin to final owners. L1 (once): migrate admin to Lido DAO Agent |
+| 3. Deploy CRE workflow | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `cre workflow deploy`                    | Deploy TypeScript workflow on Chainlink CRE DON                                                                         |
+| 4. Validate            | **Any operator**  | all                                        | Manual / cast calls                      | Verify roles, ownership, CRE routing, cancel legacy CLA upkeeps                                                         |
 
 ## On-chain actions (ordered sequence)
 
@@ -82,16 +82,16 @@ See [Run migration](#run-migration) below for full per-stage commands, env vars,
 
 Migrate networks with the least capital in the current pool first — this minimises risk during the initial rollout and validates the process on low-stakes deployments before touching larger pools.
 
-Current OraclePool balances (queried via `just balances-<network>` on 2026-03-19, wstETH/ETH rate: 1.2297):
+Current OraclePool balances (queried via `cast call` on 2026-04-14, wstETH/ETH rate: ~1.23):
 
 | # | Network    | OraclePool                                   | WETH   | wstETH  | Total (ETH-equiv) |
 |---|------------|----------------------------------------------|--------|---------|--------------------|
-| 1 | Linea      | `0xf4B146FbA71F41E0592668ffbF264F1D186b2Ca8` | 0.00   | 0.00    | **0.00**           |
-| 2 | Optimism   | `0xa71533310878450A4f7D795DaCB6d87c900e4498` | 0.00   | 0.00    | **0.00**           |
-| 3 | Arbitrum   | `0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace` | 31.24  | 6.05    | **~38.68**         |
-| 4 | Base       | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 4.57   | 27.78   | **~38.73**         |
+| 1 | Linea      | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 24.24  | 0.00    | **~24.24**         |
+| 2 | Arbitrum   | `0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace` | 38.68  | 0.00    | **~38.68**         |
+| 3 | Optimism   | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 4.68   | 27.69   | **~38.74**         |
+| 4 | Base       | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 25.66  | 10.65   | **~38.76**         |
 
-**Preferred order:** Linea → Optimism → Arbitrum → Base.
+**Preferred order:** Linea → Arbitrum → Optimism → Base (Arbitrum/Optimism/Base are roughly equal at ~38.7 ETH; any order among them is acceptable).
 
 # Migration runbook - TL;DR
 
