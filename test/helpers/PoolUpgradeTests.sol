@@ -12,6 +12,7 @@ import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {CREReceiver} from "src/cre/CREReceiver.sol";
 
 import {UpgradeTestBase, MockBridgeAdapter} from "test/helpers/UpgradeTestBase.sol";
 
@@ -64,6 +65,8 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
 
         assertEq(Ownable(L2_PROXY_ADMIN).owner(), LIDO_L2_GOVERNANCE_EXECUTOR, "L2 ProxyAdmin owner");
+
+        _verifyOldAutomationsRevoked();
 
         assertEq(newPool.SENDER(), L2_CUSTOM_SENDER, "new pool SENDER");
         assertEq(newPool.TOKEN_IN(), L2_WETH, "new pool TOKEN_IN");
@@ -329,6 +332,40 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(IERC20(L2_WSTETH).balanceOf(address(newPool)), 0, "pool wstETH should be 0 after full sweep");
     }
 
+    function test_poolPauseUnpause() public {
+        PausableImmutableOraclePool newPool = _deployAndMigrateL2();
+        deal(L2_WSTETH, address(newPool), 100 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, LIDO_L2_GOVERNANCE_EXECUTOR));
+        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        newPool.pause();
+
+        vm.prank(lidoL2LiquidityOwner);
+        newPool.pause();
+        assertTrue(newPool.paused(), "pool should be paused");
+
+        address user = makeAddr("pausedUser");
+        deal(L2_WETH, user, 1 ether);
+        vm.startPrank(user);
+        IERC20(L2_WETH).approve(L2_CUSTOM_SENDER, 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("EnforcedPause()"))));
+        ICustomSender(L2_CUSTOM_SENDER).fastStake(L2_WETH, 1 ether, 0);
+        vm.stopPrank();
+
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, LIDO_L2_GOVERNANCE_EXECUTOR));
+        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        newPool.unpause();
+
+        vm.prank(lidoL2LiquidityOwner);
+        newPool.unpause();
+        assertFalse(newPool.paused(), "pool should be unpaused");
+
+        vm.startPrank(user);
+        uint256 amountOut = ICustomSender(L2_CUSTOM_SENDER).fastStake(L2_WETH, 1 ether, 0);
+        vm.stopPrank();
+        assertGt(amountOut, 0, "fastStake should succeed after unpause");
+    }
+
     function test_rebalanceViaSync() public {
         PausableImmutableOraclePool newPool = _deployAndMigrateL2();
         uint256 stakeAmount = 5 ether;
@@ -419,6 +456,100 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         }
     }
 
+    function test_consecutiveSyncCycles() public {
+        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+
+        address forwarder = makeAddr("cycleForwarder");
+        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        syncTrigger.setForwarder(forwarder);
+
+        // Use a short delay to avoid CCIP StaleTokenPrice on double-warp;
+        // delay enforcement is already tested by other tests.
+        uint48 shortDelay = 60;
+        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        syncTrigger.setDelay(shortDelay);
+
+        (uint256 maxNativeFee,) = syncTrigger.getMaxFees();
+
+        // ── Cycle 1: accumulate WETH, wait delay, sync ──
+        _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
+        vm.warp(block.timestamp + shortDelay);
+
+        {
+            (bool needed, uint256 amount) = syncTrigger.shouldSync();
+            assertTrue(needed, "cycle 1: sync should be needed");
+            assertGt(amount, 0, "cycle 1: amount should be > 0");
+        }
+
+        vm.deal(address(syncTrigger), maxNativeFee);
+        vm.prank(forwarder);
+        syncTrigger.triggerSync();
+
+        uint48 exec1 = syncTrigger.getLastExecution();
+        assertEq(exec1, uint48(block.timestamp), "cycle 1: lastExecution should update");
+
+        {
+            (bool neededAfter,) = syncTrigger.shouldSync();
+            assertFalse(neededAfter, "cycle 1: sync should be false right after trigger");
+        }
+
+        // ── Cycle 2: accumulate more WETH, wait delay, sync again ──
+        deal(L2_WSTETH, address(newPool), 100 ether);
+        {
+            address user2 = makeAddr("cycleUser2");
+            uint256 stake2 = uint256(L2_SYNC_MIN_AMOUNT) + 2 ether;
+            deal(L2_WETH, user2, stake2);
+            vm.startPrank(user2);
+            IERC20(L2_WETH).approve(L2_CUSTOM_SENDER, stake2);
+            ICustomSender(L2_CUSTOM_SENDER).fastStake(L2_WETH, stake2, 0);
+            vm.stopPrank();
+        }
+
+        {
+            (bool neededEarly,) = syncTrigger.shouldSync();
+            assertFalse(neededEarly, "cycle 2: sync should be false before delay");
+        }
+
+        vm.warp(block.timestamp + shortDelay);
+
+        {
+            (bool needed, uint256 amount) = syncTrigger.shouldSync();
+            assertTrue(needed, "cycle 2: sync should be needed");
+            assertGt(amount, 0, "cycle 2: amount should be > 0");
+        }
+
+        uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
+        vm.deal(address(syncTrigger), maxNativeFee);
+        vm.prank(forwarder);
+        syncTrigger.triggerSync();
+
+        assertGt(syncTrigger.getLastExecution(), exec1, "cycle 2: lastExecution should advance past cycle 1");
+        assertLt(IERC20(L2_WETH).balanceOf(address(newPool)), poolWethBefore, "cycle 2: pool WETH should decrease");
+    }
+
+    function test_syncTriggerRevertsWithInsufficientFees() public {
+        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+
+        uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
+        _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
+
+        address forwarder = makeAddr("feeTestForwarder");
+        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        syncTrigger.setForwarder(forwarder);
+
+        vm.warp(block.timestamp + L2_SYNC_DELAY);
+
+        (bool syncNeeded,) = syncTrigger.shouldSync();
+        assertTrue(syncNeeded, "sync should be needed");
+
+        // Do NOT fund the SyncTrigger — leave its balance at 0
+        assertEq(address(syncTrigger).balance, 0, "sync trigger should have no ETH");
+
+        vm.prank(forwarder);
+        vm.expectRevert();
+        syncTrigger.triggerSync();
+    }
+
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
         (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
@@ -502,6 +633,36 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
 
         _simulateL2BridgeFinalization(address(newPool), bridgedWstAmount);
+    }
+
+    function test_productionMigrationPath() public {
+        (, address newSyncTrigger, CREReceiver newCREReceiver) =
+            _deployAndMigrateL2Production();
+
+        _verifySyncTriggerConfig(newSyncTrigger, address(newCREReceiver));
+        _verifyOldAutomationsRevoked();
+
+        assertEq(
+            Ownable(address(newCREReceiver)).owner(),
+            lidoL2LiquidityOwner,
+            "CREReceiver owner should be liquidity owner (LOL)"
+        );
+        assertEq(
+            newCREReceiver.getForwarder(),
+            makeAddr("creForwarder"),
+            "CREReceiver forwarder should be set"
+        );
+
+        // Old automation is blocked from calling sync
+        if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
+            (bytes memory feeOtoD, bytes memory feeDtoO) = _defaultSyncFees();
+            vm.deal(L2_OLD_CHAINLINK_AUTOMATION, 1 ether);
+            _expectAccessControlUnauthorized(L2_OLD_CHAINLINK_AUTOMATION, SYNC_ROLE);
+            vm.prank(L2_OLD_CHAINLINK_AUTOMATION);
+            ICustomSender(L2_CUSTOM_SENDER).sync{value: 0.1 ether}(
+                ETH_CCIP_CHAIN_SELECTOR, 1 ether, feeOtoD, feeDtoO
+            );
+        }
     }
 
     // ──────────────── Internal test helpers ──────────────────────────────

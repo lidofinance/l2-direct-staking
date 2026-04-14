@@ -6,11 +6,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
-import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePool.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {SyncTrigger} from "src/SyncTrigger.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {CREReceiver} from "src/cre/CREReceiver.sol";
 
 /**
  * @notice Network-agnostic L2 upgrade actions for CSR lane migration.
@@ -43,6 +43,8 @@ contract L2UpgradeActions {
         uint128 minSyncAmount;
         uint128 maxSyncAmount;
         uint48 minSyncDelay;
+        address oldChainlinkAutomation; // Old Chainlink Automation to revoke SYNC_ROLE from (address(0) to skip)
+        address oldGelatoAutomation; // Old Gelato automation, Linea only (address(0) to skip)
     }
 
     event L2OraclePoolDeployed(address indexed oraclePool, address indexed owner);
@@ -52,7 +54,9 @@ contract L2UpgradeActions {
     );
     event L2OraclePoolSet(address indexed customSender, address indexed oraclePool);
     event L2SyncTriggerDeployed(address indexed syncTrigger, address indexed customSender, address indexed owner);
+    event L2CREReceiverDeployed(address indexed creReceiver, address indexed creForwarder);
     event L2SyncRoleGranted(address indexed customSender, address indexed syncTrigger);
+    event L2SyncRoleRevoked(address indexed customSender, address indexed oldAutomation);
     event L2SyncTriggerConfigured(
         address indexed syncTrigger, uint128 minSyncAmount, uint128 maxSyncAmount, uint48 minSyncDelay
     );
@@ -60,7 +64,9 @@ contract L2UpgradeActions {
         address indexed syncTrigger, address indexed previousOwner, address indexed newOwner
     );
     event L2SyncTriggerForwarderSet(address indexed syncTrigger, address indexed forwarder);
-    event L2OldPoolSwept(address indexed oldPool, address indexed token, address indexed recipient, uint256 amount);
+    event L2CREReceiverOwnershipTransferred(
+        address indexed creReceiver, address indexed previousOwner, address indexed newOwner
+    );
 
     function _requireNonZeroL2(address value) private pure {
         if (value == address(0)) revert L2UpgradeInvalidAddress();
@@ -87,6 +93,21 @@ contract L2UpgradeActions {
 
         syncTrigger = new SyncTrigger(cfg.customSender, cfg.destChainSelector, cfg.initialOwner);
         emit L2SyncTriggerDeployed(address(syncTrigger), cfg.customSender, cfg.initialOwner);
+    }
+
+    function deployCREReceiver(address creForwarder) public returns (CREReceiver receiver) {
+        _requireNonZeroL2(creForwarder);
+        receiver = new CREReceiver(creForwarder);
+        emit L2CREReceiverDeployed(address(receiver), creForwarder);
+    }
+
+    function transferCREReceiverOwnership(address creReceiver, address newOwner) public {
+        _requireNonZeroL2(creReceiver);
+        _requireNonZeroL2(newOwner);
+
+        address previousOwner = Ownable(creReceiver).owner();
+        Ownable(creReceiver).transferOwnership(newOwner);
+        emit L2CREReceiverOwnershipTransferred(creReceiver, previousOwner, newOwner);
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {
@@ -124,6 +145,14 @@ contract L2UpgradeActions {
         emit L2SyncRoleGranted(customSender, syncTrigger);
     }
 
+    function revokeSyncRole(address customSender, address oldAutomation) public {
+        _requireNonZeroL2(customSender);
+        _requireNonZeroL2(oldAutomation);
+
+        IAccessControl(customSender).revokeRole(SYNC_ROLE, oldAutomation);
+        emit L2SyncRoleRevoked(customSender, oldAutomation);
+    }
+
     function configureSyncTrigger(address syncTrigger, L2UpgradeConfig memory cfg) public {
         _requireNonZeroL2(syncTrigger);
 
@@ -150,14 +179,23 @@ contract L2UpgradeActions {
         L2UpgradeConfig memory cfg,
         address newPool,
         address newSyncTrigger,
-        address syncTriggerInterimOwner
+        address creReceiver
     ) public {
         setOraclePool(cfg.customSender, newPool);
         grantSyncRole(cfg.customSender, newSyncTrigger);
+        if (cfg.oldChainlinkAutomation != address(0)) {
+            revokeSyncRole(cfg.customSender, cfg.oldChainlinkAutomation);
+        }
+        if (cfg.oldGelatoAutomation != address(0)) {
+            revokeSyncRole(cfg.customSender, cfg.oldGelatoAutomation);
+        }
         configureSyncTrigger(newSyncTrigger, cfg);
+        if (creReceiver != address(0)) {
+            setSyncTriggerForwarder(newSyncTrigger, creReceiver);
+        }
         migrateSenderAdmin(cfg);
         transferProxyAdminOwnership(cfg);
-        transferSyncTriggerOwnership(newSyncTrigger, syncTriggerInterimOwner);
+        transferSyncTriggerOwnership(newSyncTrigger, cfg.governanceExecutor);
     }
 
     function setSyncTriggerForwarder(address syncTrigger, address forwarder) public {
@@ -168,15 +206,4 @@ contract L2UpgradeActions {
         emit L2SyncTriggerForwarderSet(syncTrigger, forwarder);
     }
 
-    function sweepOldPool(address oldPool, address token, address recipient) public {
-        _requireNonZeroL2(oldPool);
-        _requireNonZeroL2(token);
-        _requireNonZeroL2(recipient);
-
-        uint256 balance = IERC20(token).balanceOf(oldPool);
-        if (balance > 0) {
-            IOraclePool(oldPool).sweep(token, recipient, balance);
-            emit L2OldPoolSwept(oldPool, token, recipient, balance);
-        }
-    }
 }

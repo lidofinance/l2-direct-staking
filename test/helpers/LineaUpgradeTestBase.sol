@@ -43,6 +43,10 @@ abstract contract LineaUpgradeTestBase is UpgradeTestBase, LineaL2Defaults, Line
         L2_SYNC_MAX_AMOUNT = C.L2_SYNC_MAX_AMOUNT;
         L2_SYNC_DELAY = C.L2_SYNC_DELAY;
 
+        // Old sync automations (to verify revocation)
+        L2_OLD_CHAINLINK_AUTOMATION = C.L2_OLD_CHAINLINK_AUTOMATION;
+        L2_OLD_GELATO_AUTOMATION = C.L2_OLD_GELATO_AUTOMATION;
+
         super.setUp();
     }
 

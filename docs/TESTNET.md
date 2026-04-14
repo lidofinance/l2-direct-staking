@@ -58,17 +58,7 @@ just sepolia-upgrade-l2
 
 This deploys a replacement `OraclePool` and `SyncTrigger`, repoints `CustomSender`, sweeps any WETH/wstETH out of the bootstrap pool into the replacement pool, revokes the bootstrap automation's `SYNC_ROLE`, and hands the retired bootstrap contracts over to `L2_GOVERNANCE_EXECUTOR`.
 
-### Step 3: Finalize CRE Setup on OP Sepolia
-
-After registering the CRE upkeep and obtaining the forwarder address:
-
-```bash
-export L2_SYNC_TRIGGER=<address from step 2>
-export L2_CRE_FORWARDER=<CRE forwarder address>
-just sepolia-finalize-cre
-```
-
-### Step 4: Run L1 Upgrade on Sepolia
+### Step 3: Run L1 Upgrade on Sepolia
 
 ```bash
 just sepolia-upgrade-l1

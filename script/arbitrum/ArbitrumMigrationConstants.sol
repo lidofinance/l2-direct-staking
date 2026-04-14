@@ -24,6 +24,9 @@ library ArbitrumMigrationConstants {
     address internal constant L2_CCIP_ROUTER = 0x141fa059441E0ca23ce184B6A78bafD2A517DdE8;
     address internal constant L2_LINK_TOKEN = 0xf97f4df75117a78c1A5a0DBb814Af92458539FB4;
 
+    // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
+    address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A;
+
     // L2 SyncTrigger defaults
     // Current mainnet values: https://arbiscan.io/address/0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A#readContract (getFeeOtoD / getFeeDtoO)
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;

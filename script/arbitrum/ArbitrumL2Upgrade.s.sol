@@ -41,7 +41,9 @@ contract ArbitrumL2Defaults is L2UpgradeActions {
             ),
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
-            minSyncDelay: C.L2_SYNC_DELAY
+            minSyncDelay: C.L2_SYNC_DELAY,
+            oldChainlinkAutomation: C.L2_OLD_CHAINLINK_AUTOMATION,
+            oldGelatoAutomation: address(0)
         });
     }
 }
@@ -59,10 +61,5 @@ contract ArbitrumL2UpgradeScript is L2UpgradeScriptBase, ArbitrumL2Defaults {
 
     function _defaultLiquidityOwner() internal pure override returns (address) {
         return C.LIQUIDITY_OWNER;
-    }
-
-    function _sweepOldPool(address recipient) internal override {
-        sweepOldPool(C.L2_OLD_ORACLE_POOL, C.L2_WSTETH, recipient);
-        sweepOldPool(C.L2_OLD_ORACLE_POOL, C.L2_WETH, recipient);
     }
 }

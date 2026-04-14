@@ -11,6 +11,7 @@ import {ISyncAutomation} from "@csr/interfaces/ISyncAutomation.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePool.sol";
 import {SyncTrigger} from "src/SyncTrigger.sol";
+import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {SepoliaMigrationConstants as C} from "script/optimism/sepolia/SepoliaMigrationConstants.sol";
 
@@ -58,7 +59,9 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
             feeDtoO: FeeCodec.encodeOptimismL1toL2(C.L2_SYNC_ORIGIN_L2_GAS),
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
-            minSyncDelay: C.L2_SYNC_DELAY
+            minSyncDelay: C.L2_SYNC_DELAY,
+            oldChainlinkAutomation: address(0), // Sepolia handles retirement separately via _retireBootstrapSyncAutomation
+            oldGelatoAutomation: address(0)
         });
     }
 
@@ -88,14 +91,14 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
         Ownable(bootstrapSyncAutomation).transferOwnership(governanceExecutor);
     }
 
-    function run() external returns (address oraclePool, address syncTrigger) {
+    function run() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
         uint256 initialOwnerPrivateKey = vm.envUint("INITIAL_OWNER_PRIVATE_KEY");
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
-        address lidoDeployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = vm.envOr("L2_LIQUIDITY_OWNER", governanceExecutor);
         address bootstrapSyncAutomation = vm.envOr("L2_BOOTSTRAP_SYNC_AUTOMATION", address(0));
+        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 
         L2UpgradeConfig memory cfg = sepoliaL2Config(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -104,6 +107,8 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
         vm.startBroadcast(lidoDeployerPrivateKey);
         PausableImmutableOraclePool pool = deployPool(cfg);
         SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
+        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
+        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwnerPrivateKey);
@@ -119,6 +124,7 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
             setOraclePool(cfg.customSender, address(pool));
             grantSyncRole(cfg.customSender, address(deployedSyncTrigger));
             configureSyncTrigger(address(deployedSyncTrigger), cfg);
+            setSyncTriggerForwarder(address(deployedSyncTrigger), address(deployedCREReceiver));
 
             if (bootstrapPool != address(pool)) {
                 _retireBootstrapPool(bootstrapPool, address(pool), cfg, governanceExecutor);
@@ -126,23 +132,12 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
 
             migrateSenderAdmin(cfg);
             transferProxyAdminOwnership(cfg);
-            transferSyncTriggerOwnership(address(deployedSyncTrigger), lidoDeployer);
+            transferSyncTriggerOwnership(address(deployedSyncTrigger), governanceExecutor);
         }
         vm.stopBroadcast();
 
         oraclePool = address(pool);
         syncTrigger = address(deployedSyncTrigger);
-    }
-
-    function runFinalizeSyncTrigger() external {
-        uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
-        address syncTriggerAddr = vm.envAddress("L2_SYNC_TRIGGER");
-        address upkeepForwarder = vm.envAddress("L2_CRE_FORWARDER");
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
-
-        vm.startBroadcast(lidoDeployerPrivateKey);
-        setSyncTriggerForwarder(syncTriggerAddr, upkeepForwarder);
-        transferSyncTriggerOwnership(syncTriggerAddr, governanceExecutor);
-        vm.stopBroadcast();
+        creReceiverAddr = address(deployedCREReceiver);
     }
 }
