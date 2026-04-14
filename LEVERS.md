@@ -4,102 +4,103 @@ State-mutating contract calls ("levers") and who can invoke them after migration
 
 ## Assumed Post-Migration State
 
-- `L2 Governance Executor` is the owner/admin on L2 governance surfaces (`L2CustomSender` admin role, `L2SyncTrigger` owner, `L2ProxyAdmin` owner).
-- `LOL multisig` is the owner of `L2PoolNew` (controls pause/unpause, sweep, ownership transfer). See README for per-network addresses — Linea uses a different multisig than Optimism/Arbitrum/Base.
-- `LOL multisig` is the owner of `CREReceiver` (controls forwarder and expected-author settings). Operational admin — may need quick forwarder updates for CRE infra rotation.
-- `LidoDaoAgent` is the owner/admin on L1 control surfaces (`L1Receiver` admin role, `L1ProxyAdmin` owner).
-- `L2SyncTrigger` has `SYNC_ROLE` on `L2CustomSender`.
-- `CREReceiver` is configured as the forwarder on `L2SyncTrigger`.
+- **L2 Governance Executor** — owner/admin on L2 governance surfaces (`CustomSender` admin role, `SyncTrigger` owner, L2 `ProxyAdmin` owner).
+- **LOL multisig** — owner of `PausableImmutableOraclePool` and `CREReceiver`. Linea uses a different multisig than Optimism/Arbitrum/Base (see README).
+- **LidoDaoAgent** — owner/admin on L1 control surfaces (`LidoCustomReceiver` admin role, L1 `ProxyAdmin` owner).
+- `SyncTrigger` has `SYNC_ROLE` on `CustomSender`.
+- `CREReceiver` is configured as the forwarder on `SyncTrigger`.
 - `initialOwner` no longer has admin/owner rights on migrated contracts.
 
-## L2: `L2CustomSender`
+## Actor Legend
 
-| Lever (mutating call)                                           | Who can invoke after migration                       | Effect                                                                     |
-| --------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
-| `sync(destChainSelector, amount, feeOtoD, feeDtoO)`             | `L2SyncTrigger` by default; any address with `SYNC_ROLE` | Pulls `TOKEN` from `L2PoolNew` and sends CCIP sync message.          |
-| `setOraclePool(oraclePool)`                                     | `L2 Governance Executor` (has `DEFAULT_ADMIN_ROLE` on `L2CustomSender`) | Changes the pool used by fast stake/sync logic.                     |
-| `setReceiver(destChainSelector, receiver)`                      | `L2 Governance Executor` (has `DEFAULT_ADMIN_ROLE` on `L2CustomSender`) | Changes trusted destination receiver per chain selector.            |
-| `grantRole(role, account)`                                      | `L2 Governance Executor` (or any account with that role's admin role) | Grants AccessControl roles (including `SYNC_ROLE` / `DEFAULT_ADMIN_ROLE`). |
-| `revokeRole(role, account)`                                     | `L2 Governance Executor` (or any account with that role's admin role) | Revokes AccessControl roles.                                      |
-| `renounceRole(role, callerConfirmation)`                        | Role holder itself                                   | Self-removes a role.                                                       |
-| `slowStake(destChainSelector, token, amount, feeOtoD, feeDtoO)` | Any account                                          | Starts slow-stake CCIP flow; moves user funds and emits `SlowStake`.       |
-| `fastStake(token, amount, minAmountOut)`                        | Any account                                          | Executes fast stake via `L2PoolNew.swap`; emits `FastStake`.               |
-| `fastStakeReferral(token, amount, minAmountOut, referral)`      | Any account                                          | Same as `fastStake` plus `Referral` event emission.                        |
+| Short   | Full Name              | Context                                             |
+|---------|------------------------|-----------------------------------------------------|
+| GovExec | L2 Governance Executor | `DEFAULT_ADMIN_ROLE` on `CustomSender`, owner of `SyncTrigger` and L2 `ProxyAdmin` |
+| LOL     | LOL multisig           | Owner of `PausableImmutableOraclePool` and `CREReceiver` |
+| DAO     | LidoDaoAgent           | `DEFAULT_ADMIN_ROLE` on `LidoCustomReceiver`, owner of L1 `ProxyAdmin` |
+| Sender  | `CustomSender`         | Immutably set as SENDER on `PausableImmutableOraclePool` |
+| Sync    | `SYNC_ROLE` holders    | `SyncTrigger` by default                            |
+| CREFwd  | CRE Forwarder          | Authorized on `CREReceiver`                         |
+| CRERx   | `CREReceiver`          | Set as forwarder on `SyncTrigger`                   |
+| Router  | CCIP Router            | Configured in `LidoCustomReceiver`                  |
+| Any     | Any account            | Permissionless                                      |
 
-## L2: `L2PoolNew`
+---
 
-| Lever (mutating call)                           | Who can invoke after migration | Effect                                                                   |
-| ----------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------ |
-| `swap(recipient, amountIn, minAmountOut)`       | `L2CustomSender` only (set immutable) | Swaps `TOKEN_IN` for `TOKEN_OUT` using oracle price; used by fast stake. |
-| `pull(token, amount)`                           | `L2CustomSender` only (set immutable) | Pulls `TOKEN_IN` from pool to `L2CustomSender`; used by sync flow.       |
-| `pause()`                                       | `LOL multisig` (owner)         | Pauses `swap`/`pull`.                                                    |
-| `unpause()`                                     | `LOL multisig` (owner)         | Unpauses `swap`/`pull`.                                                  |
-| `sweep(token, recipient, amount)`               | `LOL multisig` (owner)         | Withdraws pool token balances (`WETH`/`wstETH` or others) to recipient.  |
-| `transferOwnership(newOwner)`                   | `LOL multisig` (owner)         | Transfers pool ownership.                                                |
-| `renounceOwnership()`                           | `LOL multisig` (owner)         | Removes owner, disabling owner-only functions.                           |
-| adding liquidity (regular WETH/wstETH transfer) | anyone                         | Only owner (LOL multisig) can withdraw the liquidity                     |
+## L2: `CustomSender`
+
+| Lever                                                         | GovExec | Sync | Any | Effect                                              |
+|---------------------------------------------------------------|:-------:|:----:|:---:|-----------------------------------------------------|
+| `sync(destChainSelector, amount, feeOtoD, feeDtoO)`           |         |  x   |     | Pulls TOKEN from pool, sends CCIP sync message      |
+| `setOraclePool(oraclePool)`                                   |    x    |      |     | Changes pool used by fast stake / sync              |
+| `setReceiver(destChainSelector, receiver)`                    |    x    |      |     | Changes trusted destination receiver per chain      |
+| `grantRole(role, account)` / `revokeRole(role, account)`      |    x    |      |     | Manages AccessControl roles (SYNC_ROLE, admin, ...) |
+| `slowStake(destChainSelector, token, amount, feeOtoD, feeDtoO)` |       |      |  x  | Starts slow-stake CCIP flow                         |
+| `fastStake(token, amount, minAmountOut)`                      |         |      |  x  | Instant swap via pool; emits `FastStake`            |
+| `fastStakeReferral(token, amount, minAmountOut, referral)`    |         |      |  x  | Same as `fastStake` + `Referral` event              |
+
+## L2: `PausableImmutableOraclePool`
+
+| Lever                                   | LOL | Sender | Any | Effect                                            |
+|-----------------------------------------|:---:|:------:|:---:|---------------------------------------------------|
+| `swap(recipient, amountIn, minAmountOut)` |   |   x    |     | Swaps TOKEN_IN for TOKEN_OUT at oracle price      |
+| `pull(token, amount)`                   |     |   x    |     | Pulls TOKEN_IN from pool to `CustomSender`        |
+| `pause()`                               |  x  |        |     | Pauses `swap` and `pull`                          |
+| `unpause()`                             |  x  |        |     | Unpauses `swap` and `pull`                        |
+| `sweep(token, recipient, amount)`       |  x  |        |     | Withdraws pool token balances to recipient        |
+| direct wstETH / WETH transfer           |     |        |  x  | Adds liquidity (only owner can withdraw via sweep)|
 
 Notes:
-- `setOracle` and `setFee` are intentionally disabled on `PausableImmutableOraclePool` (always revert).
-- Any account can still provide liquidity by transferring `wstETH` directly to pool address (token transfer, not a pool method).
-- Linea uses a different LOL multisig address than Optimism/Arbitrum/Base (see README).
+- `setOracle()` and `setFee()` are permanently disabled (always revert).
 
-## L2: `L2SyncTrigger`
+## L2: `SyncTrigger`
 
-| Lever (mutating call) | Who can invoke after migration | Effect |
-| --- | --- | --- |
-| `triggerSync()` | `CREReceiver` only (set as forwarder) | Executes sync when thresholds/time are met; calls `L2CustomSender.sync`. |
-| `receive()` (native transfer) | Any account | Increases native balance held by `L2SyncTrigger` (used to fund CCIP fee payments). |
-| `setForwarder(forwarder)` | `L2 Governance Executor` (owner) | Changes authorized caller (CREReceiver). |
-| `setDelay(delay)` | `L2 Governance Executor` (owner) | Updates minimum delay between sync runs. |
-| `setAmounts(minAmount, maxAmount)` | `L2 Governance Executor` (owner) | Updates sync min/max thresholds. |
-| `setFeeOtoD(fee)` | `L2 Governance Executor` (owner) | Updates origin->destination fee config. |
-| `setFeeDtoO(fee)` | `L2 Governance Executor` (owner) | Updates destination->origin fee config. |
-| `sweep(token, recipient, amount)` | `L2 Governance Executor` (owner) | Withdraws tokens/native balance held by `L2SyncTrigger`. |
-| `transferOwnership(newOwner)` | `L2 Governance Executor` (owner) | Transfers `L2SyncTrigger` ownership. |
-| `renounceOwnership()` | `L2 Governance Executor` (owner) | Removes owner, disabling owner-only controls. |
+| Lever                                | GovExec | CRERx | Any | Effect                                          |
+|--------------------------------------|:-------:|:-----:|:---:|------------------------------------------------ |
+| `triggerSync()`                      |         |   x   |     | Executes sync when thresholds/time are met      |
+| `setForwarder(forwarder)`            |    x    |       |     | Changes authorized caller (`CREReceiver`)       |
+| `setDelay(delay)`                    |    x    |       |     | Updates minimum delay between sync runs         |
+| `setAmounts(minAmount, maxAmount)`   |    x    |       |     | Updates sync min/max thresholds                 |
+| `setFeeOtoD(fee)` / `setFeeDtoO(fee)` |  x    |       |     | Updates CCIP fee configs                        |
+| `sweep(token, recipient, amount)`    |    x    |       |     | Withdraws tokens / native balance               |
+| `receive()` (native transfer)        |         |       |  x  | Funds CCIP fee payments                         |
 
 ## L2: `CREReceiver`
 
-| Lever (mutating call) | Who can invoke after migration | Effect |
-| --- | --- | --- |
-| `onReport(metadata, report)` | CRE Forwarder only | Decodes report into `(address target, bytes data)` and executes `target.call(data)`. |
-| `setForwarder(newForwarder)` | `LOL multisig` (owner) | Changes authorized CRE Forwarder address. |
-| `setExpectedAuthor(author)` | `LOL multisig` (owner) | Sets expected workflow author for metadata validation (address(0) disables check). |
-| `transferOwnership(newOwner)` | `LOL multisig` (owner) | Transfers `CREReceiver` ownership. |
-| `renounceOwnership()` | `LOL multisig` (owner) | Removes owner, disabling admin functions. |
-| `withdrawETH(to, amount)` | `LOL multisig` (owner) | Rescues ETH accidentally sent to the contract. |
-| `receive()` (native transfer) | Any account | Allows the contract to receive ETH. |
+| Lever                              | LOL | CREFwd | Any | Effect                                          |
+|------------------------------------|:---:|:------:|:---:|-------------------------------------------------|
+| `onReport(metadata, report)`       |     |   x    |     | Decodes report, executes `target.call(data)`    |
+| `setForwarder(newForwarder)`       |  x  |        |     | Changes authorized CRE Forwarder address        |
+| `setExpectedAuthor(author)`        |  x  |        |     | Sets workflow author validation (0x0 disables)  |
+| `withdrawETH(to, amount)`          |  x  |        |     | Rescues ETH accidentally sent to contract       |
+| `receive()` (native transfer)      |     |        |  x  | Allows the contract to receive ETH              |
 
-## L1: `L1Receiver`
+## L1: `LidoCustomReceiver`
 
-| Lever (mutating call) | Who can invoke after migration | Effect |
-| --- | --- | --- |
-| `ccipReceive(message)` | CCIP router configured in `L1Receiver` | Entry for inbound CCIP messages; validates sender and processes or stores failure hash. |
-| `processMessage(message)` | `L1Receiver` itself only (`onlySelf`) | Internal processing step invoked by `ccipReceive`. |
-| `receive()` (native transfer) | `WNATIVE` contract only | Accepts unwrapped native during message processing. |
-| `retryFailedMessage(message)` | Any account | Retries a previously failed message if hash matches. |
-| `recoverTokens(message, to)` | `LidoDaoAgent` (has `DEFAULT_ADMIN_ROLE` on `L1Receiver`) | Admin recovery path for failed-message tokens. |
-| `setSender(destChainSelector, sender)` | `LidoDaoAgent` (has `DEFAULT_ADMIN_ROLE` on `L1Receiver`) | Updates trusted source sender per chain selector. |
-| `setAdapter(destChainSelector, adapter)` | `LidoDaoAgent` (has `DEFAULT_ADMIN_ROLE` on `L1Receiver`) | Updates bridge adapter per chain selector. |
-| `grantRole(role, account)` | `LidoDaoAgent` (or any account with that role's admin role) | Grants AccessControl roles on `L1Receiver`. |
-| `revokeRole(role, account)` | `LidoDaoAgent` (or any account with that role's admin role) | Revokes AccessControl roles on `L1Receiver`. |
-| `renounceRole(role, callerConfirmation)` | Role holder itself | Self-removes a role. |
+| Lever                                      | DAO | Router | Any | Effect                                           |
+|--------------------------------------------|:---:|:------:|:---:|--------------------------------------------------|
+| `ccipReceive(message)`                     |     |   x    |     | Validates sender, processes or stores failure     |
+| `retryFailedMessage(message)`              |     |        |  x  | Retries previously failed message (hash must match) |
+| `recoverTokens(message, to)`              |  x  |        |     | Admin recovery for failed-message tokens          |
+| `setSender(destChainSelector, sender)`     |  x  |        |     | Updates trusted source sender per chain           |
+| `setAdapter(destChainSelector, adapter)`   |  x  |        |     | Updates bridge adapter per chain                  |
+| `grantRole(role, account)` / `revokeRole(role, account)` | x |  |  | Manages AccessControl roles                      |
 
-## Proxy Admin Levers
+Notes:
+- `processMessage(message)` is internal-only (`onlySelf`), called within `ccipReceive`.
+- `receive()` accepts native only from the WNATIVE contract during message processing.
 
-### L2: `L2ProxyAdmin`
+## `ProxyAdmin` (L2 and L1)
 
-| Lever (mutating call) | Who can invoke after migration | Effect |
-| --- | --- | --- |
-| `upgradeAndCall(proxy, implementation, data)` | `L2 Governance Executor` (owner) | Upgrades L2 transparent proxies administered by `L2ProxyAdmin` (including `L2CustomSender`). |
-| `transferOwnership(newOwner)` | `L2 Governance Executor` (owner) | Transfers `L2ProxyAdmin` ownership. |
-| `renounceOwnership()` | `L2 Governance Executor` (owner) | Removes owner, disabling admin upgrades via `L2ProxyAdmin`. |
+| Lever                                          | GovExec | DAO | Effect                                         |
+|------------------------------------------------|:-------:|:---:|-------------------------------------------------|
+| L2: `upgradeAndCall(proxy, implementation, data)` |  x   |     | Upgrades L2 proxies (incl. `CustomSender`)     |
+| L1: `upgradeAndCall(proxy, implementation, data)` |      |  x  | Upgrades L1 proxies (incl. `LidoCustomReceiver`) |
 
-### L1: `L1ProxyAdmin`
+---
 
-| Lever (mutating call) | Who can invoke after migration | Effect |
-| --- | --- | --- |
-| `upgradeAndCall(proxy, implementation, data)` | `LidoDaoAgent` (owner) | Upgrades L1 transparent proxies administered by `L1ProxyAdmin` (including `L1Receiver`). |
-| `transferOwnership(newOwner)` | `LidoDaoAgent` (owner) | Transfers `L1ProxyAdmin` ownership. |
-| `renounceOwnership()` | `LidoDaoAgent` (owner) | Removes owner, disabling admin upgrades via `L1ProxyAdmin`. |
+## Standard Ownership Levers (all contracts)
+
+Every `Ownable` contract (`PausableImmutableOraclePool`, `SyncTrigger`, `CREReceiver`, both `ProxyAdmin` instances) exposes `transferOwnership(newOwner)` and `renounceOwnership()`, callable by the respective owner listed above.
+
+Every `AccessControl` contract (`CustomSender`, `LidoCustomReceiver`) exposes `renounceRole(role, callerConfirmation)`, callable by the role holder themselves.

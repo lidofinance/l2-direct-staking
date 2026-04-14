@@ -86,13 +86,16 @@ contract L2UpgradeActions {
         emit L2OraclePoolDeployed(address(newPool), cfg.liquidityOwner);
     }
 
-    function deploySyncTrigger(L2UpgradeConfig memory cfg) public returns (SyncTrigger syncTrigger) {
-        _requireNonZeroL2(cfg.initialOwner);
+    function deploySyncTrigger(L2UpgradeConfig memory cfg, address syncTriggerOwner)
+        public
+        returns (SyncTrigger syncTrigger)
+    {
+        _requireNonZeroL2(syncTriggerOwner);
         _requireNonZeroL2(cfg.customSender);
         if (cfg.destChainSelector == 0) revert L2UpgradeInvalidChainSelector();
 
-        syncTrigger = new SyncTrigger(cfg.customSender, cfg.destChainSelector, cfg.initialOwner);
-        emit L2SyncTriggerDeployed(address(syncTrigger), cfg.customSender, cfg.initialOwner);
+        syncTrigger = new SyncTrigger(cfg.customSender, cfg.destChainSelector, syncTriggerOwner);
+        emit L2SyncTriggerDeployed(address(syncTrigger), cfg.customSender, syncTriggerOwner);
     }
 
     function deployCREReceiver(address creForwarder) public returns (CREReceiver receiver) {
@@ -108,6 +111,25 @@ contract L2UpgradeActions {
         address previousOwner = Ownable(creReceiver).owner();
         Ownable(creReceiver).transferOwnership(newOwner);
         emit L2CREReceiverOwnershipTransferred(creReceiver, previousOwner, newOwner);
+    }
+
+    /**
+     * @notice Deploy SyncTrigger + CREReceiver, configure, wire forwarder, and transfer ownership.
+     * @dev Shared by production scripts, Sepolia script, and fork tests. Pool must be deployed separately.
+     */
+    function deploySyncInfrastructure(L2UpgradeConfig memory cfg, address syncTriggerOwner, address creForwarder)
+        public
+        returns (address syncTrigger, address creReceiverAddr)
+    {
+        SyncTrigger st = deploySyncTrigger(cfg, syncTriggerOwner);
+        configureSyncTrigger(address(st), cfg);
+        CREReceiver cr = deployCREReceiver(creForwarder);
+        setSyncTriggerForwarder(address(st), address(cr));
+        transferSyncTriggerOwnership(address(st), cfg.governanceExecutor);
+        transferCREReceiverOwnership(address(cr), cfg.liquidityOwner);
+
+        syncTrigger = address(st);
+        creReceiverAddr = address(cr);
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {
@@ -178,8 +200,7 @@ contract L2UpgradeActions {
     function executeMigrationSteps(
         L2UpgradeConfig memory cfg,
         address newPool,
-        address newSyncTrigger,
-        address creReceiver
+        address newSyncTrigger
     ) public {
         setOraclePool(cfg.customSender, newPool);
         grantSyncRole(cfg.customSender, newSyncTrigger);
@@ -189,13 +210,8 @@ contract L2UpgradeActions {
         if (cfg.oldGelatoAutomation != address(0)) {
             revokeSyncRole(cfg.customSender, cfg.oldGelatoAutomation);
         }
-        configureSyncTrigger(newSyncTrigger, cfg);
-        if (creReceiver != address(0)) {
-            setSyncTriggerForwarder(newSyncTrigger, creReceiver);
-        }
         migrateSenderAdmin(cfg);
         transferProxyAdminOwnership(cfg);
-        transferSyncTriggerOwnership(newSyncTrigger, cfg.governanceExecutor);
     }
 
     function setSyncTriggerForwarder(address syncTrigger, address forwarder) public {

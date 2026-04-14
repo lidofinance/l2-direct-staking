@@ -1,5 +1,11 @@
 # CLA → CRE Migration Plan for Lido Direct Staking
 
+> **Note:** This is the original planning document. The actual implementation diverged:
+> - A new **`SyncTrigger`** contract replaces `SyncAutomation` entirely (not a config-only change).
+> - `SyncTrigger` is deployed and fully configured by the **Lido Deployer** in Stage 1 (`runDeploy`), not by the Initial Owner.
+> - The CRE workflow calls `SyncTrigger.shouldSync()` / `triggerSync()` instead of `checkUpkeep()` / `performUpkeep()`.
+> - See [README.md](README.md) for the current migration flow and [LEVERS.md](LEVERS.md) for admin functions.
+
 ## Current Setup: How CLA Works in This Repo
 
 The repo uses **Chainlink Automation (CLA)** with a **Custom Logic trigger** for pool rebalancing on Optimism.

@@ -10,8 +10,6 @@ import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {ISyncAutomation} from "@csr/interfaces/ISyncAutomation.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePool.sol";
-import {SyncTrigger} from "src/SyncTrigger.sol";
-import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {SepoliaMigrationConstants as C} from "script/optimism/sepolia/SepoliaMigrationConstants.sol";
 
@@ -106,25 +104,22 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
 
         vm.startBroadcast(lidoDeployerPrivateKey);
         PausableImmutableOraclePool pool = deployPool(cfg);
-        SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
-        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
-        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
+        (syncTrigger, creReceiverAddr) =
+            deploySyncInfrastructure(cfg, vm.addr(lidoDeployerPrivateKey), creForwarder);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwnerPrivateKey);
         {
             address bootstrapPool = ICustomSender(cfg.customSender).getOraclePool();
             if (bootstrapPool == address(0)) revert SepoliaBootstrapOraclePoolMissing();
-            if (bootstrapSyncAutomation == address(deployedSyncTrigger)) {
+            if (bootstrapSyncAutomation == syncTrigger) {
                 revert SepoliaBootstrapSyncTriggerCollision();
             }
 
             _retireBootstrapSyncAutomation(cfg.customSender, bootstrapSyncAutomation, governanceExecutor);
 
             setOraclePool(cfg.customSender, address(pool));
-            grantSyncRole(cfg.customSender, address(deployedSyncTrigger));
-            configureSyncTrigger(address(deployedSyncTrigger), cfg);
-            setSyncTriggerForwarder(address(deployedSyncTrigger), address(deployedCREReceiver));
+            grantSyncRole(cfg.customSender, syncTrigger);
 
             if (bootstrapPool != address(pool)) {
                 _retireBootstrapPool(bootstrapPool, address(pool), cfg, governanceExecutor);
@@ -132,12 +127,9 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
 
             migrateSenderAdmin(cfg);
             transferProxyAdminOwnership(cfg);
-            transferSyncTriggerOwnership(address(deployedSyncTrigger), governanceExecutor);
         }
         vm.stopBroadcast();
 
         oraclePool = address(pool);
-        syncTrigger = address(deployedSyncTrigger);
-        creReceiverAddr = address(deployedCREReceiver);
     }
 }

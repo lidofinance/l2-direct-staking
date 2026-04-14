@@ -14,20 +14,26 @@ Migrate Direct Staking ownership, admin roles, and liquidity management to Lido 
 
 Stages are batched by actor to minimise handoffs. Each actor completes all their work before the next actor starts.
 
-| Stage                  | Actor             | Networks                          | Script / action                                 | What it does                                                                               |
-| ---------------------- | ----------------- | --------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1. Deploy              | **Lido Deployer** | Optimism, Arbitrum, Base, Linea   | `runDeploy()`                                   | Deploy new OraclePool, SyncTrigger, CREReceiver; transfer CREReceiver to LOL multisig      |
-| 2. Migrate             | **Initial Owner** | Optimism, Arbitrum, Base, Linea + Ethereum | `runMigrate()` + `L1UpgradeScript.run()` | L2: configure SyncTrigger, set CRE forwarder, migrate all admin to final owners. L1 (once): migrate admin to Lido DAO Agent |
-| 3. Deploy CRE workflow | **Lido Deployer** | Optimism, Arbitrum, Base, Linea   | `cre workflow deploy`                           | Deploy TypeScript workflow on Chainlink CRE DON                                            |
-| 4. Validate            | **Any operator**  | all                               | Manual / cast calls                             | Verify roles, ownership, CRE routing, cancel legacy CLA upkeeps                            |
+| Stage                  | Actor             | Networks                                   | Script / action                          | What it does                                                                                                                |
+| ---------------------- | ----------------- | ------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1. Deploy              | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `runDeploy()`                            | Deploy new OraclePool, SyncTrigger, CREReceiver; configure SyncTrigger and transfer ownership to final owners               |
+| 2. Migrate             | **Initial Owner** | Optimism, Arbitrum, Base, Linea + Ethereum | `runMigrate()` + `L1UpgradeScript.run()` | L2: swap oracle pool, grant/revoke SYNC_ROLE, migrate admin to final owners. L1 (once): migrate admin to Lido DAO Agent     |
+| 3. Deploy CRE workflow | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `cre workflow deploy`                    | Deploy TypeScript workflow on Chainlink CRE DON                                                                             |
+| 4. Validate            | **Any operator**  | all                                        | Manual / cast calls                      | Verify roles, ownership, CRE routing, cancel legacy CLA upkeeps                                                             |
 
 ## On-chain actions (ordered sequence)
 
 **Stage 1 — Deploy (per L2 network)**
 ```
 Lido Deployer  deploy PausableImmutableOraclePool(customSender, tokenIn, tokenOut, priceOracle, fee, liquidityOwner)
-Lido Deployer  deploy SyncTrigger(customSender, destChainSelector, initialOwner)
+Lido Deployer  deploy SyncTrigger(customSender, destChainSelector, deployer)
+Lido Deployer  SyncTrigger.setFeeOtoD(encodedFee)
+Lido Deployer  SyncTrigger.setFeeDtoO(encodedFee)
+Lido Deployer  SyncTrigger.setAmounts(minSyncAmount, maxSyncAmount)
+Lido Deployer  SyncTrigger.setDelay(minSyncDelay)
 Lido Deployer  deploy CREReceiver(creForwarder)
+Lido Deployer  SyncTrigger.setForwarder(creReceiver)
+Lido Deployer  SyncTrigger.transferOwnership(governanceExecutor)
 Lido Deployer  CREReceiver.transferOwnership(liquidityOwner)
 ```
 
@@ -36,15 +42,9 @@ Lido Deployer  CREReceiver.transferOwnership(liquidityOwner)
 Initial Owner  CustomSender.setOraclePool(newPool)
 Initial Owner  CustomSender.grantRole(SYNC_ROLE, syncTrigger)
 Initial Owner  CustomSender.revokeRole(SYNC_ROLE, oldChainlinkAutomation)
-Initial Owner  SyncTrigger.setFeeOtoD(encodedFee)
-Initial Owner  SyncTrigger.setFeeDtoO(encodedFee)
-Initial Owner  SyncTrigger.setAmounts(minSyncAmount, maxSyncAmount)
-Initial Owner  SyncTrigger.setDelay(minSyncDelay)
-Initial Owner  SyncTrigger.setForwarder(creReceiver)
 Initial Owner  CustomSender.grantRole(DEFAULT_ADMIN_ROLE, governanceExecutor)
 Initial Owner  CustomSender.revokeRole(DEFAULT_ADMIN_ROLE, initialOwner)
 Initial Owner  ProxyAdmin.transferOwnership(governanceExecutor)
-Initial Owner  SyncTrigger.transferOwnership(governanceExecutor)
 ```
 
 **Stage 2 — Migrate L1 (once, shared)**
@@ -54,7 +54,7 @@ Initial Owner  L1Receiver.revokeRole(DEFAULT_ADMIN_ROLE, initialOwner)
 Initial Owner  L1ProxyAdmin.transferOwnership(lidoDaoAgent)
 ```
 
-16 on-chain transactions per L2 network + 3 on L1 = **67 total** across 4 networks.
+10 deploy transactions + 6 migrate transactions per L2 network (7 for Linea, which also revokes Gelato automation) + 3 on L1 = **68 total** across 4 networks.
 
 **Post-migration:** LOL multisig transfers initial wstETH liquidity to each new pool (direct ERC-20 transfer, one tx per network). This enables `fastStake` to operate.
 
@@ -62,7 +62,7 @@ Initial Owner  L1ProxyAdmin.transferOwnership(lidoDaoAgent)
 
 **L2 first, then L1.** L1 and L2 migrations are functionally independent — the sync flow (`CustomSender → CCIP → L1Receiver → bridge adapter`) works before and after either migration because the `CustomSender` proxy address never changes. However, migrating L2 first is safer:
 
-- L2 migration is the complex part (16 txs per network × 4 networks). Keeping L1 admin access available during rollout provides an emergency safety net — Initial Owner can still call `setSender`, `setAdapter` on L1Receiver if needed.
+- L2 migration is the complex part (deploy + migrate across 4 networks). Keeping L1 admin access available during rollout provides an emergency safety net — Initial Owner can still call `setSender`, `setAdapter` on L1Receiver if needed.
 - After L1 migration, any L1 changes require a Lido DAO governance vote (days/weeks of delay).
 - L1 migration is trivial (3 txs, once) and best done last as a clean "seal" after all L2 networks are validated.
 
@@ -108,7 +108,7 @@ export L2_SCRIPT=script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript            
 export L2_SCRIPT=script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript           L2_RPC_URL=$L2_LINEA_RPC_URL
 ```
 
-### Stage 1 — Lido Deployer: deploy (Optimism, Arbitrum, Base, Linea)
+### Stage 1 — Lido Deployer: deploy + configure (Optimism, Arbitrum, Base, Linea)
 
 Run for each network:
 
@@ -120,6 +120,8 @@ export L2_ORACLE_POOL=<...> L2_SYNC_TRIGGER=<...> L2_CRE_RECEIVER=<...>
 
 Env: `L2_LIDO_DEPLOYER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`.
 
+After this stage, SyncTrigger is fully configured (fees, amounts, delay, forwarder) and ownership has been transferred to L2 Governance Executor. CREReceiver ownership has been transferred to LOL multisig.
+
 ### Stage 2 — Initial Owner: migrate L2 + L1
 
 Run `runMigrate()` for each network:
@@ -128,7 +130,7 @@ Run `runMigrate()` for each network:
 forge script $L2_SCRIPT --sig "runMigrate()" --rpc-url "$L2_RPC_URL" --broadcast
 ```
 
-Env: `INITIAL_OWNER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`, `L2_CRE_RECEIVER`.
+Env: `INITIAL_OWNER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`.
 
 Then migrate L1 (once — any network's L1 script, L1 receiver is shared):
 
@@ -293,10 +295,14 @@ sequenceDiagram
     link L1PA: Ethereum Explorer @ https://etherscan.io/address/0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD
 
     rect rgb(236, 248, 255)
-    Note over LidoDep,ST: L2 upgrade script run #1 (single signer: Lido deployer)
+    Note over LidoDep,CRERecv: L2 upgrade script run #1 (single signer: Lido deployer)
     LidoDep->>NewPool: deployPool(owner=LiqOwner)
-    LidoDep->>ST: deploySyncTrigger(owner=initialOwner)
+    LidoDep->>ST: deploySyncTrigger(owner=deployer)
+    LidoDep->>ST: setFeeOtoD / setFeeDtoO
+    LidoDep->>ST: setAmounts / setDelay
     LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd)
+    LidoDep->>ST: setForwarder(CRERecv)
+    LidoDep->>ST: transferOwnership(GovExec)
     LidoDep->>CRERecv: transferOwnership(LOL multisig)
     end
 
@@ -304,13 +310,9 @@ sequenceDiagram
     Note over initialOwner,L2PA: L2 upgrade script run #2 (single signer: initialOwner)
     initialOwner->>CS: setOraclePool(newPool)
     initialOwner->>CS: grantRole(SYNC_ROLE, ST)
-    initialOwner->>ST: setFeeOtoD / setFeeDtoO
-    initialOwner->>ST: setAmounts / setDelay
-    initialOwner->>ST: setForwarder(CRERecv)
     initialOwner->>CS: grantAdmin(GovExec)
     initialOwner->>CS: revokeAdmin(initialOwner)
     initialOwner->>L2PA: transferOwner(GovExec)
-    initialOwner->>ST: transferOwnership(GovExec)
     end
 
     rect rgb(255, 246, 234)
@@ -506,7 +508,7 @@ just test-cre-workflow
 
 ## Deployment
 
-CREReceiver is deployed per L2 network as part of Stage 1 (`runDeploy`). After configuring `SyncTrigger.setForwarder(CREReceiver)` in Stage 2:
+CREReceiver is deployed per L2 network as part of Stage 1 (`runDeploy`), which also configures `SyncTrigger.setForwarder(CREReceiver)`. After Stage 1:
 
 1. Update `config.deploy.<network>.json` with the deployed `receiverAddress` and `targetAddress` (SyncTrigger).
 2. Deploy the workflow: `cd cre-workflows/sync-automation && cre workflow deploy . --config config.deploy.<network>.json --target=production-settings`
@@ -528,7 +530,7 @@ Stages are batched by actor. In the commands below, `$L2_SCRIPT` and `$L2_RPC_UR
 | Base     | `script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript`             | `script/base/BaseL1Upgrade.s.sol:BaseL1UpgradeScript`             | `$L2_BASE_RPC_URL`      |
 | Linea    | `script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript`          | `script/linea/LineaL1Upgrade.s.sol:LineaL1UpgradeScript`          | `$L2_LINEA_RPC_URL`     |
 
-## Stage 1 — Lido Deployer: deploy new contracts (Optimism, Arbitrum, Base, Linea)
+## Stage 1 — Lido Deployer: deploy and configure new contracts (Optimism, Arbitrum, Base, Linea)
 
 ```sh
 forge script $L2_SCRIPT --sig "runDeploy()" --rpc-url "$L2_RPC_URL" --broadcast
@@ -541,6 +543,11 @@ export L2_SYNC_TRIGGER=<sync_trigger_address_from_output>
 export L2_CRE_RECEIVER=<cre_receiver_address_from_output>
 ```
 
+After each run:
+- SyncTrigger is fully configured (fees, amounts, delay, forwarder → CREReceiver)
+- SyncTrigger owner → L2 Governance Executor
+- CREReceiver owner → LOL multisig
+
 Env: `L2_LIDO_DEPLOYER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`, `L2_LIQUIDITY_OWNER` (optional, defaults to LOL multisig).
 
 ## Stage 2 — Initial Owner: migrate L2 + L1
@@ -552,13 +559,13 @@ forge script $L2_SCRIPT --sig "runMigrate()" --rpc-url "$L2_RPC_URL" --broadcast
 ```
 
 After each L2 run:
-- SyncTrigger forwarder → CREReceiver
-- SyncTrigger owner → L2 Governance Executor (final)
+- CustomSender oracle pool → new pool
+- CustomSender SYNC_ROLE → new SyncTrigger (old automation revoked)
 - CustomSender admin → L2 Governance Executor
 - ProxyAdmin owner → L2 Governance Executor
 - Initial Owner no longer has admin rights on L2
 
-Env: `INITIAL_OWNER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`, `L2_CRE_RECEIVER`.
+Env: `INITIAL_OWNER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`.
 
 Then migrate L1 (once — any network's L1 script will do, L1 receiver is shared):
 
@@ -721,7 +728,7 @@ The corresponding helper recipes are:
 - Shared harness:
   - `test/helpers/UpgradeTestBase.sol`
   - `test/helpers/PoolUpgradeTests.sol`
-- Network-specific suites (14 tests each):
+- Network-specific suites (17 tests each):
   - `test/OptimismPoolUpgrade.t.sol`
   - `test/ArbitrumPoolUpgrade.t.sol`
   - `test/BasePoolUpgrade.t.sol`
@@ -748,7 +755,7 @@ Notes:
 
 ## CRE tests
 
-- `test/CREReceiverTest.t.sol` — 23 unit tests for the CREReceiver contract (no fork required)
+- `test/CREReceiverTest.t.sol` — 25 unit tests for the CREReceiver contract (no fork required)
 - `test/CREIntegrationTest.t.sol` — 8 fork-based integration tests per network (Optimism, Arbitrum, Base, Linea = 32 total), covering the full CRE Forwarder → CREReceiver → SyncTrigger → sync path
 - `test/helpers/CREIntegrationTests.sol` — shared CRE test logic (same pattern as `PoolUpgradeTests.sol`)
 - `cre-workflows/sync-automation/main.test.ts` — 11 TypeScript tests for workflow encoding/decoding logic
