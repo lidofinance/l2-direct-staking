@@ -18,8 +18,7 @@ import {UpgradeTestBase} from "test/helpers/UpgradeTestBase.sol";
 abstract contract CREIntegrationTests is UpgradeTestBase {
     CREReceiver internal creReceiver;
     address internal creForwarder = makeAddr("creForwarder");
-
-    // --- Full CRE path: shouldSync -> CREReceiver -> triggerSync ---
+    address internal creAuthor = makeAddr("creWorkflowAuthor");
 
     function test_creReceiverTriggersSyncViaReport() public {
         (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndSetupCRE();
@@ -37,12 +36,11 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
 
         bytes memory callData = abi.encodeCall(ISyncTrigger.triggerSync, ());
         bytes memory report = abi.encode(address(syncTrigger), callData);
-        bytes memory metadata = _buildCREMetadata(address(0));
 
         uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
 
         vm.prank(creForwarder);
-        creReceiver.onReport(metadata, report);
+        creReceiver.onReport(_buildCREMetadata(creAuthor), report);
 
         uint256 expectedSync = stakeAmount > uint256(L2_SYNC_MAX_AMOUNT) ? L2_SYNC_MAX_AMOUNT : stakeAmount;
         assertEq(
@@ -56,44 +54,36 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         _deployAndSetupCRE();
 
         bytes memory report = abi.encode(address(1), hex"");
-        bytes memory metadata = _buildCREMetadata(address(0));
 
         address attacker = makeAddr("attacker");
         vm.prank(attacker);
         vm.expectRevert(
             abi.encodeWithSelector(CREReceiver.UnauthorizedForwarder.selector, attacker, creForwarder)
         );
-        creReceiver.onReport(metadata, report);
+        creReceiver.onReport(_buildCREMetadata(creAuthor), report);
     }
 
-    function test_creReceiverWithExpectedAuthor() public {
+    function test_creReceiverRotatesExpectedAuthor() public {
         (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndSetupCRE();
 
-        address workflowOwner = makeAddr("workflowOwner");
-        creReceiver.setExpectedAuthor(workflowOwner);
+        address newAuthor = makeAddr("rotatedAuthor");
+        creReceiver.setExpectedAuthor(newAuthor);
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        (bool syncNeeded,) = syncTrigger.shouldSync();
-        assertTrue(syncNeeded);
-
         vm.deal(address(syncTrigger), 1 ether);
+        bytes memory report = abi.encode(address(syncTrigger), abi.encodeCall(ISyncTrigger.triggerSync, ()));
 
-        bytes memory callData = abi.encodeCall(ISyncTrigger.triggerSync, ());
-        bytes memory report = abi.encode(address(syncTrigger), callData);
-
-        bytes memory badMetadata = _buildCREMetadata(makeAddr("wrongOwner"));
+        // Old author is now rejected.
         vm.prank(creForwarder);
-        vm.expectRevert(
-            abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, makeAddr("wrongOwner"), workflowOwner)
-        );
-        creReceiver.onReport(badMetadata, report);
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, creAuthor, newAuthor));
+        creReceiver.onReport(_buildCREMetadata(creAuthor), report);
 
-        bytes memory goodMetadata = _buildCREMetadata(workflowOwner);
+        // New author is accepted.
         vm.prank(creForwarder);
-        creReceiver.onReport(goodMetadata, report);
+        creReceiver.onReport(_buildCREMetadata(newAuthor), report);
 
         assertLt(
             IERC20(L2_WETH).balanceOf(address(newPool)),
@@ -102,7 +92,23 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         );
     }
 
-    // --- CRE + SyncTrigger: delay & threshold checks still work ---
+    function test_creReceiverRejectsDisallowedTarget() public {
+        (, ISyncTrigger syncTrigger) = _deployAndSetupCRE();
+
+        address other = makeAddr("rogueTarget");
+        bytes memory report = abi.encode(other, abi.encodeCall(ISyncTrigger.triggerSync, ()));
+
+        vm.prank(creForwarder);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CREReceiver.CallNotAllowed.selector, other, ISyncTrigger.triggerSync.selector
+            )
+        );
+        creReceiver.onReport(_buildCREMetadata(creAuthor), report);
+
+        // Silence unused variable warning.
+        syncTrigger;
+    }
 
     function test_crePathRespectsDelay() public {
         (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndSetupCRE();
@@ -137,9 +143,10 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
 
         (, uint256 amount) = syncTrigger.shouldSync();
         assertEq(amount, uint256(L2_SYNC_MAX_AMOUNT), "should cap at max");
-    }
 
-    // --- CRE path: triggerSync only callable via CREReceiver ---
+        // Silence unused variable warning.
+        newPool;
+    }
 
     function test_syncTriggerRejectsDirectCallAfterCRESetup() public {
         (, ISyncTrigger syncTrigger) = _deployAndSetupCRE();
@@ -149,8 +156,6 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         vm.expectRevert(ISyncTrigger.SyncTriggerOnlyForwarder.selector);
         syncTrigger.triggerSync();
     }
-
-    // --- CRE consecutive triggers: delay resets after trigger ---
 
     function test_creUpdatesLastExecutionAfterTrigger() public {
         (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndSetupCRE();
@@ -169,13 +174,11 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
             address(syncTrigger), abi.encodeCall(ISyncTrigger.triggerSync, ())
         );
         vm.prank(creForwarder);
-        creReceiver.onReport(_buildCREMetadata(address(0)), report);
+        creReceiver.onReport(_buildCREMetadata(creAuthor), report);
 
         assertEq(syncTrigger.getLastExecution(), uint48(block.timestamp), "lastExecution should update");
         assertGt(syncTrigger.getLastExecution(), lastExecBefore, "lastExecution should advance");
     }
-
-    // --- Helpers ---
 
     function _deployAndSetupCRE()
         internal
@@ -185,7 +188,12 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         (newPool, syncTriggerAddr) = _deployAndMigrateL2WithSyncTrigger();
         syncTrigger = ISyncTrigger(syncTriggerAddr);
 
-        creReceiver = new CREReceiver(creForwarder);
+        creReceiver = new CREReceiver(
+            creForwarder,
+            creAuthor,
+            syncTriggerAddr,
+            ISyncTrigger.triggerSync.selector
+        );
 
         vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
         syncTrigger.setForwarder(address(creReceiver));

@@ -1,10 +1,11 @@
 # CLA → CRE Migration Plan for Lido Direct Staking
 
-> **Note:** This is the original planning document. The actual implementation diverged:
+> **Historical — kept for context.** This is the original planning document written before implementation. The shipped design diverged:
 > - A new **`SyncTrigger`** contract replaces `SyncAutomation` entirely (not a config-only change).
 > - `SyncTrigger` is deployed and fully configured by the **Lido Deployer** in Stage 1 (`runDeploy`), not by the Initial Owner.
 > - The CRE workflow calls `SyncTrigger.shouldSync()` / `triggerSync()` instead of `checkUpkeep()` / `performUpkeep()`.
-> - See [README.md](README.md) for the current migration flow and [LEVERS.md](LEVERS.md) for admin functions.
+>
+> For the current state of the system and what to actually do: [`README.md`](../README.md) (runbook), [`LEVERS.md`](./LEVERS.md) (authority model), [`ops_plan.md`](./ops_plan.md) (operations plan), [`SECURITY.md`](./SECURITY.md) (risk analysis). Forward-looking "TODO" language below refers to work that has since been completed.
 
 ## Current Setup: How CLA Works in This Repo
 

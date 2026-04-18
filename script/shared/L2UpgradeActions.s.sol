@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
@@ -24,6 +23,8 @@ contract L2UpgradeActions {
 
     error L2UpgradeInvalidAddress();
     error L2UpgradeInvalidChainSelector();
+    error L2UpgradeWrongChain(uint256 actualChainId, uint256 expectedChainId);
+    error L2UpgradePostConditionFailed(string what);
 
     struct L2UpgradeConfig {
         address initialOwner;
@@ -72,6 +73,18 @@ contract L2UpgradeActions {
         if (value == address(0)) revert L2UpgradeInvalidAddress();
     }
 
+    function _requireL2PostCondition(bool ok, string memory key) private pure {
+        if (!ok) revert L2UpgradePostConditionFailed(key);
+    }
+
+    /// @dev Asserts the script is broadcasting to the intended L2 chain. Guards against `L2_RPC_URL`
+    ///      pointing at the wrong network (dangerous because L2 proxy addresses often match across OP-stack chains).
+    function assertL2ChainId(uint256 expectedChainId) public view {
+        if (block.chainid != expectedChainId) {
+            revert L2UpgradeWrongChain(block.chainid, expectedChainId);
+        }
+    }
+
     function deployPool(L2UpgradeConfig memory cfg) public returns (PausableImmutableOraclePool newPool) {
         _requireNonZeroL2(cfg.liquidityOwner);
         _requireNonZeroL2(cfg.customSender);
@@ -98,9 +111,15 @@ contract L2UpgradeActions {
         emit L2SyncTriggerDeployed(address(syncTrigger), cfg.customSender, syncTriggerOwner);
     }
 
-    function deployCREReceiver(address creForwarder) public returns (CREReceiver receiver) {
+    function deployCREReceiver(
+        address creForwarder,
+        address expectedAuthor,
+        address allowedTarget,
+        bytes4 allowedSelector
+    ) public returns (CREReceiver receiver) {
         _requireNonZeroL2(creForwarder);
-        receiver = new CREReceiver(creForwarder);
+        _requireNonZeroL2(expectedAuthor);
+        receiver = new CREReceiver(creForwarder, expectedAuthor, allowedTarget, allowedSelector);
         emit L2CREReceiverDeployed(address(receiver), creForwarder);
     }
 
@@ -117,19 +136,48 @@ contract L2UpgradeActions {
      * @notice Deploy SyncTrigger + CREReceiver, configure, wire forwarder, and transfer ownership.
      * @dev Shared by production scripts, Sepolia script, and fork tests. Pool must be deployed separately.
      */
-    function deploySyncInfrastructure(L2UpgradeConfig memory cfg, address syncTriggerOwner, address creForwarder)
-        public
-        returns (address syncTrigger, address creReceiverAddr)
-    {
+    function deploySyncInfrastructure(
+        L2UpgradeConfig memory cfg,
+        address syncTriggerOwner,
+        address creForwarder,
+        address expectedAuthor
+    ) public returns (address syncTrigger, address creReceiverAddr) {
         SyncTrigger st = deploySyncTrigger(cfg, syncTriggerOwner);
         configureSyncTrigger(address(st), cfg);
-        CREReceiver cr = deployCREReceiver(creForwarder);
+        CREReceiver cr = deployCREReceiver(
+            creForwarder,
+            expectedAuthor,
+            address(st),
+            ISyncTrigger.triggerSync.selector
+        );
         setSyncTriggerForwarder(address(st), address(cr));
         transferSyncTriggerOwnership(address(st), cfg.governanceExecutor);
         transferCREReceiverOwnership(address(cr), cfg.liquidityOwner);
 
         syncTrigger = address(st);
         creReceiverAddr = address(cr);
+
+        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
+    }
+
+    /// @dev Sanity checks the Stage 1 deploy; fails the broadcast if anything is off.
+    function _assertSyncInfrastructure(
+        L2UpgradeConfig memory cfg,
+        address syncTrigger,
+        address creReceiverAddr,
+        address creForwarder,
+        address expectedAuthor
+    ) private view {
+        CREReceiver cr = CREReceiver(payable(creReceiverAddr));
+        _requireL2PostCondition(ISyncTrigger(syncTrigger).getForwarder() == creReceiverAddr, "syncTrigger forwarder");
+        _requireL2PostCondition(Ownable(syncTrigger).owner() == cfg.governanceExecutor, "syncTrigger owner");
+        _requireL2PostCondition(cr.getForwarder() == creForwarder, "creReceiver forwarder");
+        _requireL2PostCondition(cr.getExpectedAuthor() == expectedAuthor, "creReceiver expectedAuthor");
+        _requireL2PostCondition(
+            cr.isCallAllowed(syncTrigger, ISyncTrigger.triggerSync.selector),
+            "creReceiver allow-list seed"
+        );
+        _requireL2PostCondition(Ownable(creReceiverAddr).owner() == cfg.liquidityOwner, "creReceiver owner");
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {
@@ -212,6 +260,32 @@ contract L2UpgradeActions {
         }
         migrateSenderAdmin(cfg);
         transferProxyAdminOwnership(cfg);
+
+        _assertMigrationSteps(cfg, newPool, newSyncTrigger);
+    }
+
+    /// @dev Reads back on-chain state after `executeMigrationSteps` to ensure every write landed
+    ///      and every revoke took effect. A partial success from a prior step will cause the
+    ///      broadcast itself to revert rather than silently leaving the system half-migrated.
+    function _assertMigrationSteps(
+        L2UpgradeConfig memory cfg,
+        address newPool,
+        address newSyncTrigger
+    ) private view {
+        IAccessControl sender = IAccessControl(cfg.customSender);
+        _requireL2PostCondition(ICustomSender(cfg.customSender).getOraclePool() == newPool, "oraclePool");
+        _requireL2PostCondition(sender.hasRole(SYNC_ROLE, newSyncTrigger), "sync role grant");
+        _requireL2PostCondition(
+            cfg.oldChainlinkAutomation == address(0) || !sender.hasRole(SYNC_ROLE, cfg.oldChainlinkAutomation),
+            "old chainlink sync revoke"
+        );
+        _requireL2PostCondition(
+            cfg.oldGelatoAutomation == address(0) || !sender.hasRole(SYNC_ROLE, cfg.oldGelatoAutomation),
+            "old gelato sync revoke"
+        );
+        _requireL2PostCondition(sender.hasRole(DEFAULT_ADMIN_ROLE, cfg.governanceExecutor), "governance admin grant");
+        _requireL2PostCondition(!sender.hasRole(DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner admin revoke");
+        _requireL2PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.governanceExecutor, "proxyAdmin owner");
     }
 
     function setSyncTriggerForwarder(address syncTrigger, address forwarder) public {

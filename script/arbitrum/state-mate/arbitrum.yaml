@@ -8,10 +8,9 @@ parameters:
   - &l2GovernanceExecutor "0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29"
   - &l2LiquidityOwner "0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61"
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-  - &l2OraclePool "0xf36356ed6809b27f1576f17fa4c1e5c92237fcfc"
-  - &l2SyncTrigger "0x9e0e94ad9bc031b989fb79427d62b922c22c3a48"
-  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
-  - &l2CreReceiver null # set after CREReceiver deployment (Stage 1)
+  - &l2OraclePool "0x91E3D3Df5a27fa072748B456a920D5353bf4C1d2"
+  - &l2SyncTrigger "0xa1Fa2F4a70AaFFd05e26DEaEbf054E6447108Ec6"
+  - &l2CreReceiver "0x25183Ca3CA7124a86De08378Af831BB6E6950Cce"
   - &l2Weth "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
   - &l2Wsteth "0x5979D7b546E38E414F7E9822514be443A4800529"
   - &l2LinkToken "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4"
@@ -34,6 +33,7 @@ deployed:
     - *l2ProxyAdmin
     - *l2OraclePool
     - *l2SyncTrigger
+    - *l2CreReceiver
 
 l1:
   rpcUrl: L1_RPC_URL
@@ -65,8 +65,6 @@ l2:
             result: false
           - args: [*SYNC_ROLE, *l2SyncTrigger]
             result: true
-          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
-            result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
         supportsInterface:
@@ -114,14 +112,16 @@ l2:
         shouldSync:
           result: [false, 0]
 
-    # CREReceiver — set l2CreReceiver address after Stage 1 deployment to enable these checks
     creReceiver:
       name: CREReceiver
       address: *l2CreReceiver
       checks:
         owner: *l2LiquidityOwner
         getForwarder: null # CRE Forwarder (KeystoneForwarder) address
-        getExpectedAuthor: "0x0000000000000000000000000000000000000000" # disabled by default
+        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        isCallAllowed:
+          - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
+            result: true
         supportsInterface:
           - args: ["0x21a4cdb3"] # IReceiver
             result: true

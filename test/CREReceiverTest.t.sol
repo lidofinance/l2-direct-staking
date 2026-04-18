@@ -8,14 +8,18 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @notice Harness to expose internal functions for testing
 contract CREReceiverHarness is CREReceiver {
-    constructor(address forwarder_) CREReceiver(forwarder_) {}
+    constructor(
+        address forwarder_,
+        address expectedAuthor_,
+        address allowedTarget,
+        bytes4 allowedSelector
+    ) CREReceiver(forwarder_, expectedAuthor_, allowedTarget, allowedSelector) {}
 
     function extractWorkflowOwner(bytes calldata metadata) external pure returns (address) {
         return _extractWorkflowOwner(metadata);
     }
 }
 
-/// @notice Dummy target that records calls for assertion
 contract MockTarget {
     event Called(uint256 value);
     error Boom();
@@ -29,23 +33,27 @@ contract MockTarget {
         emit Called(v);
     }
 
+    function somethingElse() external pure returns (uint256) {
+        return 42;
+    }
+
     function setShouldRevert(bool v) external {
         shouldRevert = v;
     }
 }
 
-/// @notice Malicious target that re-enters CREReceiver.onReport during execution
+/// @notice Malicious target that tries to re-enter CREReceiver.onReport during execution.
 contract ReentrantTarget {
     address private _receiver;
-    address private _forwarder;
+    address private _expectedAuthor;
 
-    constructor(address receiver_, address forwarder_) {
+    constructor(address receiver_, address expectedAuthor_) {
         _receiver = receiver_;
-        _forwarder = forwarder_;
+        _expectedAuthor = expectedAuthor_;
     }
 
     function attack() external {
-        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), address(0));
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), _expectedAuthor);
         bytes memory report = abi.encode(address(this), abi.encodeWithSignature("noop()"));
         IReceiver(_receiver).onReport(metadata, report);
     }
@@ -53,51 +61,61 @@ contract ReentrantTarget {
     function noop() external {}
 }
 
-/**
- * @title CREReceiverTest
- * @notice Unit tests for the CREReceiver contract covering:
- *   - Construction & initial state
- *   - onReport access control (forwarder check)
- *   - Report decoding & target call execution
- *   - Expected author validation
- *   - Admin functions (setForwarder, setExpectedAuthor)
- *   - Edge cases (zero target, failing target, ERC165)
- */
 contract CREReceiverTest is Test {
-    event CallExecuted(address indexed target, bytes returnData);
+    event CallExecuted(address indexed target, bytes4 indexed selector, bytes returnData);
     event ForwarderUpdated(address indexed previousForwarder, address indexed newForwarder);
     event ExpectedAuthorUpdated(address indexed previousAuthor, address indexed newAuthor);
+    event AllowedCallUpdated(address indexed target, bytes4 indexed selector, bool allowed);
 
     CREReceiver internal receiver;
     MockTarget internal target;
 
     address internal forwarder = makeAddr("creForwarder");
+    address internal expectedAuthor = makeAddr("expectedAuthor");
     address internal owner;
+    bytes4 internal constant DO_SOMETHING = MockTarget.doSomething.selector;
 
     function setUp() public {
         owner = address(this);
-        receiver = new CREReceiver(forwarder);
         target = new MockTarget();
+        receiver = new CREReceiver(forwarder, expectedAuthor, address(target), DO_SOMETHING);
     }
 
     // ─── Construction ──────────────────────────────────────────────────
 
-    function test_constructor_setsForwarderAndOwner() public {
+    function test_constructor_setsState() public {
         assertEq(receiver.getForwarder(), forwarder);
         assertEq(receiver.owner(), owner);
-        assertEq(receiver.getExpectedAuthor(), address(0));
+        assertEq(receiver.getExpectedAuthor(), expectedAuthor);
+        assertTrue(receiver.isCallAllowed(address(target), DO_SOMETHING));
     }
 
     function test_constructor_revertsOnZeroForwarder() public {
         vm.expectRevert(CREReceiver.InvalidForwarderAddress.selector);
-        new CREReceiver(address(0));
+        new CREReceiver(address(0), expectedAuthor, address(target), DO_SOMETHING);
+    }
+
+    function test_constructor_revertsOnZeroExpectedAuthor() public {
+        vm.expectRevert(CREReceiver.InvalidExpectedAuthor.selector);
+        new CREReceiver(forwarder, address(0), address(target), DO_SOMETHING);
+    }
+
+    function test_constructor_skipsSeedWhenAllowedTargetZero() public {
+        CREReceiver r = new CREReceiver(forwarder, expectedAuthor, address(0), bytes4(0));
+        assertFalse(r.isCallAllowed(address(target), DO_SOMETHING));
+    }
+
+    function test_constructor_emitsAllowedCallEvent() public {
+        vm.expectEmit(true, true, false, true);
+        emit AllowedCallUpdated(address(target), DO_SOMETHING, true);
+        new CREReceiver(forwarder, expectedAuthor, address(target), DO_SOMETHING);
     }
 
     // ─── onReport: access control ──────────────────────────────────────
 
     function test_onReport_revertsIfNotForwarder() public {
         bytes memory report = abi.encode(address(target), abi.encodeCall(MockTarget.doSomething, (42)));
-        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
+        bytes memory metadata = _metadata(expectedAuthor);
 
         vm.prank(makeAddr("attacker"));
         vm.expectRevert(
@@ -111,10 +129,9 @@ contract CREReceiverTest is Test {
     function test_onReport_executesTargetCall() public {
         bytes memory data = abi.encodeCall(MockTarget.doSomething, (123));
         bytes memory report = abi.encode(address(target), data);
-        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
 
         vm.prank(forwarder);
-        receiver.onReport(metadata, report);
+        receiver.onReport(_metadata(expectedAuthor), report);
 
         assertEq(target.lastValue(), 123);
     }
@@ -122,91 +139,102 @@ contract CREReceiverTest is Test {
     function test_onReport_emitsCallExecuted() public {
         bytes memory data = abi.encodeCall(MockTarget.doSomething, (456));
         bytes memory report = abi.encode(address(target), data);
-        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
 
         vm.prank(forwarder);
-        vm.expectEmit(true, false, false, false);
-        emit CallExecuted(address(target), "");
-        receiver.onReport(metadata, report);
+        vm.expectEmit(true, true, false, false);
+        emit CallExecuted(address(target), DO_SOMETHING, "");
+        receiver.onReport(_metadata(expectedAuthor), report);
+    }
+
+    // ─── onReport: author validation ───────────────────────────────────
+
+    function test_onReport_revertsOnWrongAuthor() public {
+        address wrong = makeAddr("wrongAuthor");
+        bytes memory report = abi.encode(address(target), abi.encodeCall(MockTarget.doSomething, (1)));
+
+        vm.prank(forwarder);
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, wrong, expectedAuthor));
+        receiver.onReport(_metadata(wrong), report);
+    }
+
+    // ─── onReport: allow-list enforcement ──────────────────────────────
+
+    function test_onReport_revertsOnDisallowedTarget() public {
+        MockTarget other = new MockTarget();
+        bytes memory data = abi.encodeCall(MockTarget.doSomething, (1));
+        bytes memory report = abi.encode(address(other), data);
+
+        vm.prank(forwarder);
+        vm.expectRevert(
+            abi.encodeWithSelector(CREReceiver.CallNotAllowed.selector, address(other), DO_SOMETHING)
+        );
+        receiver.onReport(_metadata(expectedAuthor), report);
+    }
+
+    function test_onReport_revertsOnDisallowedSelector() public {
+        bytes memory data = abi.encodeCall(MockTarget.somethingElse, ());
+        bytes memory report = abi.encode(address(target), data);
+
+        vm.prank(forwarder);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CREReceiver.CallNotAllowed.selector, address(target), MockTarget.somethingElse.selector
+            )
+        );
+        receiver.onReport(_metadata(expectedAuthor), report);
+    }
+
+    function test_onReport_succeedsAfterNewEntryAllowed() public {
+        receiver.setAllowedCall(address(target), MockTarget.somethingElse.selector, true);
+
+        bytes memory data = abi.encodeCall(MockTarget.somethingElse, ());
+        bytes memory report = abi.encode(address(target), data);
+
+        vm.prank(forwarder);
+        receiver.onReport(_metadata(expectedAuthor), report);
     }
 
     // ─── onReport: error cases ─────────────────────────────────────────
 
     function test_onReport_revertsOnZeroTarget() public {
         bytes memory report = abi.encode(address(0), abi.encodeCall(MockTarget.doSomething, (1)));
-        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
 
         vm.prank(forwarder);
         vm.expectRevert(CREReceiver.InvalidTargetAddress.selector);
-        receiver.onReport(metadata, report);
+        receiver.onReport(_metadata(expectedAuthor), report);
+    }
+
+    function test_onReport_revertsOnShortCallData() public {
+        bytes memory report = abi.encode(address(target), hex"ab");
+
+        vm.prank(forwarder);
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.ReportTooShort.selector, uint256(1)));
+        receiver.onReport(_metadata(expectedAuthor), report);
     }
 
     function test_onReport_revertsWhenTargetReverts() public {
         target.setShouldRevert(true);
-
         bytes memory data = abi.encodeCall(MockTarget.doSomething, (1));
         bytes memory report = abi.encode(address(target), data);
-        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
 
         vm.prank(forwarder);
         vm.expectRevert(
             abi.encodeWithSelector(
-                CREReceiver.CallExecutionFailed.selector, address(target), abi.encodeWithSelector(MockTarget.Boom.selector)
+                CREReceiver.CallExecutionFailed.selector,
+                address(target),
+                abi.encodeWithSelector(MockTarget.Boom.selector)
             )
         );
-        receiver.onReport(metadata, report);
+        receiver.onReport(_metadata(expectedAuthor), report);
     }
 
-    // ─── Expected author validation ────────────────────────────────────
-
-    function test_onReport_allowsAnyAuthorWhenNotSet() public {
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (1));
-        bytes memory report = abi.encode(address(target), data);
-        address randomAuthor = makeAddr("randomAuthor");
-        bytes memory metadata = _buildMetadata(bytes32("wfId"), bytes10("wfName"), randomAuthor);
-
-        vm.prank(forwarder);
-        receiver.onReport(metadata, report); // should not revert
-        assertEq(target.lastValue(), 1);
-    }
-
-    function test_onReport_revertsOnWrongAuthor() public {
-        address expectedAuthor = makeAddr("expectedAuthor");
-        receiver.setExpectedAuthor(expectedAuthor);
-
-        address wrongAuthor = makeAddr("wrongAuthor");
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (1));
-        bytes memory report = abi.encode(address(target), data);
-        bytes memory metadata = _buildMetadata(bytes32("wfId"), bytes10("wfName"), wrongAuthor);
-
-        vm.prank(forwarder);
-        vm.expectRevert(
-            abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, wrongAuthor, expectedAuthor)
-        );
-        receiver.onReport(metadata, report);
-    }
-
-    function test_onReport_allowsCorrectAuthor() public {
-        address expectedAuthor = makeAddr("expectedAuthor");
-        receiver.setExpectedAuthor(expectedAuthor);
-
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (99));
-        bytes memory report = abi.encode(address(target), data);
-        bytes memory metadata = _buildMetadata(bytes32("wfId"), bytes10("wfName"), expectedAuthor);
-
-        vm.prank(forwarder);
-        receiver.onReport(metadata, report);
-        assertEq(target.lastValue(), 99);
-    }
-
-    // ─── Short metadata ─────────────────────────────────────────────────
+    // ─── Metadata parsing ──────────────────────────────────────────────
 
     function test_extractWorkflowOwner_revertsOnShortMetadata() public {
-        CREReceiverHarness harness = new CREReceiverHarness(forwarder);
-        // Metadata too short — only 10 bytes instead of required 62
+        CREReceiverHarness harness =
+            new CREReceiverHarness(forwarder, expectedAuthor, address(target), DO_SOMETHING);
         bytes memory shortMetadata = new bytes(10);
 
-        // Should revert with out-of-bounds, not silently return garbage
         vm.expectRevert();
         harness.extractWorkflowOwner(shortMetadata);
     }
@@ -240,9 +268,14 @@ contract CREReceiverTest is Test {
     // ─── Admin: setExpectedAuthor ──────────────────────────────────────
 
     function test_setExpectedAuthor_updatesAuthor() public {
-        address author = makeAddr("author");
+        address author = makeAddr("newAuthor");
         receiver.setExpectedAuthor(author);
         assertEq(receiver.getExpectedAuthor(), author);
+    }
+
+    function test_setExpectedAuthor_revertsOnZero() public {
+        vm.expectRevert(CREReceiver.InvalidExpectedAuthor.selector);
+        receiver.setExpectedAuthor(address(0));
     }
 
     function test_setExpectedAuthor_revertsIfNotOwner() public {
@@ -251,10 +284,33 @@ contract CREReceiverTest is Test {
         receiver.setExpectedAuthor(makeAddr("author"));
     }
 
-    function test_setExpectedAuthor_canDisableCheck() public {
-        receiver.setExpectedAuthor(makeAddr("author"));
-        receiver.setExpectedAuthor(address(0));
-        assertEq(receiver.getExpectedAuthor(), address(0));
+    // ─── Admin: setAllowedCall ─────────────────────────────────────────
+
+    function test_setAllowedCall_togglesAllowlist() public {
+        bytes4 sel = MockTarget.somethingElse.selector;
+        assertFalse(receiver.isCallAllowed(address(target), sel));
+        receiver.setAllowedCall(address(target), sel, true);
+        assertTrue(receiver.isCallAllowed(address(target), sel));
+        receiver.setAllowedCall(address(target), sel, false);
+        assertFalse(receiver.isCallAllowed(address(target), sel));
+    }
+
+    function test_setAllowedCall_emitsEvent() public {
+        bytes4 sel = MockTarget.somethingElse.selector;
+        vm.expectEmit(true, true, false, true);
+        emit AllowedCallUpdated(address(target), sel, true);
+        receiver.setAllowedCall(address(target), sel, true);
+    }
+
+    function test_setAllowedCall_revertsOnZeroTarget() public {
+        vm.expectRevert(CREReceiver.InvalidTargetAddress.selector);
+        receiver.setAllowedCall(address(0), DO_SOMETHING, true);
+    }
+
+    function test_setAllowedCall_revertsIfNotOwner() public {
+        vm.prank(makeAddr("nonOwner"));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("nonOwner")));
+        receiver.setAllowedCall(address(target), DO_SOMETHING, true);
     }
 
     // ─── ERC165 ────────────────────────────────────────────────────────
@@ -267,7 +323,7 @@ contract CREReceiverTest is Test {
         assertFalse(receiver.supportsInterface(bytes4(0xdeadbeef)));
     }
 
-    // ─── Receive ETH ───────────────────────────────────────────────────
+    // ─── ETH handling ──────────────────────────────────────────────────
 
     function test_canReceiveEth() public {
         vm.deal(address(this), 1 ether);
@@ -276,14 +332,10 @@ contract CREReceiverTest is Test {
         assertEq(address(receiver).balance, 1 ether);
     }
 
-    // ─── withdrawETH ────────────────────────────────────────────────────
-
     function test_withdrawETH_succeeds() public {
         vm.deal(address(receiver), 2 ether);
         address payable recipient = payable(makeAddr("recipient"));
-
         receiver.withdrawETH(recipient, 1 ether);
-
         assertEq(recipient.balance, 1 ether);
         assertEq(address(receiver).balance, 1 ether);
     }
@@ -300,18 +352,18 @@ contract CREReceiverTest is Test {
         receiver.withdrawETH(payable(makeAddr("recipient")), 1 ether);
     }
 
-    // ─── Edge cases ─────────────────────────────────────────────────────
+    // ─── Reentrancy ────────────────────────────────────────────────────
 
-    function test_onReport_reentrancyBlockedByForwarderCheck() public {
-        // Deploy a malicious target that re-enters CREReceiver.onReport
-        ReentrantTarget reentrant = new ReentrantTarget(address(receiver), forwarder);
+    /// @dev Reentry from a whitelisted target is blocked by the allow-list (target=self, selector=attack
+    ///      not in allow-list) and by the forwarder check (msg.sender = ReentrantTarget, not forwarder).
+    function test_onReport_reentrancyBlocked() public {
+        ReentrantTarget reentrant = new ReentrantTarget(address(receiver), expectedAuthor);
+        bytes4 attackSel = ReentrantTarget.attack.selector;
 
-        bytes memory data = abi.encodeCall(ReentrantTarget.attack, ());
-        bytes memory report = abi.encode(address(reentrant), data);
-        bytes memory metadata = _buildMetadata(bytes32(0), bytes10(0), address(0));
+        receiver.setAllowedCall(address(reentrant), attackSel, true);
 
-        // The reentrant call will fail because msg.sender inside the re-entry
-        // is the ReentrantTarget, not the forwarder
+        bytes memory report = abi.encode(address(reentrant), abi.encodeCall(ReentrantTarget.attack, ()));
+
         vm.prank(forwarder);
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -320,17 +372,12 @@ contract CREReceiverTest is Test {
                 abi.encodeWithSelector(CREReceiver.UnauthorizedForwarder.selector, address(reentrant), forwarder)
             )
         );
-        receiver.onReport(metadata, report);
+        receiver.onReport(_metadata(expectedAuthor), report);
     }
 
     // ─── Helpers ───────────────────────────────────────────────────────
 
-    /// @dev Builds metadata in CRE format: abi.encodePacked(bytes32 workflowId, bytes10 workflowName, address workflowOwner)
-    function _buildMetadata(bytes32 workflowId, bytes10 workflowName, address workflowOwner)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodePacked(workflowId, workflowName, workflowOwner);
+    function _metadata(address workflowOwner) internal pure returns (bytes memory) {
+        return abi.encodePacked(bytes32("wfId"), bytes10("wfName"), workflowOwner);
     }
 }

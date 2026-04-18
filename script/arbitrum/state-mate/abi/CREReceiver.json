@@ -51,5 +51,20 @@
       }
     ],
     "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "isCallAllowed",
+    "inputs": [
+      { "name": "target", "type": "address" },
+      { "name": "selector", "type": "bytes4" }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
   }
 ]

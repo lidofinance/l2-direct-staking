@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Script} from "forge-std/Script.sol";
 
 import {L1UpgradeActions} from "script/shared/L1UpgradeActions.s.sol";
+import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
 
 /**
  * @notice Shared broadcast script for L1 upgrade operations.
@@ -35,6 +36,8 @@ abstract contract L1UpgradeScriptBase is Script, L1UpgradeActions {
     }
 
     function run() external {
+        assertL1ChainId(L1.ETH_CHAIN_ID);
+
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address lidoDaoAgent = _envLidoDaoAgent();

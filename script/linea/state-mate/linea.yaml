@@ -8,11 +8,9 @@ parameters:
   - &l2GovernanceExecutor "0x2897A1b134050c01503843db48e034d4C9e2b18c"
   - &l2LiquidityOwner "0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6"
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-  - &l2OraclePool "0x4c2f7092c2ae51d986befee378e50bd4db99c901"
-  - &l2SyncTrigger "0x7a9ec1d04904907de0ed7b6839ccdd59c3716ac9"
-  - &l2OldSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
-  - &l2OldGelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe"
-  - &l2CreReceiver null # set after CREReceiver deployment (Stage 1)
+  - &l2OraclePool "0x5c74c94173F05dA1720953407cbb920F3DF9f887"
+  - &l2SyncTrigger "0x720472c8ce72c2A2D711333e064ABD3E6BbEAdd3"
+  - &l2CreReceiver "0xCace1b78160AE76398F486c8a18044da0d66d86D"
   - &l2Weth "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
   - &l2Wsteth "0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F"
   - &l2LinkToken "0xa18152629128738a5c081eb226335FEd4B9C95e9"
@@ -35,6 +33,7 @@ deployed:
     - *l2ProxyAdmin
     - *l2OraclePool
     - *l2SyncTrigger
+    - *l2CreReceiver
 
 l1:
   rpcUrl: L1_RPC_URL
@@ -66,10 +65,6 @@ l2:
             result: false
           - args: [*SYNC_ROLE, *l2SyncTrigger]
             result: true
-          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
-            result: false
-          - args: [*SYNC_ROLE, *l2OldGelatoSyncAutomation]
-            result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
         supportsInterface:
@@ -117,14 +112,16 @@ l2:
         shouldSync:
           result: [false, 0]
 
-    # CREReceiver — set l2CreReceiver address after Stage 1 deployment to enable these checks
     creReceiver:
       name: CREReceiver
       address: *l2CreReceiver
       checks:
         owner: *l2LiquidityOwner
         getForwarder: null # CRE Forwarder (KeystoneForwarder) address
-        getExpectedAuthor: "0x0000000000000000000000000000000000000000" # disabled by default
+        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        isCallAllowed:
+          - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
+            result: true
         supportsInterface:
           - args: ["0x21a4cdb3"] # IReceiver
             result: true

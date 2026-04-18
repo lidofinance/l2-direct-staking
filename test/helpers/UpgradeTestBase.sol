@@ -12,7 +12,6 @@ import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
-import {SyncTrigger} from "src/SyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
 import {L1UpgradeActions} from "script/shared/L1UpgradeActions.s.sol";
@@ -229,7 +228,8 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
 
         vm.startPrank(lidoDeployer);
         address creReceiverAddr;
-        (newSyncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, lidoDeployer, makeAddr("creForwarder"));
+        (newSyncTrigger, creReceiverAddr) =
+            deploySyncInfrastructure(cfg, lidoDeployer, makeAddr("creForwarder"), lidoDeployer);
         newCREReceiver = CREReceiver(payable(creReceiverAddr));
         vm.stopPrank();
 

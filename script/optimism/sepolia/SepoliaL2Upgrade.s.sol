@@ -104,8 +104,9 @@ contract SepoliaL2UpgradeScript is Script, L2UpgradeActions {
 
         vm.startBroadcast(lidoDeployerPrivateKey);
         PausableImmutableOraclePool pool = deployPool(cfg);
+        address lidoDeployer = vm.addr(lidoDeployerPrivateKey);
         (syncTrigger, creReceiverAddr) =
-            deploySyncInfrastructure(cfg, vm.addr(lidoDeployerPrivateKey), creForwarder);
+            deploySyncInfrastructure(cfg, lidoDeployer, creForwarder, lidoDeployer);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwnerPrivateKey);

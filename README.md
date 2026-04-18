@@ -31,7 +31,7 @@ Lido Deployer  SyncTrigger.setFeeOtoD(encodedFee)
 Lido Deployer  SyncTrigger.setFeeDtoO(encodedFee)
 Lido Deployer  SyncTrigger.setAmounts(minSyncAmount, maxSyncAmount)
 Lido Deployer  SyncTrigger.setDelay(minSyncDelay)
-Lido Deployer  deploy CREReceiver(creForwarder)
+Lido Deployer  deploy CREReceiver(creForwarder, expectedAuthor=deployer, syncTrigger, triggerSync.selector)
 Lido Deployer  SyncTrigger.setForwarder(creReceiver)
 Lido Deployer  SyncTrigger.transferOwnership(governanceExecutor)
 Lido Deployer  CREReceiver.transferOwnership(liquidityOwner)
@@ -515,7 +515,7 @@ CREReceiver is deployed per L2 network as part of Stage 1 (`runDeploy`), which a
 3. Repeat for each network (Optimism, Arbitrum, Base, Linea).
 4. Monitor at `cre.chain.link/workflows`.
 
-See `CRE-in-place-of-CLA.md` for the full migration plan and `LEVERS.md` for CREReceiver admin functions.
+See [`docs/CRE-in-place-of-CLA.md`](docs/CRE-in-place-of-CLA.md) for the full migration plan and [`docs/LEVERS.md`](docs/LEVERS.md) for CREReceiver admin functions.
 
 # Run migration
 
@@ -821,10 +821,13 @@ Operational notes:
 - If `LOCAL_L2_OPTIMISM_RPC_URL` is set but no local fork is listening there, the nested Anvil fork will fail to start; either run `just rpc-start-l2-optimism` first or override `L2_STATE_MATE_UPSTREAM_RPC_URL`.
 - `test-optimism-upgrade-state-update-config` rewrites the tracked file `script/optimism/state-mate/optimism.yaml`, so expect a worktree diff after running it.
 
-# References
+# Documentation
 
-- https://docs.chain.link/quickstarts/ccip-direct-staking
-- https://docs.chain.link/cre — Chainlink Runtime Environment (CRE) documentation
-- https://docs.chain.link/cre/guides/operations/deploying-workflows — CRE workflow deployment
-- https://docs.chain.link/cre/guides/operations/monitoring-workflows — CRE monitoring dashboard
-- https://blog.lido.fi/direct-staking-on-linea-powered-by-chainlink/
+Additional docs live under [`docs/`](docs/). See the [documentation index](docs/README.md) for a guided tour organised by audience (operators, governance, security, architecture, testing).
+
+Quick entry points:
+
+- [`docs/ops_plan.md`](docs/ops_plan.md) — end-to-end migration operations plan
+- [`docs/LEVERS.md`](docs/LEVERS.md) — who can call what, post-migration
+- [`docs/SECURITY.md`](docs/SECURITY.md) — security risk analysis and invariants
+- [`docs/cre-guide.html`](docs/cre-guide.html) — interactive CRE architecture explainer

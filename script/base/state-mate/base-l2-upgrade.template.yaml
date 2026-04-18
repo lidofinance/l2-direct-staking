@@ -118,7 +118,10 @@ l2:
       checks:
         owner: *l2LiquidityOwner
         getForwarder: null # CRE Forwarder (KeystoneForwarder) address
-        getExpectedAuthor: "0x0000000000000000000000000000000000000000" # disabled by default
+        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        isCallAllowed:
+          - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
+            result: true
         supportsInterface:
           - args: ["0x21a4cdb3"] # IReceiver
             result: true

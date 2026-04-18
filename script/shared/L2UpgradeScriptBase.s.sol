@@ -47,6 +47,9 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     /// @dev Returns the network-specific default liquidity owner (LOL multisig).
     function _defaultLiquidityOwner() internal pure virtual returns (address);
 
+    /// @dev Returns the expected L2 chain ID. Scripts revert if `block.chainid` doesn't match.
+    function _expectedChainId() internal pure virtual returns (uint256);
+
     // ── env helpers ──────────────────────────────────────────────────
 
     function _envInitialOwnerPrivateKey() internal view returns (uint256) {
@@ -76,13 +79,17 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         returns (address oraclePool, address syncTrigger, address creReceiverAddr)
     {
         oraclePool = address(deployPool(cfg));
-        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, creForwarder);
+        // The CRE workflow is deployed by the Lido Deployer (same key), so the workflow owner
+        // recorded in `metadata.workflowOwner` equals `deployer`. We pin _expectedAuthor to that.
+        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, creForwarder, deployer);
     }
 
     // ── Stage 1: Lido Deployer ───────────────────────────────────────
 
     /// @notice Deploy new OraclePool, SyncTrigger, and CREReceiver; configure SyncTrigger and transfer ownership. Actor: Lido Deployer.
     function runDeploy() public returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
+        assertL2ChainId(_expectedChainId());
+
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = _envInitialOwnerAddress();
@@ -101,6 +108,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @notice Migrate admin roles on existing contracts to final owners. Actor: Initial Owner.
     function runMigrate() public {
+        assertL2ChainId(_expectedChainId());
+
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
@@ -117,6 +126,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @notice Same as runMigrate but impersonates Initial Owner (anvil only).
     function runMigrateUnlocked() public {
+        assertL2ChainId(_expectedChainId());
+
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = _envLiquidityOwnerAddress();
@@ -132,8 +143,30 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     // ── Convenience: Stage 1 + Stage 2 ──────────────────────────────
 
+    error L2UpgradeSingleRunUnsafe(uint256 chainId);
+
+    /// @dev L2 mainnet chain-IDs: Optimism (10), Arbitrum (42161), Base (8453), Linea (59144).
+    ///      Stages 1 and 2 are run by different actors in production; chaining them in one broadcast
+    ///      requires both keys co-located, which defeats the separation. Override with
+    ///      `ALLOW_UNSAFE_COMBINED_RUN=1` (acceptable only for fork / testnet).
+    function _isProductionL2ChainId(uint256 id) private pure returns (bool) {
+        return id == 10 || id == 42161 || id == 8453 || id == 59144;
+    }
+
+    function _guardCombinedRun() internal view {
+        assertL2ChainId(_expectedChainId());
+        if (!_isProductionL2ChainId(block.chainid)) return;
+        if (vm.envOr("ALLOW_UNSAFE_COMBINED_RUN", uint256(0)) == 1) return;
+        revert L2UpgradeSingleRunUnsafe(block.chainid);
+    }
+
     /// @notice Deploy + migrate in one call (requires both deployer and initial owner keys).
+    /// @dev Blocked on mainnet unless `ALLOW_UNSAFE_COMBINED_RUN=1` is explicitly set. Stages 1 and 2
+    ///      are run by different actors (Lido Deployer vs Initial Owner) in production; chaining them
+    ///      in one broadcast requires both keys to be co-located, which defeats the separation.
     function run() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
+        _guardCombinedRun();
+
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(lidoDeployerPrivateKey);
@@ -155,6 +188,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @notice Deploy + migrate with impersonated initial owner (anvil only).
     function runWithUnlockedInitialOwner() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
+        _guardCombinedRun();
+
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = _envInitialOwnerAddress();
