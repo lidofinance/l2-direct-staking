@@ -515,7 +515,7 @@ CREReceiver is deployed per L2 network as part of Stage 1 (`runDeploy`), which a
 3. Repeat for each network (Optimism, Arbitrum, Base, Linea).
 4. Monitor at `cre.chain.link/workflows`.
 
-See [`docs/CRE-in-place-of-CLA.md`](docs/CRE-in-place-of-CLA.md) for the full migration plan and [`docs/LEVERS.md`](docs/LEVERS.md) for CREReceiver admin functions.
+See [`docs/LEVERS.md`](docs/LEVERS.md) for CREReceiver admin functions.
 
 # Run migration
 
@@ -711,8 +711,6 @@ Linea is the most architecturally distinct network:
 
 # Sepolia testnet deployment
 
-For the 4-step Ethereum Sepolia + OP Sepolia flow, see [docs/TESTNET.md](docs/TESTNET.md).
-
 The corresponding helper recipes are:
 
 - `just sepolia-deploy-csr`
@@ -823,11 +821,9 @@ Operational notes:
 
 # Documentation
 
-Additional docs live under [`docs/`](docs/). See the [documentation index](docs/README.md) for a guided tour organised by audience (operators, governance, security, architecture, testing).
+Additional docs live under [`docs/`](docs/) — see the [documentation index](docs/README.md). Quick entry points:
 
-Quick entry points:
-
-- [`docs/ops_plan.md`](docs/ops_plan.md) — end-to-end migration operations plan
 - [`docs/LEVERS.md`](docs/LEVERS.md) — who can call what, post-migration
-- [`docs/SECURITY.md`](docs/SECURITY.md) — security risk analysis and invariants
-- [`docs/cre-guide.html`](docs/cre-guide.html) — interactive CRE architecture explainer
+- [`docs/FLOW.md`](docs/FLOW.md) — fast-stake and sync flow diagrams
+- [`docs/optimism-pool-upgrade.md`](docs/optimism-pool-upgrade.md) — Optimism-specific upgrade notes
+- [`docs/TESTING.md`](docs/TESTING.md) — fork-test setup
