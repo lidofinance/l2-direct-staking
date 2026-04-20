@@ -10,6 +10,7 @@ parameters:
   - &l2LidoDeployer "__L2_LIDO_DEPLOYER__"
   - &l2OraclePool "__L2_ORACLE_POOL__"
   - &l2SyncTrigger "__L2_SYNC_TRIGGER__"
+  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A" # legacy SYNC_ROLE holder (revocation asserted below)
   - &l2CreReceiver "__L2_CRE_RECEIVER__"
   - &l2Weth "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
   - &l2Wsteth "0x5979D7b546E38E414F7E9822514be443A4800529"
@@ -65,6 +66,8 @@ l2:
             result: false
           - args: [*SYNC_ROLE, *l2SyncTrigger]
             result: true
+          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
+            result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
         supportsInterface:

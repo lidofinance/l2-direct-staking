@@ -10,6 +10,7 @@ parameters:
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
   - &l2OraclePool "0xA7096a0Df402BCa13eaC7AF065B13cf5C4FF45c7"
   - &l2SyncTrigger "0xA79FddB1f0778259E2cC65C5582180B266B18173"
+  - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
   - &l2CreReceiver "0x78Ed59FA4ee5cFB17ab8a9e3E8f6238555B1D6bC"
   - &l2Weth "0x4200000000000000000000000000000000000006"
   - &l2Wsteth "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb"
@@ -65,6 +66,8 @@ l2:
             result: false
           - args: [*SYNC_ROLE, *l2SyncTrigger]
             result: true
+          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
+            result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
         supportsInterface:
