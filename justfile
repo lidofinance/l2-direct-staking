@@ -61,8 +61,50 @@ preflight-check network rpc_url:
     echo "INFO old pool = $POOL"
     echo "OK preflight passed for {{network}}. Proceed with migration scripts."
 
+# Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run.
+# Run after `runDeploy` and before `runMigrate`. Callable by anyone (no private key needed).
+#
+# Usage: just verify-stage1 <network> <rpc_url> <oracle_pool> <sync_trigger> <cre_receiver>
+#
+# Required env: L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER
+#   and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY.
+verify-stage1 network rpc_url oracle_pool sync_trigger cre_receiver:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    case "{{network}}" in
+      optimism) SCRIPT="script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript" ;;
+      arbitrum) SCRIPT="script/arbitrum/ArbitrumL2Upgrade.s.sol:ArbitrumL2UpgradeScript" ;;
+      base)     SCRIPT="script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript" ;;
+      linea)    SCRIPT="script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript" ;;
+      *) echo "Unknown network: {{network}}" >&2; exit 2 ;;
+    esac
+
+    L2_ORACLE_POOL="{{oracle_pool}}" \
+    L2_SYNC_TRIGGER="{{sync_trigger}}" \
+    L2_CRE_RECEIVER="{{cre_receiver}}" \
+    forge script "$SCRIPT" --sig 'runVerifyStage1()' --rpc-url "{{rpc_url}}"
+
+# Read-only verification that a CRE workflow is registered on the Chainlink WorkflowRegistry
+# (Ethereum mainnet) and owned by the expected author. Run after `cre workflow deploy` for each network.
+# Callable by anyone (no private key needed).
+#
+# Usage: just verify-cre-workflow <workflow_id>   # 0x + 64 hex chars, non-zero
+#
+# Required env: L1_RPC_URL
+#   and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY (= CREReceiver.expectedAuthor).
+verify-cre-workflow workflow_id:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "{{workflow_id}}" =~ ^0x[0-9a-fA-F]{64}$ ]] \
+      || { echo "Bad workflowId: {{workflow_id}} (expected 0x + 64 hex chars)" >&2; exit 1; }
+    [[ "{{workflow_id}}" != "0x$(printf '0%.0s' {1..64})" ]] \
+      || { echo "Refusing zero workflowId" >&2; exit 1; }
+    forge script script/shared/VerifyCREWorkflow.s.sol:VerifyCREWorkflow \
+      --sig 'run(bytes32)' "{{workflow_id}}" --rpc-url "$L1_RPC_URL"
+
 # Rewrite the CRE workflow config for <network> with the deployed SyncTrigger + CREReceiver
-# addresses. Run after Stage 1 (`runDeploy`) before Stage 3 (`cre workflow deploy`).
+# addresses. Run after Stage 1 (`runDeploy`) before `cre workflow deploy`.
 #
 # Usage: just update-cre-config <network> <sync_trigger> <cre_receiver>
 update-cre-config network sync_trigger cre_receiver:

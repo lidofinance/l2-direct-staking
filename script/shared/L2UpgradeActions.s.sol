@@ -7,6 +7,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePool.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
+import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {SyncTrigger} from "src/SyncTrigger.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
@@ -178,6 +179,62 @@ contract L2UpgradeActions {
             "creReceiver allow-list seed"
         );
         _requireL2PostCondition(Ownable(creReceiverAddr).owner() == cfg.liquidityOwner, "creReceiver owner");
+    }
+
+    /**
+     * @notice Read-only verification that Stage 1 deploy is complete and correct, and Stage 2 has NOT yet run.
+     * @dev Reverts with a descriptive key on any mismatch. Callable by anyone after `runDeploy` and before `runMigrate`.
+     *      Broader than `_assertSyncInfrastructure` (which is enforced inside the deploy broadcast):
+     *      also checks OraclePool immutables, SyncTrigger configuration, and Stage-2-hasn't-run guards.
+     */
+    function verifyStage1(
+        L2UpgradeConfig memory cfg,
+        address oraclePool,
+        address syncTrigger,
+        address creReceiverAddr,
+        address creForwarder,
+        address expectedAuthor
+    ) public view {
+        _requireNonZeroL2(oraclePool);
+        _requireNonZeroL2(syncTrigger);
+        _requireNonZeroL2(creReceiverAddr);
+
+        // Fail-fast guardrails: surface "Stage 2 already ran" before the 16 deploy-correctness reads below,
+        // since verifying a post-Stage-2 state against a pre-Stage-2 expectation is meaningless.
+        _requireL2PostCondition(
+            ICustomSender(cfg.customSender).getOraclePool() != oraclePool,
+            "stage 2 already ran: CustomSender.getOraclePool() already points at the new pool"
+        );
+        _requireL2PostCondition(
+            !IAccessControl(cfg.customSender).hasRole(SYNC_ROLE, syncTrigger),
+            "stage 2 already ran: SYNC_ROLE already granted to the new SyncTrigger"
+        );
+
+        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
+
+        IOraclePool pool = IOraclePool(oraclePool);
+        _requireL2PostCondition(pool.SENDER() == cfg.customSender, "oraclePool SENDER");
+        _requireL2PostCondition(pool.TOKEN_IN() == cfg.tokenIn, "oraclePool TOKEN_IN");
+        _requireL2PostCondition(pool.TOKEN_OUT() == cfg.tokenOut, "oraclePool TOKEN_OUT");
+        _requireL2PostCondition(pool.getOracle() == cfg.priceOracle, "oraclePool oracle");
+        _requireL2PostCondition(pool.getFee() == cfg.fee, "oraclePool fee");
+        _requireL2PostCondition(Ownable(oraclePool).owner() == cfg.liquidityOwner, "oraclePool owner");
+        _requireL2PostCondition(!PausableImmutableOraclePool(oraclePool).paused(), "oraclePool paused");
+
+        ISyncTrigger st = ISyncTrigger(syncTrigger);
+        _requireL2PostCondition(st.SENDER() == cfg.customSender, "syncTrigger SENDER");
+        _requireL2PostCondition(st.DEST_CHAIN_SELECTOR() == cfg.destChainSelector, "syncTrigger DEST_CHAIN_SELECTOR");
+        _requireL2PostCondition(st.WNATIVE() == cfg.tokenIn, "syncTrigger WNATIVE");
+        _requireL2PostCondition(st.getDelay() == cfg.minSyncDelay, "syncTrigger delay");
+        (uint128 minAmount, uint128 maxAmount) = st.getAmounts();
+        _requireL2PostCondition(minAmount == cfg.minSyncAmount, "syncTrigger minAmount");
+        _requireL2PostCondition(maxAmount == cfg.maxSyncAmount, "syncTrigger maxAmount");
+        _requireL2PostCondition(keccak256(st.getFeeDtoO()) == keccak256(cfg.feeDtoO), "syncTrigger feeDtoO");
+        _requireL2PostCondition(
+            keccak256(st.getFeeOtoD())
+                == keccak256(FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit)),
+            "syncTrigger feeOtoD"
+        );
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {

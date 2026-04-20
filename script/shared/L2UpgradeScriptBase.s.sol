@@ -72,6 +72,16 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return vm.envOr("L2_LIQUIDITY_OWNER", _defaultLiquidityOwner());
     }
 
+    /// @dev Prefer an explicit `L2_LIDO_DEPLOYER_ADDRESS`, falling back to deriving from the private key.
+    ///      `runVerifyStage1` must be callable without the deployer's private key in the operator's environment.
+    function _envLidoDeployerAddress() internal view returns (address) {
+        try vm.envAddress("L2_LIDO_DEPLOYER_ADDRESS") returns (address value) {
+            return value;
+        } catch {
+            return vm.addr(vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY"));
+        }
+    }
+
     // ── Deploy helper ────────────────────────────────────────────────
 
     function _deployAll(L2UpgradeConfig memory cfg, address creForwarder, address deployer)
@@ -102,6 +112,27 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         vm.startBroadcast(lidoDeployerPrivateKey);
         (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, deployer);
         vm.stopBroadcast();
+    }
+
+    // ── Stage 1 verification (read-only, between Stage 1 and Stage 2) ─
+
+    /// @notice Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run. Actor: anyone.
+    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER,
+    ///      and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY (the address pinned as CREReceiver.expectedAuthor).
+    function runVerifyStage1() public view {
+        assertL2ChainId(_expectedChainId());
+
+        address initialOwner = _envInitialOwnerAddress();
+        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address liquidityOwner = _envLiquidityOwnerAddress();
+        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address expectedAuthor = _envLidoDeployerAddress();
+        address oraclePool = vm.envAddress("L2_ORACLE_POOL");
+        address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
+        address creReceiverAddr = vm.envAddress("L2_CRE_RECEIVER");
+
+        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
+        verifyStage1(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
     }
 
     // ── Stage 2: Initial Owner ───────────────────────────────────────

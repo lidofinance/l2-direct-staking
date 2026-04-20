@@ -6,20 +6,21 @@ Migrate Direct Staking ownership, admin roles, and liquidity management to Lido 
 
 **Contracts mutated** (per network):
 - **L1** (shared): `LidoCustomReceiver` — admin → Lido DAO Agent; `ProxyAdmin` — owner → Lido DAO Agent
-- **L2**: `CustomSenderReferral` — admin → L2 Governance Executor, oracle pool swapped; `ProxyAdmin` — owner → L2 Governance Executor; old `OraclePool` — swept and decommissioned
+- **L2**: `CustomSenderReferral` — admin → L2 Governance Executor, oracle pool swapped, legacy automation(s) revoked from `SYNC_ROLE`; `ProxyAdmin` — owner → L2 Governance Executor; old `OraclePool` — orphaned (LOL multisig retains `sweep()` to drain residual balance post-migration)
 
 **Contracts deployed** (per network): new `OraclePool`, `SyncTrigger`, `CREReceiver`
 
 # Migration stages and actors
 
-Stages are batched by actor to minimise handoffs. Each actor completes all their work before the next actor starts.
+Stages are batched by actor to minimise handoffs. Each actor completes all their work before the next actor starts. See [`docs/OPS-PLAN.md`](docs/OPS-PLAN.md) for the compact one-page runbook.
 
-| Stage                  | Actor             | Networks                                   | Script / action                          | What it does                                                                                                            |
-| ---------------------- | ----------------- | ------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| 1. Deploy              | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `runDeploy()`                            | Deploy new OraclePool, SyncTrigger, CREReceiver; configure SyncTrigger and transfer ownership to final owners           |
-| 2. Migrate             | **Initial Owner** | Optimism, Arbitrum, Base, Linea + Ethereum | `runMigrate()` + `L1UpgradeScript.run()` | L2: swap oracle pool, grant/revoke SYNC_ROLE, migrate admin to final owners. L1 (once): migrate admin to Lido DAO Agent |
-| 3. Deploy CRE workflow | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `cre workflow deploy`                    | Deploy TypeScript workflow on Chainlink CRE DON                                                                         |
-| 4. Validate            | **Any operator**  | all                                        | Manual / cast calls                      | Verify roles, ownership, CRE routing, cancel legacy CLA upkeeps                                                         |
+| Stage                     | Actor             | Networks                                   | Script / action                                           | What it does                                                                                                                 |
+| ------------------------- | ----------------- | ------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1. Deploy + CRE workflow  | **Lido Deployer** | Optimism, Arbitrum, Base, Linea            | `runDeploy()` → `update-cre-config` → `cre workflow deploy` | Deploy new OraclePool, SyncTrigger, CREReceiver; rewrite per-network CRE config; deploy TypeScript workflow on CRE DON     |
+| 2. Migrate admin          | **Initial Owner** | Optimism, Arbitrum, Base, Linea + Ethereum | `runMigrate()` + `L1UpgradeScript.run()`                  | L2: swap oracle pool, grant/revoke SYNC_ROLE, migrate admin to final owners. L1 (once): migrate admin to Lido DAO Agent      |
+| 3. Validate               | **Any operator**  | all                                        | `just test-<network>-upgrade-state-verify` + manual       | state-mate ≥ 45 on-chain checks per network + CRE-firing sanity; cancel legacy CLA upkeeps                                   |
+
+Ordering rationale: deploying the CRE workflow before Stage 2 minimises the "no automated sync" window — once Stage 2 revokes `SYNC_ROLE` from the legacy automation, the CRE path is already live and takes over immediately.
 
 ## On-chain actions (ordered sequence)
 
@@ -37,11 +38,25 @@ Lido Deployer  SyncTrigger.transferOwnership(governanceExecutor)
 Lido Deployer  CREReceiver.transferOwnership(liquidityOwner)
 ```
 
+**CRE workflow deploy (off-chain, between Stage 1 and Stage 2, same Lido Deployer key)**
+```
+Lido Deployer  just update-cre-config <network> <syncTrigger> <creReceiver>
+Lido Deployer  cre workflow deploy . --config config.deploy.<network>.json --target=production-settings
+```
+
+**Stage 1 verification (read-only, between Stage 1 and Stage 2)**
+```
+anyone  just verify-stage1 <network> <rpc> <pool> <trigger> <receiver>
+anyone  just verify-cre-workflow <workflowId>
+```
+`verify-stage1` reverts if any of 18 on-chain post-conditions fail (OraclePool immutables; SyncTrigger immutables + fees/amounts/delay/forwarder; CREReceiver forwarder/expectedAuthor/allow-list/owner; guardrails that Stage 2 has not yet run). `verify-cre-workflow` queries Chainlink `WorkflowRegistry` on Ethereum L1 and asserts the workflow is registered, owned by the Lido Deployer, and `status == ACTIVE`. Both are read-only; no private key required.
+
 **Stage 2 — Migrate L2 (per network)**
 ```
 Initial Owner  CustomSender.setOraclePool(newPool)
 Initial Owner  CustomSender.grantRole(SYNC_ROLE, syncTrigger)
 Initial Owner  CustomSender.revokeRole(SYNC_ROLE, oldChainlinkAutomation)
+Initial Owner  CustomSender.revokeRole(SYNC_ROLE, oldGelatoAutomation)      # Linea only
 Initial Owner  CustomSender.grantRole(DEFAULT_ADMIN_ROLE, governanceExecutor)
 Initial Owner  CustomSender.revokeRole(DEFAULT_ADMIN_ROLE, initialOwner)
 Initial Owner  ProxyAdmin.transferOwnership(governanceExecutor)
@@ -68,11 +83,7 @@ Initial Owner  L1ProxyAdmin.transferOwnership(lidoDaoAgent)
 
 **In-flight sync transactions.** The sync round-trip encodes the oracle pool address into the CCIP message at call time (`CustomSender.sync()` sets `recipient = oraclePool`). When L1Receiver processes the message and bridges wstETH back to L2, tokens are delivered to whichever pool was active when the sync was initiated — not the current pool. If `setOraclePool(newPool)` runs while a sync is in-flight, the bridge-back delivers tokens to the **old pool**. Funds are recoverable via the old pool's `sweep()`, but require manual intervention.
 
-**Mitigation:** before running Stage 2 for each network, confirm no syncs are in-flight. Check `SyncTrigger.getLastExecution()` and wait for any pending CCIP messages and bridge-backs to settle. The 12-hour `minSyncDelay` provides a natural quiet window.
-
-<!-- TODO: write a pre-migration script (e.g. `just preflight-check <network>`) that queries
-     SyncAutomation.getLastExecution(), CCIP explorer for pending messages from CustomSender,
-     and bridge adapter status to confirm no in-flight sync transactions before proceeding. -->
+**Mitigation:** before running Stage 2 for each network, confirm no syncs are in-flight. Run `just preflight-check <network> <L2_RPC_URL>` — it verifies chain-id, CustomSender reachability, and reports the legacy sync age; warns if the last sync was <12 h ago (the `minSyncDelay` is 12 h, so a fresh sync may still be round-tripping through CCIP + L1 bridge). Wait for any pending CCIP messages and bridge-backs to settle before proceeding.
 
 **Old SyncAutomation SYNC_ROLE.** The migration revokes `SYNC_ROLE` from the old SyncAutomation immediately after granting it to the new SyncTrigger. Without revocation, the old automation could call `sync()` with malicious fee parameters, causing L1 processing to revert and trapping tokens in the failed message queue until governance calls `recoverTokens`.
 
@@ -82,45 +93,86 @@ See [Run migration](#run-migration) below for full per-stage commands, env vars,
 
 Migrate networks with the least capital in the current pool first — this minimises risk during the initial rollout and validates the process on low-stakes deployments before touching larger pools.
 
-Current OraclePool balances (queried via `cast call` on 2026-04-14, wstETH/ETH rate: ~1.23):
+Current OraclePool balances (queried 2026-04-20, wstETH/stETH rate: ~1.2323):
 
-| # | Network    | OraclePool                                   | WETH   | wstETH  | Total (ETH-equiv) |
-|---|------------|----------------------------------------------|--------|---------|--------------------|
-| 1 | Linea      | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 24.24  | 0.00    | **~24.24**         |
-| 2 | Arbitrum   | `0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace` | 38.68  | 0.00    | **~38.68**         |
-| 3 | Optimism   | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 4.68   | 27.69   | **~38.74**         |
-| 4 | Base       | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 25.66  | 10.65   | **~38.76**         |
+| # | Network  | OraclePool                                   | WETH    | wstETH  | ETH-equiv |
+|---|----------|----------------------------------------------|---------|---------|-----------|
+| 1 | Linea    | `0x6F357d53d6bE3238180316BA5F8f11467e164588` |  0.000  | 19.760  | **~24.35** |
+| 2 | Arbitrum | `0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace` |  5.185  | 27.216  | **~38.72** |
+| 3 | Base     | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | 28.784  |  8.116  | **~38.79** |
+| 4 | Optimism | `0x6F357d53d6bE3238180316BA5F8f11467e164588` |  4.708  | 27.668  | **~38.80** |
 
-**Preferred order:** Linea → Arbitrum → Optimism → Base (Arbitrum/Optimism/Base are roughly equal at ~38.7 ETH; any order among them is acceptable).
+**Preferred order:** Linea → Arbitrum → Base → Optimism (Arbitrum/Base/Optimism are within ~0.1 ETH of each other; any order among them is acceptable). Re-check balances just before each migration via `cast call <oldPool> "balanceOf(address)(uint256)" <weth|wsteth>` — they drift with each legacy automation sync.
 
 # Migration runbook - TL;DR
 
-Per-network variables — set `L2_SCRIPT` / `L2_RPC_URL` for each network before running stages 1–3:
+See [`docs/OPS-PLAN.md`](docs/OPS-PLAN.md) for a single-page reference. The detailed version is below; run `just test-acceptance` first to dry-run the entire sequence against forks + state-mate (all 4 networks must be green before touching production).
+
+Per-network variables — set `L2_SCRIPT` / `L2_RPC_URL` / `L1_SCRIPT` for each network before running stages 1–2:
 
 ```sh
 # Optimism
-export L2_SCRIPT=script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript L2_RPC_URL=$L2_OPTIMISM_RPC_URL
+export L2_SCRIPT=script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript
+export L1_SCRIPT=script/optimism/OptimismL1Upgrade.s.sol:OptimismL1UpgradeScript
+export L2_RPC_URL=$L2_OPTIMISM_RPC_URL
 # Arbitrum
-export L2_SCRIPT=script/arbitrum/ArbitrumL2Upgrade.s.sol:ArbitrumL2UpgradeScript L2_RPC_URL=$L2_ARBITRUM_RPC_URL
+export L2_SCRIPT=script/arbitrum/ArbitrumL2Upgrade.s.sol:ArbitrumL2UpgradeScript
+export L1_SCRIPT=script/arbitrum/ArbitrumL1Upgrade.s.sol:ArbitrumL1UpgradeScript
+export L2_RPC_URL=$L2_ARBITRUM_RPC_URL
 # Base
-export L2_SCRIPT=script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript             L2_RPC_URL=$L2_BASE_RPC_URL
+export L2_SCRIPT=script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript
+export L1_SCRIPT=script/base/BaseL1Upgrade.s.sol:BaseL1UpgradeScript
+export L2_RPC_URL=$L2_BASE_RPC_URL
 # Linea
-export L2_SCRIPT=script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript           L2_RPC_URL=$L2_LINEA_RPC_URL
+export L2_SCRIPT=script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript
+export L1_SCRIPT=script/linea/LineaL1Upgrade.s.sol:LineaL1UpgradeScript
+export L2_RPC_URL=$L2_LINEA_RPC_URL
 ```
 
-### Stage 1 — Lido Deployer: deploy + configure (Optimism, Arbitrum, Base, Linea)
-
-Run for each network:
+### Preflight (per network, read-only)
 
 ```sh
-forge script $L2_SCRIPT --sig "runDeploy()" --rpc-url "$L2_RPC_URL" --broadcast
-# record output:
-export L2_ORACLE_POOL=<...> L2_SYNC_TRIGGER=<...> L2_CRE_RECEIVER=<...>
+just preflight-check <network> $L2_RPC_URL
 ```
 
-Env: `L2_LIDO_DEPLOYER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`.
+Verifies chain-id, CustomSender reachability, logs legacy sync age. If `<12 h` since the last legacy sync, wait for the in-flight CCIP round-trip to complete.
 
-After this stage, SyncTrigger is fully configured (fees, amounts, delay, forwarder) and ownership has been transferred to L2 Governance Executor. CREReceiver ownership has been transferred to LOL multisig.
+### Stage 1 — Lido Deployer: deploy + configure + deploy CRE workflow (per network)
+
+1. **Deploy contracts**
+   ```sh
+   forge script $L2_SCRIPT --sig "runDeploy()" --rpc-url "$L2_RPC_URL" --broadcast
+   # record output:
+   export L2_ORACLE_POOL=<...> L2_SYNC_TRIGGER=<...> L2_CRE_RECEIVER=<...>
+   ```
+   Env: `L2_LIDO_DEPLOYER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`.
+
+   Post-state: SyncTrigger fully configured (fees, amounts, delay, forwarder → CREReceiver), SyncTrigger owner → L2 Governance Executor, CREReceiver owner → LOL multisig, CREReceiver `expectedAuthor` pinned to Lido Deployer, allow-list seeded with `(SyncTrigger, triggerSync())`.
+
+2. **Verify Stage 1** (read-only, no private key needed)
+   ```sh
+   just verify-stage1 <network> $L2_RPC_URL $L2_ORACLE_POOL $L2_SYNC_TRIGGER $L2_CRE_RECEIVER
+   ```
+   Env: `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`, and either `L2_LIDO_DEPLOYER_ADDRESS` or `L2_LIDO_DEPLOYER_PRIVATE_KEY`. Runs 18 post-state assertions against the live RPC and reverts with a descriptive key on any mismatch. Includes guardrails that Stage 2 has NOT yet run.
+
+3. **Update CRE workflow config**
+   ```sh
+   just update-cre-config <network> $L2_SYNC_TRIGGER $L2_CRE_RECEIVER
+   ```
+   Rewrites `cre-workflows/sync-automation/config.deploy.<network>.json` with the deployed addresses (refuses zero/placeholder values).
+
+4. **Deploy CRE workflow** (off-chain, same Lido Deployer key)
+   ```sh
+   cd cre-workflows/sync-automation
+   cre workflow deploy . --config config.deploy.<network>.json --target=production-settings
+   ```
+   The workflow owner recorded on `WorkflowRegistry` (Ethereum mainnet) = Lido Deployer = `CREReceiver.expectedAuthor`, so runtime authorization passes. The workflow fires on schedule but reverts at `SyncTrigger.triggerSync()` until Stage 2 grants `SYNC_ROLE`. Capture the `workflowId` from the CLI output.
+
+5. **Verify CRE workflow registration** (read-only, on Ethereum L1)
+   ```sh
+   just verify-cre-workflow $CRE_WORKFLOW_ID
+   ```
+   Queries Chainlink `WorkflowRegistry 2.0.0` at `0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5` and asserts the workflow is registered, owned by the Lido Deployer, and `status == ACTIVE`. Env: `L1_RPC_URL`, and either `L2_LIDO_DEPLOYER_ADDRESS` or `L2_LIDO_DEPLOYER_PRIVATE_KEY`.
 
 ### Stage 2 — Initial Owner: migrate L2 + L1
 
@@ -132,32 +184,21 @@ forge script $L2_SCRIPT --sig "runMigrate()" --rpc-url "$L2_RPC_URL" --broadcast
 
 Env: `INITIAL_OWNER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`.
 
+Atomic post-state (all via 7 on-chain read-backs; broadcast reverts on any mismatch): `CustomSender.getOraclePool` → new pool; `SYNC_ROLE` held by new SyncTrigger (revoked from legacy automation(s)); `DEFAULT_ADMIN` held by L2 Governance Executor (revoked from Initial Owner); L2 ProxyAdmin owned by L2 Governance Executor.
+
 Then migrate L1 (once — any network's L1 script, L1 receiver is shared):
 
 ```sh
-forge script script/optimism/OptimismL1Upgrade.s.sol:OptimismL1UpgradeScript \
-  --rpc-url "$L1_RPC_URL" --broadcast
+forge script $L1_SCRIPT --rpc-url "$L1_RPC_URL" --broadcast
 ```
 
 Env: `INITIAL_OWNER_PRIVATE_KEY`, `LIDO_DAO_AGENT`.
 
-### Stage 3 — Lido Deployer: deploy CRE workflow
+Post-state: L1 Receiver `DEFAULT_ADMIN` → Lido DAO Agent (revoked from Initial Owner); L1 ProxyAdmin owned by Lido DAO Agent.
 
-```sh
-cd cre-workflows/sync-automation
-cre workflow deploy . --config config.deploy.optimism.json  --target=production-settings
-cre workflow deploy . --config config.deploy.arbitrum.json  --target=production-settings
-cre workflow deploy . --config config.deploy.base.json      --target=production-settings
-cre workflow deploy . --config config.deploy.linea.json     --target=production-settings
-```
+### Stage 3 — Validate (per network)
 
-### Stage 4 — Verify: state-mate + integration tests on live network
-
-After migration, verify each network against the live RPC. Both steps are read-only (state-mate queries on-chain state directly; forge tests fork internally).
-
-#### 5a. State-mate checks
-
-Read-only validation of on-chain roles, ownership, and configuration against the expected post-migration state (`script/<network>/state-mate/*.yaml`):
+State-mate runs ≥ 45 live-RPC checks per network, including: new OraclePool set, `SYNC_ROLE` held only by new SyncTrigger (revoked from legacy automations), `DEFAULT_ADMIN` held only by L2 Governance Executor, L2 ProxyAdmin owner, `CREReceiver.getExpectedAuthor` = Lido Deployer, allow-list `(syncTrigger, triggerSync()) = true`.
 
 ```sh
 just test-optimism-upgrade-state-verify $L2_OPTIMISM_RPC_URL
@@ -166,9 +207,7 @@ just test-base-upgrade-state-verify     $L2_BASE_RPC_URL
 just test-linea-upgrade-state-verify    $L2_LINEA_RPC_URL
 ```
 
-#### 5b. Integration tests on fork
-
-Runs `PoolUpgradeTest` + `CREIntegrationTest` contracts — forge forks the live network internally:
+Optional fork-based integration tests against live state:
 
 ```sh
 forge test --match-contract "OptimismPoolUpgradeTest|OptimismCREIntegrationTest" --rpc-url "$L2_OPTIMISM_RPC_URL" -vvv
@@ -179,7 +218,7 @@ forge test --match-contract "LineaPoolUpgradeTest|LineaCREIntegrationTest"      
 
 ### Post-migration
 
-LOL multisig transfers initial wstETH to each new pool address (direct ERC-20 transfer, one tx per network).
+LOL multisig transfers initial wstETH to each new pool address (direct ERC-20 transfer, one tx per network); cancel any legacy CLA upkeeps on the old automation addresses.
 
 # Key production entities
 
@@ -295,35 +334,37 @@ sequenceDiagram
     link L1PA: Ethereum Explorer @ https://etherscan.io/address/0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD
 
     rect rgb(236, 248, 255)
-    Note over LidoDep,CRERecv: L2 upgrade script run #1 (single signer: Lido deployer)
+    Note over LidoDep,CRERecv: L2 upgrade script run #1 — runDeploy (single signer: Lido Deployer)
     LidoDep->>NewPool: deployPool(owner=LiqOwner)
     LidoDep->>ST: deploySyncTrigger(owner=deployer)
     LidoDep->>ST: setFeeOtoD / setFeeDtoO
     LidoDep->>ST: setAmounts / setDelay
-    LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd)
+    LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd, expectedAuthor=deployer, allow=(ST, triggerSync))
     LidoDep->>ST: setForwarder(CRERecv)
     LidoDep->>ST: transferOwnership(GovExec)
     LidoDep->>CRERecv: transferOwnership(LOL multisig)
     end
 
+    rect rgb(244, 244, 255)
+    Note over CREFwd,CRERecv: Deploy CRE workflow (same Lido Deployer key, off-chain — 'cre workflow deploy')
+    Note over CRERecv: workflow owner = Lido Deployer = CREReceiver.expectedAuthor
+    end
+
     rect rgb(243, 255, 239)
-    Note over initialOwner,L2PA: L2 upgrade script run #2 (single signer: initialOwner)
+    Note over initialOwner,L2PA: L2 upgrade script run #2 — runMigrate (single signer: initialOwner)
     initialOwner->>CS: setOraclePool(newPool)
     initialOwner->>CS: grantRole(SYNC_ROLE, ST)
+    initialOwner->>CS: revokeRole(SYNC_ROLE, legacy automation(s))
     initialOwner->>CS: grantAdmin(GovExec)
     initialOwner->>CS: revokeAdmin(initialOwner)
     initialOwner->>L2PA: transferOwner(GovExec)
     end
 
     rect rgb(255, 246, 234)
-    Note over initialOwner,L1PA: L1 upgrade script run (single signer: initialOwner)
+    Note over initialOwner,L1PA: L1 upgrade script run (single signer: initialOwner, once shared across all L2s)
     initialOwner->>L1R: grantAdmin(LidoDaoAgent)
     initialOwner->>L1R: revokeAdmin(initialOwner)
     initialOwner->>L1PA: transferOwner(LidoDaoAgent)
-    end
-
-    rect rgb(244, 244, 255)
-    Note over CREFwd,CRERecv: Deploy CRE workflow via 'cre workflow deploy'
     end
 
     Note over initialOwner: initialOwner no longer has admin rights on migrated contracts
@@ -508,9 +549,9 @@ just test-cre-workflow
 
 ## Deployment
 
-CREReceiver is deployed per L2 network as part of Stage 1 (`runDeploy`), which also configures `SyncTrigger.setForwarder(CREReceiver)`. After Stage 1:
+CREReceiver is deployed per L2 network as part of Stage 1 `runDeploy` (which also configures `SyncTrigger.setForwarder(CREReceiver)` and pins `expectedAuthor` to the Lido Deployer). Workflow deployment happens immediately after `runDeploy`, before Stage 2:
 
-1. Update `config.deploy.<network>.json` with the deployed `receiverAddress` and `targetAddress` (SyncTrigger).
+1. Rewrite `config.deploy.<network>.json` with the deployed addresses — `just update-cre-config <network> $L2_SYNC_TRIGGER $L2_CRE_RECEIVER`.
 2. Deploy the workflow: `cd cre-workflows/sync-automation && cre workflow deploy . --config config.deploy.<network>.json --target=production-settings`
 3. Repeat for each network (Optimism, Arbitrum, Base, Linea).
 4. Monitor at `cre.chain.link/workflows`.
@@ -519,7 +560,7 @@ See [`docs/LEVERS.md`](docs/LEVERS.md) for CREReceiver admin functions.
 
 # Run migration
 
-Stages are batched by actor. In the commands below, `$L2_SCRIPT` and `$L2_RPC_URL` refer to the values from the [script reference](#per-network-script-reference) table.
+Stages are batched by actor. In the commands below, `$L2_SCRIPT` / `$L1_SCRIPT` / `$L2_RPC_URL` refer to the values from the [script reference](#per-network-script-reference) table. Before touching production, run `just test-acceptance` end-to-end against forks (4 × migration + state-mate + integration tests) and confirm all green.
 
 ## Per-network script reference
 
@@ -530,7 +571,17 @@ Stages are batched by actor. In the commands below, `$L2_SCRIPT` and `$L2_RPC_UR
 | Base     | `script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript`             | `script/base/BaseL1Upgrade.s.sol:BaseL1UpgradeScript`             | `$L2_BASE_RPC_URL`      |
 | Linea    | `script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript`          | `script/linea/LineaL1Upgrade.s.sol:LineaL1UpgradeScript`          | `$L2_LINEA_RPC_URL`     |
 
-## Stage 1 — Lido Deployer: deploy and configure new contracts (Optimism, Arbitrum, Base, Linea)
+## Preflight (per network, read-only)
+
+```sh
+just preflight-check <network> $L2_RPC_URL
+```
+
+Verifies chain-id, CustomSender reachability, reports legacy sync age; warns if another sync is likely still round-tripping through CCIP + L1 bridge.
+
+## Stage 1 — Lido Deployer: deploy + CRE workflow (per network)
+
+**1a. Deploy contracts** (`runDeploy()`):
 
 ```sh
 forge script $L2_SCRIPT --sig "runDeploy()" --rpc-url "$L2_RPC_URL" --broadcast
@@ -543,12 +594,60 @@ export L2_SYNC_TRIGGER=<sync_trigger_address_from_output>
 export L2_CRE_RECEIVER=<cre_receiver_address_from_output>
 ```
 
-After each run:
-- SyncTrigger is fully configured (fees, amounts, delay, forwarder → CREReceiver)
+Post-state:
+- SyncTrigger fully configured (fees, amounts, delay, forwarder → CREReceiver)
 - SyncTrigger owner → L2 Governance Executor
 - CREReceiver owner → LOL multisig
+- CREReceiver `expectedAuthor` pinned to Lido Deployer (immutable)
+- CREReceiver allow-list seeded: `(SyncTrigger, triggerSync()) = true`
 
 Env: `L2_LIDO_DEPLOYER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`, `L2_LIQUIDITY_OWNER` (optional, defaults to LOL multisig).
+
+**1b. Verify Stage 1** (read-only, no private key needed — callable by anyone):
+
+```sh
+just verify-stage1 <network> $L2_RPC_URL $L2_ORACLE_POOL $L2_SYNC_TRIGGER $L2_CRE_RECEIVER
+```
+
+Runs 18 on-chain post-state assertions via `runVerifyStage1()` and reverts with a descriptive key on mismatch:
+
+- OraclePool immutables: `SENDER`, `TOKEN_IN`, `TOKEN_OUT`, `getOracle`, `getFee`, `owner`, `paused == false`.
+- SyncTrigger immutables + config: `SENDER`, `DEST_CHAIN_SELECTOR`, `WNATIVE`, `getDelay`, `getAmounts`, `getFeeOtoD` (byte-match), `getFeeDtoO` (byte-match).
+- CREReceiver: `getForwarder`, `getExpectedAuthor`, `isCallAllowed((SyncTrigger, triggerSync()))`, `owner`.
+- Guardrails: `CustomSender.getOraclePool()` is NOT yet the new pool; `SYNC_ROLE` is NOT yet held by the new SyncTrigger.
+
+Env: `L2_GOVERNANCE_EXECUTOR`, `L2_CRE_FORWARDER`, and either `L2_LIDO_DEPLOYER_ADDRESS` or `L2_LIDO_DEPLOYER_PRIVATE_KEY` (used only to derive the address — no broadcast).
+
+**1c. Update CRE workflow config** with deployed addresses:
+
+```sh
+just update-cre-config <network> $L2_SYNC_TRIGGER $L2_CRE_RECEIVER
+```
+
+Refuses zero/placeholder values. Rewrites `cre-workflows/sync-automation/config.deploy.<network>.json`.
+
+**1d. Deploy CRE workflow** (off-chain, same Lido Deployer key):
+
+```sh
+cd cre-workflows/sync-automation
+cre workflow deploy . --config config.deploy.<network>.json --target=production-settings
+```
+
+Monitor at `cre.chain.link/workflows`. The workflow owner on `WorkflowRegistry` (Ethereum mainnet) = Lido Deployer = `CREReceiver.expectedAuthor`, so runtime authorization passes. The workflow fires on schedule but reverts inside `SyncTrigger.triggerSync()` until Stage 2 grants `SYNC_ROLE`. Capture the `workflowId` from the CLI output for the next step.
+
+**1e. Verify CRE workflow registration** (read-only, on Ethereum L1):
+
+```sh
+just verify-cre-workflow $CRE_WORKFLOW_ID
+```
+
+Runs `forge script script/shared/VerifyCREWorkflow.s.sol:VerifyCREWorkflow` against `$L1_RPC_URL`. Queries `WorkflowRegistry 2.0.0` at `0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5` via `getWorkflowById(workflowId)` and asserts:
+
+- workflow is registered (non-zero metadata)
+- `owner == L2_LIDO_DEPLOYER_ADDRESS` (= `CREReceiver.expectedAuthor`)
+- `status == ACTIVE` (enum value `0`)
+
+Prints full metadata (name, tag, donFamily, configUrl, createdAt) for visual inspection. Env: `L1_RPC_URL`, and either `L2_LIDO_DEPLOYER_ADDRESS` or `L2_LIDO_DEPLOYER_PRIVATE_KEY`.
 
 ## Stage 2 — Initial Owner: migrate L2 + L1
 
@@ -558,11 +657,11 @@ Run `runMigrate()` for Optimism, Arbitrum, Base, Linea:
 forge script $L2_SCRIPT --sig "runMigrate()" --rpc-url "$L2_RPC_URL" --broadcast
 ```
 
-After each L2 run:
+Atomic post-state (7 on-chain read-backs; broadcast reverts on any mismatch):
 - CustomSender oracle pool → new pool
-- CustomSender SYNC_ROLE → new SyncTrigger (old automation revoked)
-- CustomSender admin → L2 Governance Executor
-- ProxyAdmin owner → L2 Governance Executor
+- CustomSender `SYNC_ROLE` → new SyncTrigger (old automation revoked — Linea also revokes Gelato)
+- CustomSender `DEFAULT_ADMIN` → L2 Governance Executor (Initial Owner revoked)
+- L2 ProxyAdmin owner → L2 Governance Executor
 - Initial Owner no longer has admin rights on L2
 
 Env: `INITIAL_OWNER_PRIVATE_KEY`, `L2_GOVERNANCE_EXECUTOR`, `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`.
@@ -573,28 +672,24 @@ Then migrate L1 (once — any network's L1 script will do, L1 receiver is shared
 forge script $L1_SCRIPT --rpc-url "$L1_RPC_URL" --broadcast
 ```
 
-After L1 run:
-- L1 Receiver DEFAULT_ADMIN_ROLE → Lido DAO Agent
+Post-state:
+- L1 Receiver `DEFAULT_ADMIN_ROLE` → Lido DAO Agent (Initial Owner revoked)
 - L1 ProxyAdmin owner → Lido DAO Agent
-- Initial Owner no longer has admin rights on L1
 
 Env: `INITIAL_OWNER_PRIVATE_KEY`, `LIDO_DAO_AGENT`.
 
-## Stage 3 — Lido Deployer: deploy CRE workflow
+## Stage 3 — Validation
+
+**Automated state-mate checks** (per network, preferred — ≥ 45 live-RPC assertions each):
 
 ```sh
-cd cre-workflows/sync-automation
-cre workflow deploy . --config config.deploy.optimism.json  --target=production-settings
-cre workflow deploy . --config config.deploy.arbitrum.json  --target=production-settings
-cre workflow deploy . --config config.deploy.base.json      --target=production-settings
-cre workflow deploy . --config config.deploy.linea.json     --target=production-settings
+just test-optimism-upgrade-state-verify $L2_OPTIMISM_RPC_URL
+just test-arbitrum-upgrade-state-verify $L2_ARBITRUM_RPC_URL
+just test-base-upgrade-state-verify     $L2_BASE_RPC_URL
+just test-linea-upgrade-state-verify    $L2_LINEA_RPC_URL
 ```
 
-Monitor at `cre.chain.link/workflows`.
-
-## Stage 4 — Validation
-
-After all stages complete, verify the post-migration state for each network:
+The full post-migration expectations encoded in the state-mate YAMLs are summarized below for manual spot-checks via `cast call` / explorer:
 
 **L2 checks** (per network, on the L2 block explorer or via `cast call`):
 
@@ -604,11 +699,14 @@ After all stages complete, verify the post-migration state for each network:
 | CustomSender old admin removed | L2CustomSender | `hasRole(DEFAULT_ADMIN_ROLE, initialOwner)` | `false` |
 | SYNC_ROLE granted | L2CustomSender | `hasRole(SYNC_ROLE, syncTrigger)` | `true` |
 | Old SYNC_ROLE revoked | L2CustomSender | `hasRole(SYNC_ROLE, oldChainlinkAutomation)` | `false` |
+| Old Gelato SYNC_ROLE revoked (Linea only) | L2CustomSender | `hasRole(SYNC_ROLE, oldGelatoAutomation)` | `false` |
 | ProxyAdmin owner | L2ProxyAdmin | `owner()` | L2 Governance Executor |
 | OraclePool set | L2CustomSender | `getOraclePool()` | new pool address |
 | SyncTrigger owner | SyncTrigger | `owner()` | L2 Governance Executor |
 | SyncTrigger forwarder | SyncTrigger | `getForwarder()` | CREReceiver address |
 | CREReceiver owner | CREReceiver | `owner()` | LOL multisig |
+| CREReceiver `expectedAuthor` | CREReceiver | `getExpectedAuthor()` | Lido Deployer |
+| CREReceiver allow-list | CREReceiver | `isCallAllowed(syncTrigger, 0x340b2b0b)` | `true` |
 | SyncTrigger fees | SyncTrigger | `getFeeOtoD()` / `getFeeDtoO()` | matches `*MigrationConstants` |
 | SyncTrigger amounts | SyncTrigger | `getAmounts()` | `(minAmount, maxAmount)` |
 | SyncTrigger delay | SyncTrigger | `getDelay()` | configured delay |
@@ -823,6 +921,7 @@ Operational notes:
 
 Additional docs live under [`docs/`](docs/) — see the [documentation index](docs/README.md). Quick entry points:
 
+- [`docs/OPS-PLAN.md`](docs/OPS-PLAN.md) — one-page migration operations plan (actors, per-network sequence, commands)
 - [`docs/LEVERS.md`](docs/LEVERS.md) — who can call what, post-migration
 - [`docs/FLOW.md`](docs/FLOW.md) — fast-stake and sync flow diagrams
 - [`docs/optimism-pool-upgrade.md`](docs/optimism-pool-upgrade.md) — Optimism-specific upgrade notes
