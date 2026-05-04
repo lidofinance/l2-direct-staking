@@ -8,10 +8,10 @@ parameters:
   - &l2GovernanceExecutor "0xEfa0dB536d2c8089685630fafe88CF7805966FC3"
   - &l2LiquidityOwner "0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61"
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-  - &l2OraclePool "0xeeafa706f27a494f56d92d0f1c418b3b00817027"
-  - &l2SyncTrigger "0xfdd4365da425bbec631577168de18af6719675a3"
+  - &l2OraclePool "0xA7096a0Df402BCa13eaC7AF065B13cf5C4FF45c7"
+  - &l2SyncTrigger "0xA79FddB1f0778259E2cC65C5582180B266B18173"
   - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
-  - &l2CreReceiver null # set after CREReceiver deployment (Stage 1)
+  - &l2CreReceiver "0x78Ed59FA4ee5cFB17ab8a9e3E8f6238555B1D6bC"
   - &l2Weth "0x4200000000000000000000000000000000000006"
   - &l2Wsteth "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb"
   - &l2LinkToken "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6"
@@ -34,6 +34,7 @@ deployed:
     - *l2ProxyAdmin
     - *l2OraclePool
     - *l2SyncTrigger
+    - *l2CreReceiver
 
 l1:
   rpcUrl: L1_RPC_URL
@@ -114,14 +115,16 @@ l2:
         shouldSync:
           result: [false, 0]
 
-    # CREReceiver — set l2CreReceiver address after Stage 1 deployment to enable these checks
     creReceiver:
       name: CREReceiver
       address: *l2CreReceiver
       checks:
         owner: *l2LiquidityOwner
         getForwarder: null # CRE Forwarder (KeystoneForwarder) address
-        getExpectedAuthor: "0x0000000000000000000000000000000000000000" # disabled by default
+        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        isCallAllowed:
+          - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
+            result: true
         supportsInterface:
           - args: ["0x21a4cdb3"] # IReceiver
             result: true

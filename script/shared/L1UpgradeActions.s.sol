@@ -14,6 +14,8 @@ import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol
  */
 contract L1UpgradeActions {
     error L1UpgradeInvalidAddress();
+    error L1UpgradeWrongChain(uint256 actualChainId, uint256 expectedChainId);
+    error L1UpgradePostConditionFailed(string what);
 
     struct L1UpgradeConfig {
         address initialOwner;
@@ -31,6 +33,17 @@ contract L1UpgradeActions {
 
     function _requireNonZeroL1(address value) private pure {
         if (value == address(0)) revert L1UpgradeInvalidAddress();
+    }
+
+    function _requireL1PostCondition(bool ok, string memory key) private pure {
+        if (!ok) revert L1UpgradePostConditionFailed(key);
+    }
+
+    /// @dev Asserts the script is broadcasting to Ethereum Mainnet.
+    function assertL1ChainId(uint256 expectedChainId) public view {
+        if (block.chainid != expectedChainId) {
+            revert L1UpgradeWrongChain(block.chainid, expectedChainId);
+        }
     }
 
     function defaultL1Config(address initialOwner, address lidoDaoAgent)
@@ -58,5 +71,10 @@ contract L1UpgradeActions {
 
         Ownable(cfg.proxyAdmin).transferOwnership(cfg.lidoDaoAgent);
         emit L1ProxyAdminOwnershipTransferred(cfg.proxyAdmin, cfg.initialOwner, cfg.lidoDaoAgent);
+
+        IAccessControl recv = IAccessControl(cfg.receiverProxy);
+        _requireL1PostCondition(recv.hasRole(L1.DEFAULT_ADMIN_ROLE, cfg.lidoDaoAgent), "dao agent admin grant");
+        _requireL1PostCondition(!recv.hasRole(L1.DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner admin revoke");
+        _requireL1PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.lidoDaoAgent, "proxyAdmin owner");
     }
 }

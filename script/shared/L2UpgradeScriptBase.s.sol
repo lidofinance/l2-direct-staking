@@ -3,9 +3,6 @@ pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
 
-import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePool.sol";
-import {SyncTrigger} from "src/SyncTrigger.sol";
-import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
 
@@ -34,7 +31,6 @@ import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol
  *     - L2_GOVERNANCE_EXECUTOR
  *     - L2_ORACLE_POOL (output of runDeploy)
  *     - L2_SYNC_TRIGGER (output of runDeploy)
- *     - L2_CRE_RECEIVER (output of runDeploy)
  *     - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
  *
  */
@@ -50,6 +46,9 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @dev Returns the network-specific default liquidity owner (LOL multisig).
     function _defaultLiquidityOwner() internal pure virtual returns (address);
+
+    /// @dev Returns the expected L2 chain ID. Scripts revert if `block.chainid` doesn't match.
+    function _expectedChainId() internal pure virtual returns (uint256);
 
     // ── env helpers ──────────────────────────────────────────────────
 
@@ -73,27 +72,36 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return vm.envOr("L2_LIQUIDITY_OWNER", _defaultLiquidityOwner());
     }
 
+    /// @dev Prefer an explicit `L2_LIDO_DEPLOYER_ADDRESS`, falling back to deriving from the private key.
+    ///      `runVerifyStage1` must be callable without the deployer's private key in the operator's environment.
+    function _envLidoDeployerAddress() internal view returns (address) {
+        try vm.envAddress("L2_LIDO_DEPLOYER_ADDRESS") returns (address value) {
+            return value;
+        } catch {
+            return vm.addr(vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY"));
+        }
+    }
+
     // ── Deploy helper ────────────────────────────────────────────────
 
-    function _deployAll(L2UpgradeConfig memory cfg, address creForwarder, address liquidityOwner)
+    function _deployAll(L2UpgradeConfig memory cfg, address creForwarder, address deployer)
         internal
         returns (address oraclePool, address syncTrigger, address creReceiverAddr)
     {
-        PausableImmutableOraclePool pool = deployPool(cfg);
-        SyncTrigger deployedSyncTrigger = deploySyncTrigger(cfg);
-        CREReceiver deployedCREReceiver = deployCREReceiver(creForwarder);
-        transferCREReceiverOwnership(address(deployedCREReceiver), liquidityOwner);
-
-        oraclePool = address(pool);
-        syncTrigger = address(deployedSyncTrigger);
-        creReceiverAddr = address(deployedCREReceiver);
+        oraclePool = address(deployPool(cfg));
+        // The CRE workflow is deployed by the Lido Deployer (same key), so the workflow owner
+        // recorded in `metadata.workflowOwner` equals `deployer`. We pin _expectedAuthor to that.
+        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, creForwarder, deployer);
     }
 
     // ── Stage 1: Lido Deployer ───────────────────────────────────────
 
-    /// @notice Deploy new OraclePool, SyncTrigger, and CREReceiver; transfer CREReceiver to LOL multisig. Actor: Lido Deployer.
+    /// @notice Deploy new OraclePool, SyncTrigger, and CREReceiver; configure SyncTrigger and transfer ownership. Actor: Lido Deployer.
     function runDeploy() public returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
+        assertL2ChainId(_expectedChainId());
+
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
+        address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = _envLiquidityOwnerAddress();
@@ -102,51 +110,97 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(lidoDeployerPrivateKey);
-        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, liquidityOwner);
+        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, deployer);
         vm.stopBroadcast();
+    }
+
+    // ── Stage 1 verification (read-only, between Stage 1 and Stage 2) ─
+
+    /// @notice Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run. Actor: anyone.
+    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER,
+    ///      and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY (the address pinned as CREReceiver.expectedAuthor).
+    function runVerifyStage1() public view {
+        assertL2ChainId(_expectedChainId());
+
+        address initialOwner = _envInitialOwnerAddress();
+        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address liquidityOwner = _envLiquidityOwnerAddress();
+        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address expectedAuthor = _envLidoDeployerAddress();
+        address oraclePool = vm.envAddress("L2_ORACLE_POOL");
+        address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
+        address creReceiverAddr = vm.envAddress("L2_CRE_RECEIVER");
+
+        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
+        verifyStage1(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
     }
 
     // ── Stage 2: Initial Owner ───────────────────────────────────────
 
-    /// @notice Configure new contracts, set CRE forwarder, and migrate admin roles to final owners. Actor: Initial Owner.
+    /// @notice Migrate admin roles on existing contracts to final owners. Actor: Initial Owner.
     function runMigrate() public {
+        assertL2ChainId(_expectedChainId());
+
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger);
         vm.stopBroadcast();
     }
 
     /// @notice Same as runMigrate but impersonates Initial Owner (anvil only).
     function runMigrateUnlocked() public {
+        assertL2ChainId(_expectedChainId());
+
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(initialOwner);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger);
         vm.stopBroadcast();
     }
 
     // ── Convenience: Stage 1 + Stage 2 ──────────────────────────────
 
+    error L2UpgradeSingleRunUnsafe(uint256 chainId);
+
+    /// @dev L2 mainnet chain-IDs: Optimism (10), Arbitrum (42161), Base (8453), Linea (59144).
+    ///      Stages 1 and 2 are run by different actors in production; chaining them in one broadcast
+    ///      requires both keys co-located, which defeats the separation. Override with
+    ///      `ALLOW_UNSAFE_COMBINED_RUN=1` (acceptable only for fork / testnet).
+    function _isProductionL2ChainId(uint256 id) private pure returns (bool) {
+        return id == 10 || id == 42161 || id == 8453 || id == 59144;
+    }
+
+    function _guardCombinedRun() internal view {
+        assertL2ChainId(_expectedChainId());
+        if (!_isProductionL2ChainId(block.chainid)) return;
+        if (vm.envOr("ALLOW_UNSAFE_COMBINED_RUN", uint256(0)) == 1) return;
+        revert L2UpgradeSingleRunUnsafe(block.chainid);
+    }
+
     /// @notice Deploy + migrate in one call (requires both deployer and initial owner keys).
+    /// @dev Blocked on mainnet unless `ALLOW_UNSAFE_COMBINED_RUN=1` is explicitly set. Stages 1 and 2
+    ///      are run by different actors (Lido Deployer vs Initial Owner) in production; chaining them
+    ///      in one broadcast requires both keys to be co-located, which defeats the separation.
     function run() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
+        _guardCombinedRun();
+
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
+        address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = _envLiquidityOwnerAddress();
@@ -155,17 +209,20 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(lidoDeployerPrivateKey);
-        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, liquidityOwner);
+        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, deployer);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger);
         vm.stopBroadcast();
     }
 
     /// @notice Deploy + migrate with impersonated initial owner (anvil only).
     function runWithUnlockedInitialOwner() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
+        _guardCombinedRun();
+
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
+        address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address liquidityOwner = _envLiquidityOwnerAddress();
@@ -174,11 +231,11 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(lidoDeployerPrivateKey);
-        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, liquidityOwner);
+        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder, deployer);
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwner);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger);
         vm.stopBroadcast();
     }
 }

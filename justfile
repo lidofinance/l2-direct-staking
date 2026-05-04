@@ -10,6 +10,139 @@ _ya file anchor:
 setup:
     cd chainlink-csr && npm install --ignore-scripts && forge install
 
+# Per-network preflight check run before migrating. Verifies chain-id matches and
+# reports the last sync timestamp + CustomSender balance so the operator can
+# confirm no in-flight sync will orphan liquidity in the old pool.
+#
+# Usage: just preflight-check <network> <rpc_url>
+#   <network>  = optimism | arbitrum | base | linea
+preflight-check network rpc_url:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    case "{{network}}" in
+      optimism) EXPECTED_CHAIN_ID=10     ; SENDER=0x328de900860816d29D1367F6903a24D8ed40C997 ; POOL=0x6F357d53d6bE3238180316BA5F8f11467e164588 ; OLD_SYNC=0x3776CC14ce997827F7A87091018Daa1739dc2790 ;;
+      arbitrum) EXPECTED_CHAIN_ID=42161  ; SENDER=0x72229141D4B016682d3618ECe47c046f30Da4AD1 ; POOL=0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace ; OLD_SYNC=0x7EbD8bf7cCAE7Cf0C825e355cd1fF7d1fF0e79Abd ;;
+      base)     EXPECTED_CHAIN_ID=8453   ; SENDER=0x328de900860816d29D1367F6903a24D8ed40C997 ; POOL=0x6F357d53d6bE3238180316BA5F8f11467e164588 ; OLD_SYNC=0x0000000000000000000000000000000000000001 ;;
+      linea)    EXPECTED_CHAIN_ID=59144  ; SENDER=0x328de900860816d29D1367F6903a24D8ed40C997 ; POOL=0x6F357d53d6bE3238180316BA5F8f11467e164588 ; OLD_SYNC=0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace ;;
+      *) echo "Unknown network: {{network}} (expected: optimism|arbitrum|base|linea)" >&2; exit 2 ;;
+    esac
+
+    die() { echo "PREFLIGHT FAIL: $*" >&2; exit 1; }
+
+    # 1. Chain-ID match.
+    actual_chain_id=$(cast chain-id --rpc-url "{{rpc_url}}")
+    if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
+      die "chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID for {{network}}"
+    fi
+    echo "OK chain-id = $actual_chain_id"
+
+    # 2. CustomSender is reachable (has code).
+    code_size=$(cast code "$SENDER" --rpc-url "{{rpc_url}}" | wc -c | tr -d ' ')
+    if [[ "$code_size" -lt 10 ]]; then
+      die "CustomSender $SENDER has no code on this RPC"
+    fi
+
+    # 3. Report last sync execution age (informational; operator decides).
+    if ! last_exec_hex=$(cast call "$OLD_SYNC" "getLastExecution()(uint48)" --rpc-url "{{rpc_url}}" 2>/dev/null); then
+      echo "WARN could not read $OLD_SYNC.getLastExecution() (legacy automation may already be revoked)"
+    else
+      last_exec=$(echo "$last_exec_hex" | sed -E 's/\s*\[[^]]+\]\s*//' | awk '{print $1}')
+      now=$(date +%s)
+      age=$(( now - last_exec ))
+      echo "INFO last legacy sync = $last_exec ($((age/3600))h $((age%3600/60))m ago)"
+      if (( age < 12*3600 )); then
+        echo "WARN last sync was <12h ago; a CCIP round-trip may still be in flight."
+        echo "     Check https://ccip.chain.link/ for pending messages from $SENDER before running Stage 2."
+      fi
+    fi
+
+    # 4. Pool WETH balance (informational).
+    echo "INFO old pool = $POOL"
+    echo "OK preflight passed for {{network}}. Proceed with migration scripts."
+
+# Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run.
+# Run after `runDeploy` and before `runMigrate`. Callable by anyone (no private key needed).
+#
+# Usage: just verify-stage1 <network> <rpc_url> <oracle_pool> <sync_trigger> <cre_receiver>
+#
+# Required env: L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER
+#   and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY.
+verify-stage1 network rpc_url oracle_pool sync_trigger cre_receiver:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    case "{{network}}" in
+      optimism) SCRIPT="script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript" ;;
+      arbitrum) SCRIPT="script/arbitrum/ArbitrumL2Upgrade.s.sol:ArbitrumL2UpgradeScript" ;;
+      base)     SCRIPT="script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript" ;;
+      linea)    SCRIPT="script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript" ;;
+      *) echo "Unknown network: {{network}}" >&2; exit 2 ;;
+    esac
+
+    L2_ORACLE_POOL="{{oracle_pool}}" \
+    L2_SYNC_TRIGGER="{{sync_trigger}}" \
+    L2_CRE_RECEIVER="{{cre_receiver}}" \
+    forge script "$SCRIPT" --sig 'runVerifyStage1()' --rpc-url "{{rpc_url}}"
+
+# Read-only verification that a CRE workflow is registered on the Chainlink WorkflowRegistry
+# (Ethereum mainnet) and owned by the expected author. Run after `cre workflow deploy` for each network.
+# Callable by anyone (no private key needed).
+#
+# Usage: just verify-cre-workflow <workflow_id>   # 0x + 64 hex chars, non-zero
+#
+# Required env: L1_RPC_URL
+#   and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY (= CREReceiver.expectedAuthor).
+verify-cre-workflow workflow_id:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "{{workflow_id}}" =~ ^0x[0-9a-fA-F]{64}$ ]] \
+      || { echo "Bad workflowId: {{workflow_id}} (expected 0x + 64 hex chars)" >&2; exit 1; }
+    [[ "{{workflow_id}}" != "0x$(printf '0%.0s' {1..64})" ]] \
+      || { echo "Refusing zero workflowId" >&2; exit 1; }
+    forge script script/shared/VerifyCREWorkflow.s.sol:VerifyCREWorkflow \
+      --sig 'run(bytes32)' "{{workflow_id}}" --rpc-url "$L1_RPC_URL"
+
+# Rewrite the CRE workflow config for <network> with the deployed SyncTrigger + CREReceiver
+# addresses. Run after Stage 1 (`runDeploy`) before `cre workflow deploy`.
+#
+# Usage: just update-cre-config <network> <sync_trigger> <cre_receiver>
+update-cre-config network sync_trigger cre_receiver:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    case "{{network}}" in
+      optimism|arbitrum|base|linea) ;;
+      *) echo "Unknown network: {{network}}" >&2; exit 2 ;;
+    esac
+
+    command -v jq >/dev/null 2>&1 || { echo "Missing required command: jq" >&2; exit 1; }
+
+    CONFIG="cre-workflows/sync-automation/config.deploy.{{network}}.json"
+    [[ -f "$CONFIG" ]] || { echo "Missing config: $CONFIG" >&2; exit 1; }
+
+    # Hex-address sanity. Rejects 0xYOUR_... placeholders and zero addresses.
+    for addr in "{{sync_trigger}}" "{{cre_receiver}}"; do
+      [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ ]] \
+        || { echo "Bad address: $addr (expected 0x + 40 hex chars)" >&2; exit 1; }
+      [[ "$addr" != "0x0000000000000000000000000000000000000000" ]] \
+        || { echo "Refusing zero address: $addr" >&2; exit 1; }
+    done
+
+    tmp=$(mktemp)
+    jq --arg r "{{cre_receiver}}" --arg t "{{sync_trigger}}" \
+      '.receiverAddress = $r | .targetAddress = $t' "$CONFIG" > "$tmp"
+    mv "$tmp" "$CONFIG"
+
+    # Verify no "0xYOUR_" placeholder survived.
+    if grep -q '0xYOUR_' "$CONFIG"; then
+      echo "Placeholder still present in $CONFIG — refusing to proceed" >&2
+      exit 1
+    fi
+
+    echo "Updated $CONFIG:"
+    jq . "$CONFIG"
+
 # Run the Optimism pool upgrade fork test
 test-optimism-upgrade:
     forge test --match-contract OptimismPoolUpgradeTest --rpc-url "$LOCAL_L2_OPTIMISM_RPC_URL" -vvv
@@ -98,6 +231,8 @@ _optimism-state-migrate rpc_url='':
     echo "Running OptimismL2UpgradeScript on ${RPC_URL}"
     (
       cd "$ROOT_DIR"
+      # Anvil forks inherit mainnet chain-id, so opt out of the production combined-run guard.
+      ALLOW_UNSAFE_COMBINED_RUN=1 \
       forge script script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript \
         --sig "$UPGRADE_SCRIPT_SIG" \
         --rpc-url "$RPC_URL" \
@@ -413,7 +548,7 @@ _acceptance-test:
     trap cleanup EXIT
 
     wait_for_rpc() {
-      local url="$1" name="$2" timeout="${3:-60}"
+      local url="$1" name="$2" timeout="${3:-180}"
       for i in $(seq 1 "$timeout"); do
         cast chain-id --rpc-url "$url" >/dev/null 2>&1 && return 0
         sleep 1
@@ -504,20 +639,35 @@ _acceptance-test:
       cast rpc --rpc-url "$fork_url" anvil_setBalance "$INITIAL_OWNER" "$ANVIL_BALANCE" >/dev/null
 
       # Stage 1+2: deploy + migrate
+      # ALLOW_UNSAFE_COMBINED_RUN=1 opts out of the production guard in L2UpgradeScriptBase
+      # (block.chainid is the upstream mainnet id because this is an anvil fork).
+      # L2_CRE_FORWARDER is a deterministic placeholder; the real forwarder isn't exercised
+      # in this test because CRE reports would need the actual off-chain DON to originate.
       substep "Stages 1+2: deploy + migrate"
-      deployer_nonce="$(cast nonce "$DEPLOYER_ADDR" --rpc-url "$fork_url" | tr -d '\r\n')"
       (
         cd "$ROOT_DIR"
         L2_GOVERNANCE_EXECUTOR="$gov" \
+        L2_CRE_FORWARDER="${L2_CRE_FORWARDER:-0x000000000000000000000000000000000000dEaD}" \
+        ALLOW_UNSAFE_COMBINED_RUN=1 \
         forge script "${NET_SCRIPTS[$i]}" \
           --sig "runWithUnlockedInitialOwner()" \
           --rpc-url "$fork_url" \
           --broadcast --non-interactive \
           --unlocked --sender "$INITIAL_OWNER" 2>&1 | tail -5
       )
-      pool_addr="$(compute_create_address "$DEPLOYER_ADDR" "$deployer_nonce")"
-      trigger_addr="$(compute_create_address "$DEPLOYER_ADDR" "$((deployer_nonce + 1))")"
-      recv_addr="$(compute_create_address "$DEPLOYER_ADDR" "$((deployer_nonce + 2))")"
+      # Read the actual deployed addresses from the forge broadcast JSON (robust against
+      # adding / removing intermediate setter txs that would shift nonces).
+      script_file="${NET_SCRIPTS[$i]%:*}"
+      script_base="$(basename "$script_file")"
+      chain_id="$(cast chain-id --rpc-url "$fork_url" | tr -d '\r\n')"
+      bcast_json="$ROOT_DIR/broadcast/${script_base}/${chain_id}/runWithUnlockedInitialOwner-latest.json"
+      [[ -f "$bcast_json" ]] || die "Missing forge broadcast JSON: $bcast_json"
+      pool_addr="$(jq -r '[.transactions[] | select(.contractName == "PausableImmutableOraclePool")][0].contractAddress' "$bcast_json")"
+      trigger_addr="$(jq -r '[.transactions[] | select(.contractName == "SyncTrigger")][0].contractAddress' "$bcast_json")"
+      recv_addr="$(jq -r '[.transactions[] | select(.contractName == "CREReceiver")][0].contractAddress' "$bcast_json")"
+      pool_addr="$(cast to-check-sum-address "$pool_addr")"
+      trigger_addr="$(cast to-check-sum-address "$trigger_addr")"
+      recv_addr="$(cast to-check-sum-address "$recv_addr")"
       echo "  OraclePool: $pool_addr  SyncTrigger: $trigger_addr  CREReceiver: $recv_addr"
 
       DEPLOYED_POOLS+=("$pool_addr")

@@ -10,6 +10,8 @@ parameters:
   - &l2LidoDeployer "__L2_LIDO_DEPLOYER__"
   - &l2OraclePool "__L2_ORACLE_POOL__"
   - &l2SyncTrigger "__L2_SYNC_TRIGGER__"
+  - &l2OldSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace" # legacy SYNC_ROLE holder (revocation asserted below)
+  - &l2OldGelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe" # legacy Gelato SYNC_ROLE holder (revocation asserted below)
   - &l2CreReceiver "__L2_CRE_RECEIVER__"
   - &l2Weth "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
   - &l2Wsteth "0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F"
@@ -65,6 +67,10 @@ l2:
             result: false
           - args: [*SYNC_ROLE, *l2SyncTrigger]
             result: true
+          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
+            result: false
+          - args: [*SYNC_ROLE, *l2OldGelatoSyncAutomation]
+            result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
         supportsInterface:
@@ -118,7 +124,10 @@ l2:
       checks:
         owner: *l2LiquidityOwner
         getForwarder: null # CRE Forwarder (KeystoneForwarder) address
-        getExpectedAuthor: "0x0000000000000000000000000000000000000000" # disabled by default
+        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        isCallAllowed:
+          - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
+            result: true
         supportsInterface:
           - args: ["0x21a4cdb3"] # IReceiver
             result: true

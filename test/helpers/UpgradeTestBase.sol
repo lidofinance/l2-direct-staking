@@ -184,8 +184,10 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         internal
         returns (address newSyncTrigger)
     {
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
-        newSyncTrigger = address(deploySyncTrigger(cfg));
+        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        newSyncTrigger = address(deploySyncTrigger(cfg, LIDO_L2_GOVERNANCE_EXECUTOR));
+        configureSyncTrigger(newSyncTrigger, cfg);
+        vm.stopPrank();
     }
 
     function _deployAndMigrateL2WithSyncTrigger()
@@ -197,11 +199,13 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
+        // Stage 1: Deploy + configure (SyncTrigger owned by governance executor in test)
         newPool = _deployL2Pool(cfg);
         newSyncTrigger = _deployL2SyncTrigger(cfg);
 
+        // Stage 2: Migrate existing contracts (as Initial Owner)
         vm.startPrank(INITIAL_OWNER);
-        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, address(0));
+        executeMigrationSteps(cfg, address(newPool), newSyncTrigger);
         vm.stopPrank();
     }
 
@@ -218,16 +222,20 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
-        // Stage 1: Deploy (as Lido Deployer)
+        // Stage 1: Deploy + configure (as Lido Deployer)
+        address lidoDeployer = makeAddr("lidoDeployer");
         newPool = _deployL2Pool(cfg);
-        newSyncTrigger = _deployL2SyncTrigger(cfg);
-        address creForwarderAddr = makeAddr("creForwarder");
-        newCREReceiver = deployCREReceiver(creForwarderAddr);
-        transferCREReceiverOwnership(address(newCREReceiver), lidoL2LiquidityOwner);
 
-        // Stage 2: Migrate using production function (as Initial Owner)
+        vm.startPrank(lidoDeployer);
+        address creReceiverAddr;
+        (newSyncTrigger, creReceiverAddr) =
+            deploySyncInfrastructure(cfg, lidoDeployer, makeAddr("creForwarder"), lidoDeployer);
+        newCREReceiver = CREReceiver(payable(creReceiverAddr));
+        vm.stopPrank();
+
+        // Stage 2: Migrate existing contracts (as Initial Owner)
         vm.startPrank(INITIAL_OWNER);
-        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, address(newCREReceiver));
+        executeMigrationSteps(cfg, address(newPool), newSyncTrigger);
         vm.stopPrank();
     }
 

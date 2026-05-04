@@ -6,43 +6,38 @@ import {IReceiver} from "./interfaces/IReceiver.sol";
 
 /**
  * @title CREReceiver
- * @notice Receives signed reports from CRE workflows and executes encoded calls on target contracts.
- * @dev The CRE DON signs a report
- *      containing `(address target, bytes data)`, the CRE Forwarder verifies the signature, and
- *      this contract decodes and executes the call.
+ * @notice Receives signed reports from CRE workflows and executes whitelisted calls on target contracts.
+ * @dev Three independent access controls layer defense:
+ *      1. onlyForwarder   — msg.sender must be the configured CRE Forwarder.
+ *      2. expectedAuthor  — the report metadata's workflowOwner must match the expected author.
+ *      3. call allow-list — the decoded (target, selector) pair must be explicitly allowed by the owner.
  *
  *      Call chain: CRE DON → CRE Forwarder → CREReceiver.onReport() → target.call(data)
+ *
+ *      Invariants:
+ *      - _expectedAuthor is never address(0) (enforced at construction and by setters).
+ *      - By design, CREReceiver holds no on-chain privileges other than being the forwarder on
+ *        its target. See docs/SECURITY.md §6 invariant I1.
  */
 contract CREReceiver is IReceiver, Ownable {
-    // ──────────────────────────────────────────────────────────────────────
-    // Events
-    // ──────────────────────────────────────────────────────────────────────
-
-    event CallExecuted(address indexed target, bytes returnData);
+    event CallExecuted(address indexed target, bytes4 indexed selector, bytes returnData);
     event ForwarderUpdated(address indexed previousForwarder, address indexed newForwarder);
     event ExpectedAuthorUpdated(address indexed previousAuthor, address indexed newAuthor);
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Errors
-    // ──────────────────────────────────────────────────────────────────────
+    event AllowedCallUpdated(address indexed target, bytes4 indexed selector, bool allowed);
 
     error UnauthorizedForwarder(address caller, address expected);
     error InvalidForwarderAddress();
+    error InvalidExpectedAuthor();
     error InvalidTargetAddress();
     error InvalidAuthor(address received, address expected);
+    error CallNotAllowed(address target, bytes4 selector);
+    error ReportTooShort(uint256 length);
     error CallExecutionFailed(address target, bytes reason);
     error ETHTransferFailed();
 
-    // ──────────────────────────────────────────────────────────────────────
-    // State
-    // ──────────────────────────────────────────────────────────────────────
-
     address private _forwarder;
     address private _expectedAuthor;
-
-    // ──────────────────────────────────────────────────────────────────────
-    // Modifiers
-    // ──────────────────────────────────────────────────────────────────────
+    mapping(address target => mapping(bytes4 selector => bool)) private _allowedCalls;
 
     modifier onlyForwarder() {
         if (msg.sender != _forwarder) {
@@ -51,40 +46,46 @@ contract CREReceiver is IReceiver, Ownable {
         _;
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Constructor
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// @param forwarder_ The address of the CRE Forwarder contract (cannot be address(0))
-    constructor(address forwarder_) Ownable(msg.sender) {
+    /// @param forwarder_ The CRE Forwarder contract address (required, nonzero).
+    /// @param expectedAuthor_ The workflow-owner EVM address to pin the author check to (required, nonzero).
+    /// @param allowedTarget  Initial allow-list target. Pass address(0) to seed nothing.
+    /// @param allowedSelector Initial allow-list function selector for allowedTarget.
+    constructor(
+        address forwarder_,
+        address expectedAuthor_,
+        address allowedTarget,
+        bytes4 allowedSelector
+    ) Ownable(msg.sender) {
         if (forwarder_ == address(0)) revert InvalidForwarderAddress();
+        if (expectedAuthor_ == address(0)) revert InvalidExpectedAuthor();
         _forwarder = forwarder_;
+        _expectedAuthor = expectedAuthor_;
         emit ForwarderUpdated(address(0), forwarder_);
+        emit ExpectedAuthorUpdated(address(0), expectedAuthor_);
+        if (allowedTarget != address(0)) {
+            _allowedCalls[allowedTarget][allowedSelector] = true;
+            emit AllowedCallUpdated(allowedTarget, allowedSelector, true);
+        }
     }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // IReceiver
-    // ──────────────────────────────────────────────────────────────────────
 
     /// @inheritdoc IReceiver
     function onReport(bytes calldata metadata, bytes calldata report) external override onlyForwarder {
-        address expected = _expectedAuthor;
-        if (expected != address(0)) {
-            address workflowOwner = _extractWorkflowOwner(metadata);
-            if (workflowOwner != expected) {
-                revert InvalidAuthor(workflowOwner, expected);
-            }
+        address workflowOwner = _extractWorkflowOwner(metadata);
+        if (workflowOwner != _expectedAuthor) {
+            revert InvalidAuthor(workflowOwner, _expectedAuthor);
         }
 
         (address target, bytes memory data) = abi.decode(report, (address, bytes));
-
         if (target == address(0)) revert InvalidTargetAddress();
+        if (data.length < 4) revert ReportTooShort(data.length);
+
+        bytes4 selector = bytes4(data);
+        if (!_allowedCalls[target][selector]) revert CallNotAllowed(target, selector);
 
         (bool success, bytes memory returnData) = target.call(data);
-
         if (!success) revert CallExecutionFailed(target, returnData);
 
-        emit CallExecuted(target, returnData);
+        emit CallExecuted(target, selector, returnData);
     }
 
     /// @inheritdoc IReceiver
@@ -97,12 +98,14 @@ contract CREReceiver is IReceiver, Ownable {
         return interfaceId == type(IReceiver).interfaceId;
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Admin
-    // ──────────────────────────────────────────────────────────────────────
+    function getExpectedAuthor() external view returns (address) {
+        return _expectedAuthor;
+    }
 
-    /// @notice Update the CRE Forwarder address
-    /// @param newForwarder The new forwarder address (cannot be address(0))
+    function isCallAllowed(address target, bytes4 selector) external view returns (bool) {
+        return _allowedCalls[target][selector];
+    }
+
     function setForwarder(address newForwarder) external onlyOwner {
         if (newForwarder == address(0)) revert InvalidForwarderAddress();
         address prev = _forwarder;
@@ -110,36 +113,29 @@ contract CREReceiver is IReceiver, Ownable {
         emit ForwarderUpdated(prev, newForwarder);
     }
 
-    /// @notice Set the expected workflow author for report validation
-    /// @param author The expected author address (address(0) disables the check)
-    function setExpectedAuthor(address author) external onlyOwner {
+    function setExpectedAuthor(address newAuthor) external onlyOwner {
+        if (newAuthor == address(0)) revert InvalidExpectedAuthor();
         address prev = _expectedAuthor;
-        _expectedAuthor = author;
-        emit ExpectedAuthorUpdated(prev, author);
+        _expectedAuthor = newAuthor;
+        emit ExpectedAuthorUpdated(prev, newAuthor);
     }
 
-    /// @notice Returns the expected workflow author
-    function getExpectedAuthor() external view returns (address) {
-        return _expectedAuthor;
+    function setAllowedCall(address target, bytes4 selector, bool allowed) external onlyOwner {
+        if (target == address(0)) revert InvalidTargetAddress();
+        _allowedCalls[target][selector] = allowed;
+        emit AllowedCallUpdated(target, selector, allowed);
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Internal
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// @dev Extracts the workflow owner from packed metadata.
-    ///      Layout: bytes32 workflowId | bytes10 workflowName | address workflowOwner
-    function _extractWorkflowOwner(bytes calldata metadata) internal pure returns (address workflowOwner) {
-        // workflowOwner starts at offset 42 (32 + 10) and is 20 bytes
-        workflowOwner = address(uint160(bytes20(metadata[42:62])));
-    }
-
-    /// @notice Rescue ETH accidentally sent to the contract
     function withdrawETH(address payable to, uint256 amount) external onlyOwner {
         (bool ok,) = to.call{value: amount}("");
         if (!ok) revert ETHTransferFailed();
     }
 
-    /// @notice Allow the contract to receive ETH
+    /// @dev Extracts the workflow owner from packed CRE metadata.
+    ///      Layout: bytes32 workflowId | bytes10 workflowName | address workflowOwner (offset 42, length 20).
+    function _extractWorkflowOwner(bytes calldata metadata) internal pure returns (address workflowOwner) {
+        workflowOwner = address(uint160(bytes20(metadata[42:62])));
+    }
+
     receive() external payable {}
 }

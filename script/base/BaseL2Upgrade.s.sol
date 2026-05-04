@@ -60,4 +60,8 @@ contract BaseL2UpgradeScript is L2UpgradeScriptBase, BaseL2Defaults {
     function _defaultLiquidityOwner() internal pure override returns (address) {
         return C.LIQUIDITY_OWNER;
     }
+
+    function _expectedChainId() internal pure override returns (uint256) {
+        return C.BASE_CHAIN_ID;
+    }
 }

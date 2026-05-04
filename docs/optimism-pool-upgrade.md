@@ -48,9 +48,6 @@ Runs `fastStake` end to end after migration and verifies user output plus pool t
 ### `test_regularStakeAfterMigration`
 Validates regular stake (`slowStake`) debits user WETH, returns a non-zero CCIP message ID, and leaves oracle pool balances unchanged.
 
-### `test_slowStakeAfterMigration`
-Validates `slowStake` still returns a non-zero CCIP message ID and debits user WETH correctly.
-
 ### `test_migrateL1`
 Migrates L1 receiver admin and ProxyAdmin ownership, verifies full post-migration L1 state, then validates L2 ProxyAdmin ownership transfer.
 
@@ -87,23 +84,34 @@ Each test selects the appropriate fork with `vm.selectFork()` before executing o
 
 ### Test Layout
 
-- Shared fork/migration/CCIP helpers live in `test/helpers/OptimismUpgradeTestBase.sol`.
-- Test scenarios live in `test/OptimismPoolUpgrade.t.sol`.
-- CREReceiver unit tests live in `test/CREReceiverTest.t.sol` (20 tests, no fork needed).
-- CRE integration tests live in `test/CREIntegrationTest.t.sol` (8 tests, fork-based, covers CRE Forwarder → CREReceiver → SyncTrigger path).
+- Shared fork/migration/CCIP helpers live in `test/helpers/UpgradeTestBase.sol` (network-agnostic) and `test/helpers/OptimismUpgradeTestBase.sol`.
+- Shared test scenarios (17 tests) live in `test/helpers/PoolUpgradeTests.sol`, instantiated per network.
+- Optimism test harness lives in `test/OptimismPoolUpgrade.t.sol`.
+- CREReceiver unit tests live in `test/CREReceiverTest.t.sol` (25 tests, no fork needed).
+- CRE integration tests live in `test/CREIntegrationTest.t.sol` (8 tests per network, fork-based, covers CRE Forwarder → CREReceiver → SyncTrigger path).
 - CRE TypeScript encoding tests live in `cre-workflows/sync-automation/main.test.ts` (11 tests, run with `bun test`).
-- Shared addresses, roles, and chain constants are centralized in `src/optimism/OptimismMigrationConstants.sol`.
+- Shared addresses, roles, and chain constants are centralized in `script/optimism/OptimismMigrationConstants.sol`.
 
 ### Migration Flow
 
 ```
-1. Deploy new PausableImmutableOraclePool(sender, WETH, wstETH, oracle, 0, liquidityOwner)
-2. Fund new pool with wstETH liquidity
-3. INITIAL_OWNER calls CustomSender.setOraclePool(newPool)
-4. INITIAL_OWNER grants DEFAULT_ADMIN_ROLE to the new L2 owner
-5. INITIAL_OWNER revokes DEFAULT_ADMIN_ROLE from self
-6. Old pool owner sweeps remaining liquidity
+Stage 1 — Lido Deployer (runDeploy):
+  1. Deploy new PausableImmutableOraclePool(sender, WETH, wstETH, oracle, 0, liquidityOwner)
+  2. Deploy SyncTrigger, configure (fees, amounts, delay), deploy CREReceiver, wire forwarder
+  3. Transfer SyncTrigger ownership to L2 Governance Executor
+  4. Transfer CREReceiver ownership to LOL multisig
+
+Stage 2 — Initial Owner (runMigrate):
+  5. CustomSender.setOraclePool(newPool)
+  6. Grant SYNC_ROLE to SyncTrigger, revoke from old automation
+  7. Grant DEFAULT_ADMIN_ROLE to L2 Governance Executor, revoke from self
+  8. Transfer ProxyAdmin ownership to L2 Governance Executor
+
+Post-migration:
+  9. LOL multisig seeds new pool with wstETH liquidity
 ```
+
+See [README.md](../README.md) for the full migration runbook across all networks.
 
 ### Key Techniques
 
