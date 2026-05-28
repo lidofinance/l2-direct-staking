@@ -1,0 +1,78 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      { "name": "tokenBridge", "type": "address", "internalType": "address" },
+      { "name": "token", "type": "address", "internalType": "address" },
+      { "name": "delegator", "type": "address", "internalType": "address" }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "DELEGATOR",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address", "internalType": "address" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TOKEN",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address", "internalType": "address" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TOKEN_BRIDGE",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address", "internalType": "address" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "sendToken",
+    "inputs": [
+      { "name": "destChainSelector", "type": "uint64", "internalType": "uint64" },
+      { "name": "recipient", "type": "address", "internalType": "address" },
+      { "name": "amount", "type": "uint256", "internalType": "uint256" },
+      { "name": "feeData", "type": "bytes", "internalType": "bytes" }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "LineaL1toL2MessageSent",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "LineaAdapterL1toL2InvalidFeeAmount",
+    "inputs": [
+      { "name": "expectedFeeAmount", "type": "uint256", "internalType": "uint256" },
+      { "name": "feeAmount", "type": "uint256", "internalType": "uint256" }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "LineaAdapterL1toL2InvalidFeeToken",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LineaAdapterL1toL2InvalidParameters",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BridgeAdapterInvalidParameters",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BridgeAdapterOnlyDelegatedByDelegator",
+    "inputs": []
+  }
+]

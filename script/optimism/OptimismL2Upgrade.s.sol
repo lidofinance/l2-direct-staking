@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {L2UpgradeScriptBase} from "script/shared/L2UpgradeScriptBase.s.sol";
-import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
+import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 import {OptimismMigrationConstants as C} from "script/optimism/OptimismMigrationConstants.sol";
 
 /**

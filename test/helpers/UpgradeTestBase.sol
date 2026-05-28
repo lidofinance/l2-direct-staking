@@ -13,8 +13,8 @@ import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
-import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
-import {L1UpgradeActions} from "script/shared/L1UpgradeActions.s.sol";
+import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
+import {L1UpgradeActions} from "script/l1/L1UpgradeActions.s.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 
 /**

@@ -28,11 +28,11 @@ library LineaMigrationConstants {
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace;
     address internal constant L2_OLD_GELATO_AUTOMATION = 0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe;
 
-    // L2 SyncTrigger defaults
-    // Current mainnet values: https://lineascan.build/address/0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace#readContract (getFeeOtoD / getFeeDtoO)
-    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
+    // L2 SyncTrigger defaults — see docs/sync-fees.md for the Glamsterdam fee headroom rationale.
+    // Linea's gasLimit baseline is half the others (Linea Message Service uses a leaner adapter).
+    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
-    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 400_000;
+    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 500_000;
     // Linea FeeDtoO uses FeeCodec.encodeLineaL1toL2() which takes no parameters
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;

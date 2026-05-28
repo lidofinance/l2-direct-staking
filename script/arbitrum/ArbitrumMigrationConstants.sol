@@ -27,11 +27,10 @@ library ArbitrumMigrationConstants {
     // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A;
 
-    // L2 SyncTrigger defaults
-    // Current mainnet values: https://arbiscan.io/address/0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A#readContract (getFeeOtoD / getFeeDtoO)
-    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
+    // L2 SyncTrigger defaults — see docs/sync-fees.md for the Glamsterdam fee headroom rationale.
+    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
-    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 800_000;
+    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
     // Arbitrum retryable ticket parameters (used by FeeCodec.encodeArbitrumL1toL2).
     // NOTE: The live SyncAutomation at 0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A had its
     // FeeDtoO re-encoded from 29-byte ArbitrumL1toL2 format to 21-byte CCIP format

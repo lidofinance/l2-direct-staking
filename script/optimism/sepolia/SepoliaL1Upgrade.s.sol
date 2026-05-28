@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
 
-import {L1UpgradeActions} from "script/shared/L1UpgradeActions.s.sol";
+import {L1UpgradeActions} from "script/l1/L1UpgradeActions.s.sol";
 
 /**
  * @notice Sepolia testnet L1 upgrade script.

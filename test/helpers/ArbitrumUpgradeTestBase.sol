@@ -4,15 +4,11 @@ pragma solidity ^0.8.20;
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {UpgradeTestBase} from "test/helpers/UpgradeTestBase.sol";
 import {ArbitrumL2Defaults} from "script/arbitrum/ArbitrumL2Upgrade.s.sol";
-import {ArbitrumL1Defaults} from "script/arbitrum/ArbitrumL1Upgrade.s.sol";
 import {ArbitrumMigrationConstants as C} from "script/arbitrum/ArbitrumMigrationConstants.sol";
 
-/**
- * @title ArbitrumUpgradeTestBase
- * @notice Populates UpgradeTestBase with Arbitrum mainnet constants.
- *         Delegates config construction to ArbitrumL2Defaults / ArbitrumL1Defaults.
- */
-abstract contract ArbitrumUpgradeTestBase is UpgradeTestBase, ArbitrumL2Defaults, ArbitrumL1Defaults {
+/// @notice Populates UpgradeTestBase with Arbitrum mainnet constants.
+/// @dev L2 config from ArbitrumL2Defaults; L1 actions inherited via UpgradeTestBase.
+abstract contract ArbitrumUpgradeTestBase is UpgradeTestBase, ArbitrumL2Defaults {
     function _envOr(string memory primary, string memory secondary) internal view returns (string memory) {
         try vm.envString(primary) returns (string memory value) {
             return value;

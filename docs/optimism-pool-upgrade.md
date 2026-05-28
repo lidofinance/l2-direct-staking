@@ -66,6 +66,8 @@ Validates `SYNC_ROLE`-gated `sync` behavior and unauthorized access reverts.
 ### `test_upgradeSyncRoutesAcrossL2AndL1CCIPLayer`
 Full dual-fork CCIP path test: L2 `sync`, L1 message processing, adapter dispatch, and simulated L2 bridge finalization.
 
+The 9 tests above are highlights; the full suite shared via `test/helpers/PoolUpgradeTests.sol` is 17 tests, also covering pool pause/unpause, SyncTrigger thresholds (min/max amount, delay, insufficient fees), consecutive sync cycles, the deployed SyncTrigger operational invariants, and the end-to-end production migration path.
+
 ## Architecture
 
 ### Dual-Fork Testing
@@ -87,9 +89,9 @@ Each test selects the appropriate fork with `vm.selectFork()` before executing o
 - Shared fork/migration/CCIP helpers live in `test/helpers/UpgradeTestBase.sol` (network-agnostic) and `test/helpers/OptimismUpgradeTestBase.sol`.
 - Shared test scenarios (17 tests) live in `test/helpers/PoolUpgradeTests.sol`, instantiated per network.
 - Optimism test harness lives in `test/OptimismPoolUpgrade.t.sol`.
-- CREReceiver unit tests live in `test/CREReceiverTest.t.sol` (25 tests, no fork needed).
-- CRE integration tests live in `test/CREIntegrationTest.t.sol` (8 tests per network, fork-based, covers CRE Forwarder → CREReceiver → SyncTrigger path).
-- CRE TypeScript encoding tests live in `cre-workflows/sync-automation/main.test.ts` (11 tests, run with `bun test`).
+- CREReceiver unit tests live in `test/CREReceiverTest.t.sol` (34 tests, no fork needed).
+- CRE integration tests live in `test/helpers/CREIntegrationTests.sol`, instantiated per network via `test/CREIntegrationTest.t.sol` (9 shared tests × 4 networks = 36 total, fork-based, covers CRE Forwarder → CREReceiver → SyncTrigger path).
+- CRE TypeScript encoding tests live in `cre-workflows/sync-automation/main.test.ts` (9 tests, run with `bun test`).
 - Shared addresses, roles, and chain constants are centralized in `script/optimism/OptimismMigrationConstants.sol`.
 
 ### Migration Flow
@@ -146,4 +148,4 @@ See [README.md](../README.md) for the full migration runbook across all networks
 | Current deployer/admin | `0xb5c336a5c60D3482b29d83C742C65AE8351b91a8` |
 | LIDO_NEW_L1_OWNER | `0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c` |
 | LIDO_L2_GOVERNANCE_EXECUTOR | `0xefa0db536d2c8089685630fafe88cf7805966fc3` |
-| L2_LIQUIDITY_OWNER | `L2_LIQUIDITY_OWNER` env (defaults to `L2_GOVERNANCE_EXECUTOR`) |
+| L2_LIQUIDITY_OWNER | `L2_LIQUIDITY_OWNER` env (defaults to the network LOL multisig — `OptimismMigrationConstants.LIQUIDITY_OWNER`) |

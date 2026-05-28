@@ -4,15 +4,11 @@ pragma solidity ^0.8.20;
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {UpgradeTestBase} from "test/helpers/UpgradeTestBase.sol";
 import {LineaL2Defaults} from "script/linea/LineaL2Upgrade.s.sol";
-import {LineaL1Defaults} from "script/linea/LineaL1Upgrade.s.sol";
 import {LineaMigrationConstants as C} from "script/linea/LineaMigrationConstants.sol";
 
-/**
- * @title LineaUpgradeTestBase
- * @notice Populates UpgradeTestBase with Linea mainnet constants.
- *         Delegates config construction to LineaL2Defaults / LineaL1Defaults.
- */
-abstract contract LineaUpgradeTestBase is UpgradeTestBase, LineaL2Defaults, LineaL1Defaults {
+/// @notice Populates UpgradeTestBase with Linea mainnet constants.
+/// @dev L2 config from LineaL2Defaults; L1 actions inherited via UpgradeTestBase.
+abstract contract LineaUpgradeTestBase is UpgradeTestBase, LineaL2Defaults {
     function setUp() public virtual override {
         // L2 governance executor (network-specific)
         LIDO_L2_GOVERNANCE_EXECUTOR = C.LIDO_L2_GOVERNANCE_EXECUTOR;

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
+import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 
 /**
  * @notice Network-agnostic L1 upgrade actions for CSR lane migration.

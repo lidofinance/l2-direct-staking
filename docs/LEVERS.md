@@ -32,7 +32,9 @@ State-mutating contract calls ("levers") and who can invoke them after migration
 
 ---
 
-## L2: `CustomSender`
+## L2
+
+### `CustomSender`
 
 | Lever                                                         | GovExec | Sync | Any | Effect                                              |
 |---------------------------------------------------------------|:-------:|:----:|:---:|-----------------------------------------------------|
@@ -44,7 +46,7 @@ State-mutating contract calls ("levers") and who can invoke them after migration
 | `fastStake(token, amount, minAmountOut)`                      |         |      |  x  | Instant swap via pool; emits `FastStake`            |
 | `fastStakeReferral(token, amount, minAmountOut, referral)`    |         |      |  x  | Same as `fastStake` + `Referral` event              |
 
-## L2: `PausableImmutableOraclePool`
+### `PausableImmutableOraclePool`
 
 | Lever                                   | LOL | Sender | Any | Effect                                            |
 |-----------------------------------------|:---:|:------:|:---:|---------------------------------------------------|
@@ -58,7 +60,11 @@ State-mutating contract calls ("levers") and who can invoke them after migration
 Notes:
 - `setOracle()` and `setFee()` are permanently disabled (always revert).
 
-## L2: `SyncTrigger`
+### Sync Automation
+
+On-chain (`SyncTrigger`, `CREReceiver`) and off-chain (CRE workflow) surfaces that drive periodic `CustomSender.sync(...)` calls.
+
+#### `SyncTrigger`
 
 | Lever                                | GovExec | CRERx | Any | Effect                                          |
 |--------------------------------------|:-------:|:-----:|:---:|------------------------------------------------ |
@@ -70,7 +76,7 @@ Notes:
 | `sweep(token, recipient, amount)`    |    x    |       |     | Withdraws tokens / native balance               |
 | `receive()` (native transfer)        |         |       |  x  | Funds CCIP fee payments                         |
 
-## L2: `CREReceiver`
+#### `CREReceiver`
 
 | Lever                              | LOL | CREFwd | Any | Effect                                          |
 |------------------------------------|:---:|:------:|:---:|-------------------------------------------------|
@@ -83,7 +89,7 @@ Notes:
 
 Views: `getForwarder`, `getExpectedAuthor`, `isCallAllowed(target, selector)`, `supportsInterface`.
 
-## Off-chain (CRE Platform): Sync Workflow
+#### Off-chain (CRE Platform): Sync Workflow
 
 The sync workflow is an off-chain WASM program registered on Chainlink's CRE platform. Lifecycle is controlled by the Lido Deployer's CRE account. The only on-chain surface is the [`WorkflowRegistry`](https://etherscan.io/address/0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5) contract on Ethereum Mainnet (`0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5`), which records workflow metadata — it does **not** hold funds. See [CRE deployment docs](https://docs.chain.link/cre/guides/operations/deploying-workflows) for the full registration flow.
 
@@ -108,7 +114,15 @@ Notes:
 - **CRE-side pause is instant** but depends on Chainlink infrastructure. The on-chain equivalent kill switches are `LOL → CREReceiver.setForwarder(0)` and `GovExec → SyncTrigger.setForwarder(0)` / `setDelay(uint48 max)`; these are authoritative even if CRE is degraded.
 - **Neither the CRE DON nor the CRE Forwarder** can be controlled by this project — they are Chainlink infrastructure shared across CRE users.
 
-## L1: `LidoCustomReceiver`
+### `ProxyAdmin` (L2)
+
+| Lever                                          | GovExec | Effect                                       |
+|------------------------------------------------|:-------:|----------------------------------------------|
+| `upgradeAndCall(proxy, implementation, data)`  |    x    | Upgrades L2 proxies (incl. `CustomSender`)   |
+
+## L1
+
+### `LidoCustomReceiver`
 
 | Lever                                      | DAO | Router | Any | Effect                                           |
 |--------------------------------------------|:---:|:------:|:---:|--------------------------------------------------|
@@ -123,12 +137,11 @@ Notes:
 - `processMessage(message)` is internal-only (`onlySelf`), called within `ccipReceive`.
 - `receive()` accepts native only from the WNATIVE contract during message processing.
 
-## `ProxyAdmin` (L2 and L1)
+### `ProxyAdmin` (L1)
 
-| Lever                                          | GovExec | DAO | Effect                                         |
-|------------------------------------------------|:-------:|:---:|-------------------------------------------------|
-| L2: `upgradeAndCall(proxy, implementation, data)` |  x   |     | Upgrades L2 proxies (incl. `CustomSender`)     |
-| L1: `upgradeAndCall(proxy, implementation, data)` |      |  x  | Upgrades L1 proxies (incl. `LidoCustomReceiver`) |
+| Lever                                          | DAO | Effect                                              |
+|------------------------------------------------|:---:|----------------------------------------------------|
+| `upgradeAndCall(proxy, implementation, data)`  |  x  | Upgrades L1 proxies (incl. `LidoCustomReceiver`)   |
 
 ---
 

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {Script} from "forge-std/Script.sol";
 
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
-import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
+import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 
 /**
  * @notice Shared broadcast script for L2 upgrade operations.
@@ -40,12 +40,12 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     /// @dev Returns a network-specific L2 upgrade config.
     function _buildConfig(address initialOwner, address governanceExecutor, address liquidityOwner)
         internal
-        pure
+        view
         virtual
         returns (L2UpgradeConfig memory);
 
     /// @dev Returns the network-specific default liquidity owner (LOL multisig).
-    function _defaultLiquidityOwner() internal pure virtual returns (address);
+    function _defaultLiquidityOwner() internal view virtual returns (address);
 
     /// @dev Returns the expected L2 chain ID. Scripts revert if `block.chainid` doesn't match.
     function _expectedChainId() internal pure virtual returns (uint256);
@@ -138,7 +138,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     // ── Stage 2: Initial Owner ───────────────────────────────────────
 
     /// @notice Migrate admin roles on existing contracts to final owners. Actor: Initial Owner.
-    function runMigrate() public {
+    function runMigrate() public virtual {
         assertL2ChainId(_expectedChainId());
 
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
@@ -156,7 +156,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     }
 
     /// @notice Same as runMigrate but impersonates Initial Owner (anvil only).
-    function runMigrateUnlocked() public {
+    function runMigrateUnlocked() public virtual {
         assertL2ChainId(_expectedChainId());
 
         address initialOwner = _envInitialOwnerAddress();
