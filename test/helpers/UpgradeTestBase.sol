@@ -16,6 +16,7 @@ import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 import {L1UpgradeActions} from "script/l1/L1UpgradeActions.s.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
+import {CCIPv16ForkRouter} from "test/helpers/CCIPv16ForkRouter.sol";
 
 /**
  * @title UpgradeTestBase
@@ -23,7 +24,7 @@ import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
  * @dev Subclasses populate state variables with network-specific constants in setUp()
  *      and implement virtual functions for config/fee encoding.
  */
-abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions {
+abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, CCIPv16ForkRouter {
     // ──────────────── Constants (same for all networks) ─────────────────
 
     bytes4 internal constant ACCESS_CONTROL_UNAUTHORIZED_SELECTOR =

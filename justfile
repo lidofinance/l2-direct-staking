@@ -1331,13 +1331,28 @@ _acceptance-test:
     echo "L1 state-mate checks passed"
 
     # ── Step 4: Forge integration tests ────────────────────────────
+    # Point forge tests at the local anvil forks spawned in Step 1 so all networks
+    # share the local L1 fork and per-network L2 forks instead of hammering the
+    # shared upstream RPC key (4× parallel suites against one Infura key trips 429s).
     step "Step 4: Forge integration tests (all networks)"
     all_tests=""
     for i in $(seq 0 $((NET_COUNT - 1))); do
       all_tests="${all_tests:+$all_tests|}${NET_TESTS[$i]}"
     done
+    # Note: L1_RPC_URL is intentionally NOT overridden to the local L1 fork — Step 2 already
+    # applied the admin role migration on that fork, so `_deployAndMigrateL1` would re-run a
+    # grant/revoke from an address that no longer holds the role. The L1 upstream is typically
+    # a private node anyway and not implicated in the 429 storms.
     (
       cd "$ROOT_DIR"
+      L2_OPTIMISM_RPC_URL="${L2_FORK_URLS[0]}" \
+      L2_ARBITRUM_RPC_URL="${L2_FORK_URLS[1]}" \
+      L2_BASE_RPC_URL="${L2_FORK_URLS[2]}" \
+      L2_LINEA_RPC_URL="${L2_FORK_URLS[3]}" \
+      LOCAL_L2_OPTIMISM_RPC_URL="${L2_FORK_URLS[0]}" \
+      LOCAL_L2_ARBITRUM_RPC_URL="${L2_FORK_URLS[1]}" \
+      LOCAL_L2_BASE_RPC_URL="${L2_FORK_URLS[2]}" \
+      LOCAL_L2_LINEA_RPC_URL="${L2_FORK_URLS[3]}" \
       forge test --match-contract "$all_tests" -vv
     )
 

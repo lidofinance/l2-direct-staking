@@ -615,7 +615,15 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         vm.selectFork(l1Fork);
         uint256 receiverWstBefore = IERC20(L1_WSTETH).balanceOf(L1_LIDO_CUSTOM_RECEIVER);
 
-        ccipLocalSimulatorFork.switchChainAndRouteMessage(l1Fork);
+        _routeCCIPMessage(
+            ccipLocalSimulatorFork,
+            l2Fork,
+            l1Fork,
+            L2_CCIP_ROUTER,
+            ETH_CCIP_CHAIN_SELECTOR,
+            L1_LIDO_CUSTOM_RECEIVER,
+            L1_CCIP_ROUTER
+        );
         assertEq(vm.activeFork(), l1Fork, "routing should switch to L1 fork");
 
         Vm.Log[] memory entries = vm.getRecordedLogs();

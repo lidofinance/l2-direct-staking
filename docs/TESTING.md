@@ -58,8 +58,9 @@ The test follows the Chainlink Local forked simulator flow:
 5. On L2, perform `fastStake` to accumulate WETH in the pool.
 6. On L2, call `sync(...)` and capture CCIP logs:
    - `vm.recordLogs()`
-7. Route the recorded CCIP message to L1 using:
-   - `ccipLocalSimulatorFork.switchChainAndRouteMessage(l1Fork)`
+7. Route the recorded CCIP message to L1 via `test/helpers/CCIPv16ForkRouter.sol::_routeCCIPMessage(...)`. It picks one of two paths based on the L2 OnRamp's `typeAndVersion`:
+   - **v1.5 OnRamps** (currently Linea): delegates to `ccipLocalSimulatorFork.switchChainAndRouteMessage(l1Fork)`.
+   - **v1.6 OnRamps** (currently Arbitrum / Base / Optimism): decodes the `CCIPMessageSent` event manually and injects the message directly into the L1 receiver's `ccipReceive` (pranking as the L1 CCIP router and pre-funding it with the destination tokens). See [§ 5.1 below](#51-why-the-test-needs-its-own-v16-router) for the reasoning.
 8. Verify on L1:
    - message processed (`getFailedMessageHash(messageId) == 0`)
    - receiver stakes and increases wstETH balance
@@ -74,6 +75,16 @@ The test follows the Chainlink Local forked simulator flow:
 ## 5. Troubleshooting
 
 - If Foundry crashes with `SCDynamicStoreBuilder` on macOS, run tests outside restricted sandbox/container environments.
+
+### 5.1 Why the test needs its own v1.6 router
+
+`lib/chainlink-local` is pinned at v0.2.3. Its `CCIPLocalSimulatorFork.switchChainAndRouteMessage` matches **only** the legacy v1.5 OnRamp event signature `CCIPSendRequested(EVM2EVMMessage)` (topic `0xd0c3c799…`). Arbitrum, Base, and Optimism mainnet L2→L1 lanes have migrated to CCIP **v1.6**, which emits `CCIPMessageSent(uint64 indexed,uint64 indexed,EVM2AnyRampMessage)` — a different topic hash (`0x192442a2…`). The simulator silently fails to decode the message, the default-zero `sourceChainSelector` matches no off-ramp, and `executeSingleMessage` is never called → the L1 receiver never runs → no `AdapterInvoked` event → `_assertAndGetAdapterDispatch` fails with `"adapter dispatch event should be emitted"`. Linea still works because its lane is on v1.5.
+
+Bumping `lib/chainlink-local` to v0.2.5+ (where v1.6 routing was added) is not viable: those versions expect `@chainlink/contracts-ccip/contracts/...` import paths that conflict with the `chainlink-csr` library's `@chainlink/contracts-ccip/src/v0.8/ccip/...` imports. The two libraries share the same remapping.
+
+`test/helpers/CCIPv16ForkRouter.sol` is a minimal local fork-router that papers over this. For v1.6 lanes it deliberately bypasses the OffRamp's token-pool machinery (which checks `localPoolAddress.supportsInterface(Pool.CCIP_POOL_V1)` against mainnet's `TokenAdminRegistry`, whose WETH-pool registration varies by lane and isn't useful to reproduce for tests). Instead it `deal`s the destination tokens to the receiver and calls `ccipReceive` directly via `vm.prank(L1_CCIP_ROUTER)`. The receiver doesn't see a difference between this and a real off-ramp invocation — same `msg.sender`, same message struct — so what the test actually validates (the receiver dispatches to the right adapter for the source chain) is unchanged.
+
+If `lib/chainlink-local` is ever bumped to ≥ v0.2.5 (and `chainlink-csr` import paths are reconciled), `CCIPv16ForkRouter` becomes redundant — the upstream simulator handles both versions. At that point delete this helper and restore the direct `ccipLocalSimulatorFork.switchChainAndRouteMessage(l1Fork)` call in `PoolUpgradeTests.sol`.
 
 # Per-network dress rehearsal on anvil forks
 
