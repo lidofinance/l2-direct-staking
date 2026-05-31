@@ -5,7 +5,7 @@ pragma solidity ^0.8.20;
 /// @dev L1 and shared constants live in L1MigrationConstants.
 library BaseMigrationConstants {
     // L2 governance executor
-    address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x2897A1b134050c01503843db48e034d4C9e2b18c;
+    address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x0E37599436974a25dDeEdF795C848d30Af46eaCF;
 
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61;
@@ -27,7 +27,7 @@ library BaseMigrationConstants {
     // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x3776CC14ce997827F7A87091018Daa1739dc2790;
 
-    // L2 SyncTrigger defaults — see docs/sync-fees.md for the Glamsterdam fee headroom rationale.
+    // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;

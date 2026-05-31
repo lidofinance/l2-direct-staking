@@ -27,7 +27,7 @@ library OptimismMigrationConstants {
     // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x3776CC14ce997827F7A87091018Daa1739dc2790;
 
-    // L2 SyncTrigger defaults — see docs/sync-fees.md for the Glamsterdam fee headroom rationale.
+    // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;

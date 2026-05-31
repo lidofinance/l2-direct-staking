@@ -2,6 +2,10 @@
 
 set dotenv-load
 
+# Default recipe: list all available recipes (runs on bare `just`).
+default:
+    @just --list
+
 # Helper: extract an address from a YAML anchor
 _ya file anchor:
     @yq '.[] | select(anchor == "{{anchor}}")' {{file}}
@@ -1062,7 +1066,8 @@ verify-l1-state-mate l1_rpc_url='':
 # Env vars (all optional for the fork-based acceptance test):
 #   L2_LIDO_DEPLOYER_PRIVATE_KEY  — deployer key (generated if missing on Anvil)
 #   L2_GOVERNANCE_EXECUTOR        — governance executor address
-#   L1_RPC_URL / L2_OPTIMISM_RPC_URL — upstream RPCs for forking
+#   RPC_ETHEREUM / RPC_OPTIMISM / RPC_ARBITRUM / RPC_BASE / RPC_LINEA — upstream RPCs for forking
+#     (legacy L1_RPC_URL / L2_<NET>_RPC_URL are still honoured as fallbacks)
 # ──────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────
@@ -1088,8 +1093,10 @@ _acceptance-test:
 
     # Network count and per-network config (parallel arrays, bash 3 compatible)
     NET_NAMES=(    optimism                         arbitrum                         base                             linea)
-    NET_RPC_ENVS=( L2_OPTIMISM_RPC_URL              L2_ARBITRUM_RPC_URL              L2_BASE_RPC_URL                  L2_LINEA_RPC_URL)
-    NET_GOVS=(     0xEfa0dB536d2c8089685630fafe88CF7805966FC3 0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29 0x2897A1b134050c01503843db48e034d4C9e2b18c 0x2897A1b134050c01503843db48e034d4C9e2b18c)
+    NET_RPC_ENVS=( RPC_OPTIMISM                     RPC_ARBITRUM                     RPC_BASE                         RPC_LINEA)
+    # Legacy env-var names, consulted as fallbacks when the RPC_<NET> var is unset.
+    NET_RPC_ENVS_LEGACY=( L2_OPTIMISM_RPC_URL        L2_ARBITRUM_RPC_URL              L2_BASE_RPC_URL                  L2_LINEA_RPC_URL)
+    NET_GOVS=(     0xEfa0dB536d2c8089685630fafe88CF7805966FC3 0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29 0x0E37599436974a25dDeEdF795C848d30Af46eaCF 0x74Be82F00CC867614803ffd7f36A2a4aF0405670)
     NET_SCRIPTS=(  "script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript" \
                    "script/arbitrum/ArbitrumL2Upgrade.s.sol:ArbitrumL2UpgradeScript" \
                    "script/base/BaseL2Upgrade.s.sol:BaseL2UpgradeScript" \
@@ -1109,7 +1116,7 @@ _acceptance-test:
     die() { echo "FAIL: $*" >&2; exit 1; }
 
     # Validate parallel arrays have consistent length
-    for arr_name in NET_RPC_ENVS NET_GOVS NET_SCRIPTS NET_TESTS NET_SM_DIRS NET_SM_TMPLS NET_SENDERS NET_IMPLS NET_PROXIES NET_LOLS; do
+    for arr_name in NET_RPC_ENVS NET_RPC_ENVS_LEGACY NET_GOVS NET_SCRIPTS NET_TESTS NET_SM_DIRS NET_SM_TMPLS NET_SENDERS NET_IMPLS NET_PROXIES NET_LOLS; do
       eval "arr_len=\${#${arr_name}[@]}"
       [[ "$arr_len" -eq "$NET_COUNT" ]] || die "Array $arr_name has $arr_len elements, expected $NET_COUNT"
     done
@@ -1156,16 +1163,18 @@ _acceptance-test:
       command -v "$cmd" >/dev/null 2>&1 || die "Missing: $cmd"
     done
 
-    L1_UPSTREAM="${L1_RPC_URL:-}"
-    [[ -n "$L1_UPSTREAM" ]] || die "Set L1_RPC_URL"
+    L1_UPSTREAM="${RPC_ETHEREUM:-${L1_RPC_URL:-}}"
+    [[ -n "$L1_UPSTREAM" ]] || die "Set RPC_ETHEREUM"
     cast chain-id --rpc-url "$L1_UPSTREAM" >/dev/null 2>&1 || die "L1 RPC not reachable: $L1_UPSTREAM"
     echo "L1: $L1_UPSTREAM"
 
-    # Collect and validate L2 RPCs
+    # Collect and validate L2 RPCs (prefer RPC_<NET>, fall back to the legacy L2_<NET>_RPC_URL).
     L2_UPSTREAMS=()
     for i in $(seq 0 $((NET_COUNT - 1))); do
       rpc_env="${NET_RPC_ENVS[$i]}"
+      rpc_env_legacy="${NET_RPC_ENVS_LEGACY[$i]}"
       rpc_val="${!rpc_env:-}"
+      [[ -n "$rpc_val" ]] || rpc_val="${!rpc_env_legacy:-}"
       [[ -n "$rpc_val" ]] || die "Set $rpc_env"
       cast chain-id --rpc-url "$rpc_val" >/dev/null 2>&1 || die "${NET_NAMES[$i]} RPC not reachable: $rpc_val"
       L2_UPSTREAMS+=("$rpc_val")
@@ -1173,8 +1182,11 @@ _acceptance-test:
     done
     echo "All RPCs OK"
 
-    [[ -n "${L2_LIDO_DEPLOYER_PRIVATE_KEY:-}" ]] || die "Set L2_LIDO_DEPLOYER_PRIVATE_KEY"
+    # On a fork the deployer just needs to be a funded address (the recipe tops it up via
+    # anvil_setBalance below), so fall back to anvil's well-known dev key #0 when unset.
+    export L2_LIDO_DEPLOYER_PRIVATE_KEY="${L2_LIDO_DEPLOYER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
     DEPLOYER_ADDR="$(address_from_key "$L2_LIDO_DEPLOYER_PRIVATE_KEY")"
+    echo "Deployer: $DEPLOYER_ADDR"
 
     # ── Step 1: Spawn forks ────────────────────────────────────────
     # Forks are spawned serially (each anvil waits for the previous to be ready,
@@ -1185,7 +1197,10 @@ _acceptance-test:
     # genesis burst is still draining for a few seconds afterwards — the
     # cool-down lets it finish before the next fork starts hammering the same
     # API key. Override with FORK_SPAWN_COOLDOWN_SECONDS=N.
-    FORK_SPAWN_COOLDOWN_SECONDS="${FORK_SPAWN_COOLDOWN_SECONDS:-10}"
+    # Default 0: the RPC_<NET> upstreams are local anvil forks that don't rate-limit, so the
+    # genesis burst can't trip 429s. Bump it (e.g. FORK_SPAWN_COOLDOWN_SECONDS=10) when pointing
+    # the legacy L2_<NET>_RPC_URL fallbacks at a shared remote key like Infura.
+    FORK_SPAWN_COOLDOWN_SECONDS="${FORK_SPAWN_COOLDOWN_SECONDS:-0}"
     # Wall-clock budget from spawn (not an additive sleep): if wait_for_rpc already
     # burned the budget on a slow Infura day, skip the sleep. Applied to L1 too —
     # L1 and L2 RPCs share an Infura key in some setups, so the first L2 spawning
@@ -1209,6 +1224,7 @@ _acceptance-test:
     spawn_with_cooldown "$L1_FORK_URL" "L1" "$L1_UPSTREAM" "$L1_PORT" "$WORK_DIR/l1.log" "$FORK_SPAWN_COOLDOWN_SECONDS"
 
     L2_FORK_URLS=()
+    L2_FORK_SNAPSHOTS=()
     for i in $(seq 0 $((NET_COUNT - 1))); do
       port=$((BASE_PORT + 1 + i))
       fork_url="http://127.0.0.1:$port"
@@ -1217,6 +1233,12 @@ _acceptance-test:
       (( i == NET_COUNT - 1 )) && cooldown=0
       spawn_with_cooldown "$fork_url" "${NET_NAMES[$i]}" "${L2_UPSTREAMS[$i]}" "$port" "$WORK_DIR/${NET_NAMES[$i]}.log" "$cooldown"
       L2_FORK_URLS+=("$fork_url")
+      # Snapshot the pristine fork. Step 2 (migrate) + Step 3 (state-mate) then exercise it,
+      # which warms anvil's upstream-state cache; Step 4 reverts to this snapshot to hand the
+      # forge tests a CLEAN-but-WARM fork — so they re-run the migration themselves yet avoid
+      # cold-fetching mainnet state through flaky L2 RPC backends (Base's drpc lane in particular).
+      snap="$(cast rpc --rpc-url "$fork_url" evm_snapshot | tr -d '"\r\n')"
+      L2_FORK_SNAPSHOTS+=("$snap")
     done
     echo "All forks ready"
 
@@ -1331,30 +1353,42 @@ _acceptance-test:
     echo "L1 state-mate checks passed"
 
     # ── Step 4: Forge integration tests ────────────────────────────
-    # Point forge tests at the local anvil forks spawned in Step 1 so all networks
-    # share the local L1 fork and per-network L2 forks instead of hammering the
-    # shared upstream RPC key (4× parallel suites against one Infura key trips 429s).
-    step "Step 4: Forge integration tests (all networks)"
-    all_tests=""
+    # Each forge suite re-runs the full deploy+migrate itself (pranking INITIAL_OWNER), so it needs
+    # PRE-migration state; against a migrated fork those steps revert with AccessControl/Ownable-
+    # unauthorized because INITIAL_OWNER's roles were already moved. So point the suites at:
+    #   • L2 — the Step-1 forks ($L2_FORK_URLS), first reverted to their pristine pre-migration
+    #     snapshot (the loop below). evm_revert rolls back Step 2's migration but keeps the
+    #     upstream-state cache anvil warmed in Steps 2–3 (it only unwinds local diffs, not the fork
+    #     backend cache) — so the suites get clean state without cold-fetching mainnet through the
+    #     flaky L2 backends.
+    #   • L1 — the clean $L1_UPSTREAM, NOT the Step-1 L1 fork ($L1_FORK_URL), which Step 2 migrated
+    #     (there is no L1 snapshot to revert).
+    # vm.createFork is in-memory, so the suites never mutate these shared forks.
+    substep "Reverting L2 forks to pristine snapshots (clean + warm) for forge tests"
     for i in $(seq 0 $((NET_COUNT - 1))); do
-      all_tests="${all_tests:+$all_tests|}${NET_TESTS[$i]}"
+      cast rpc --rpc-url "${L2_FORK_URLS[$i]}" evm_revert "${L2_FORK_SNAPSHOTS[$i]}" >/dev/null \
+        || die "${NET_NAMES[$i]} evm_revert to snapshot ${L2_FORK_SNAPSHOTS[$i]} failed"
     done
-    # Note: L1_RPC_URL is intentionally NOT overridden to the local L1 fork — Step 2 already
-    # applied the admin role migration on that fork, so `_deployAndMigrateL1` would re-run a
-    # grant/revoke from an address that no longer holds the role. The L1 upstream is typically
-    # a private node anyway and not implicated in the 429 storms.
-    (
-      cd "$ROOT_DIR"
-      L2_OPTIMISM_RPC_URL="${L2_FORK_URLS[0]}" \
-      L2_ARBITRUM_RPC_URL="${L2_FORK_URLS[1]}" \
-      L2_BASE_RPC_URL="${L2_FORK_URLS[2]}" \
-      L2_LINEA_RPC_URL="${L2_FORK_URLS[3]}" \
-      LOCAL_L2_OPTIMISM_RPC_URL="${L2_FORK_URLS[0]}" \
-      LOCAL_L2_ARBITRUM_RPC_URL="${L2_FORK_URLS[1]}" \
-      LOCAL_L2_BASE_RPC_URL="${L2_FORK_URLS[2]}" \
-      LOCAL_L2_LINEA_RPC_URL="${L2_FORK_URLS[3]}" \
-      forge test --match-contract "$all_tests" -vv
-    )
+
+    # Run per-network, sequentially, against the now clean+warm local L2 forks ($L2_FORK_URLS[i]) and
+    # the clean L1 upstream. Each suite reads the network-specific L2_<NET>_RPC_URL (and the LOCAL_
+    # alias some bases prefer). Sequential is deliberate — four suites at once multiplies any residual
+    # cold-fetch demand on the slower backends. A generous ETH_RPC_TIMEOUT absorbs the occasional
+    # slow upstream read on the flakier lanes.
+    step "Step 4: Forge integration tests (per network)"
+    for i in $(seq 0 $((NET_COUNT - 1))); do
+      name="${NET_NAMES[$i]}"
+      l2_env="${NET_RPC_ENVS_LEGACY[$i]}"
+      substep "$name: forge tests (${NET_TESTS[$i]})"
+      (
+        cd "$ROOT_DIR"
+        export L1_RPC_URL="$L1_UPSTREAM"
+        export "$l2_env=${L2_FORK_URLS[$i]}"
+        export "LOCAL_$l2_env=${L2_FORK_URLS[$i]}"
+        export ETH_RPC_TIMEOUT="${ETH_RPC_TIMEOUT:-120}"
+        forge test --match-contract "${NET_TESTS[$i]}" -vv
+      ) || die "$name forge tests failed"
+    done
 
     # ── Step 5: Report ─────────────────────────────────────────────
     step "PASS: Full acceptance test complete"
@@ -1407,9 +1441,6 @@ test-sepolia-upgrade-state-verify:
 # Legacy alias
 test-optimism-upgrade-state:
     @just _acceptance-test
-
-default:
-    echo 'Hello, world!'
 
 # Print ETH, WETH, and wstETH balances for a given address on L1
 [no-exit-message]

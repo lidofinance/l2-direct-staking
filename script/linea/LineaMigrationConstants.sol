@@ -5,7 +5,7 @@ pragma solidity ^0.8.20;
 /// @dev L1 and shared constants live in L1MigrationConstants.
 library LineaMigrationConstants {
     // L2 governance executor
-    address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x2897A1b134050c01503843db48e034d4C9e2b18c;
+    address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x74Be82F00CC867614803ffd7f36A2a4aF0405670;
 
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6;
@@ -28,7 +28,7 @@ library LineaMigrationConstants {
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace;
     address internal constant L2_OLD_GELATO_AUTOMATION = 0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe;
 
-    // L2 SyncTrigger defaults — see docs/sync-fees.md for the Glamsterdam fee headroom rationale.
+    // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     // Linea's gasLimit baseline is half the others (Linea Message Service uses a leaner adapter).
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
