@@ -50,6 +50,17 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     /// @dev Returns the expected L2 chain ID. Scripts revert if `block.chainid` doesn't match.
     function _expectedChainId() internal pure virtual returns (uint256);
 
+    /// @dev Returns the known-correct L2 governance executor for this network, or address(0) to opt
+    ///      out of the check (e.g. Sepolia, where the executor is operator-supplied and has no
+    ///      canonical value). Production networks override this to their per-chain
+    ///      LIDO_L2_GOVERNANCE_EXECUTOR constant so that a wrong `L2_GOVERNANCE_EXECUTOR` env value is
+    ///      rejected before any irreversible admin/ownership handover (FINDINGS.md F-4).
+    ///      `pure` like `_expectedChainId` (every network returns a constant or the address(0) opt-out;
+    ///      none reads state). The expected executor is a known canonical value, never derived from env.
+    function _expectedGovernanceExecutor() internal pure virtual returns (address) {
+        return address(0);
+    }
+
     // ── env helpers ──────────────────────────────────────────────────
 
     function _envInitialOwnerPrivateKey() internal view returns (uint256) {
@@ -82,6 +93,22 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         }
     }
 
+    error L2UpgradeWrongGovernanceExecutor(address actual, address expected);
+
+    /// @dev Reads `L2_GOVERNANCE_EXECUTOR` and asserts it matches this network's known-correct executor
+    ///      (FINDINGS.md F-4). The per-network constant previously lived only in tests, so a wrong-but-
+    ///      nonzero env value would have been baked into SyncTrigger ownership (Stage 1) and the
+    ///      DEFAULT_ADMIN_ROLE / ProxyAdmin handover (Stage 2) with no on-chain guardrail — the same class
+    ///      of bug as the historical wrong Base/Linea executor. No-op when `_expectedGovernanceExecutor()`
+    ///      returns address(0) (testnet opt-out).
+    function _envGovernanceExecutor() internal view returns (address governanceExecutor) {
+        governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address expected = _expectedGovernanceExecutor();
+        if (expected != address(0) && governanceExecutor != expected) {
+            revert L2UpgradeWrongGovernanceExecutor(governanceExecutor, expected);
+        }
+    }
+
     // ── Deploy helper ────────────────────────────────────────────────
 
     function _deployAll(L2UpgradeConfig memory cfg, address creForwarder, address deployer)
@@ -103,7 +130,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 
@@ -123,7 +150,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         assertL2ChainId(_expectedChainId());
 
         address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
         address expectedAuthor = _envLidoDeployerAddress();
@@ -143,7 +170,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         address initialOwner = vm.addr(initialOwnerPrivateKey);
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
@@ -160,7 +187,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         assertL2ChainId(_expectedChainId());
 
         address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
@@ -202,7 +229,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = vm.addr(initialOwnerPrivateKey);
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 
@@ -224,7 +251,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
         address deployer = vm.addr(lidoDeployerPrivateKey);
         address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 

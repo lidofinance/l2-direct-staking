@@ -175,5 +175,7 @@ l2:
           - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
             result: true
         supportsInterface:
-          - args: ["0x21a4cdb3"] # IReceiver
+          - args: ["0x805f2132"] # IReceiver (onReport-only) id the CRE forwarder queries
+            result: true
+          - args: ["0x01ffc9a7"] # ERC-165 base id (ERC165Checker probes this first)
             result: true

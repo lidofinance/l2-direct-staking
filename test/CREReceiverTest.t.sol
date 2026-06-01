@@ -33,6 +33,13 @@ contract MockTarget {
         emit Called(v);
     }
 
+    /// @dev Nullary mutating call — mirrors the production-seeded SyncTrigger.triggerSync().
+    function ping() external {
+        if (shouldRevert) revert Boom();
+        lastValue += 1;
+        emit Called(lastValue);
+    }
+
     function somethingElse() external pure returns (uint256) {
         return 42;
     }
@@ -73,12 +80,13 @@ contract CREReceiverTest is Test {
     address internal forwarder = makeAddr("creForwarder");
     address internal expectedAuthor = makeAddr("expectedAuthor");
     address internal owner;
-    bytes4 internal constant DO_SOMETHING = MockTarget.doSomething.selector;
+    bytes4 internal constant PING = MockTarget.ping.selector; // nullary — mirrors the production triggerSync() seed
+    bytes4 internal constant DO_SOMETHING = MockTarget.doSomething.selector; // parameterized — for the nullary-gate test
 
     function setUp() public {
         owner = address(this);
         target = new MockTarget();
-        receiver = new CREReceiver(forwarder, expectedAuthor, address(target), DO_SOMETHING);
+        receiver = new CREReceiver(forwarder, expectedAuthor, address(target), PING);
     }
 
     // ─── Construction ──────────────────────────────────────────────────
@@ -87,28 +95,28 @@ contract CREReceiverTest is Test {
         assertEq(receiver.getForwarder(), forwarder);
         assertEq(receiver.owner(), owner);
         assertEq(receiver.getExpectedAuthor(), expectedAuthor);
-        assertTrue(receiver.isCallAllowed(address(target), DO_SOMETHING));
+        assertTrue(receiver.isCallAllowed(address(target), PING));
     }
 
     function test_constructor_revertsOnZeroForwarder() public {
         vm.expectRevert(CREReceiver.InvalidForwarderAddress.selector);
-        new CREReceiver(address(0), expectedAuthor, address(target), DO_SOMETHING);
+        new CREReceiver(address(0), expectedAuthor, address(target), PING);
     }
 
     function test_constructor_revertsOnZeroExpectedAuthor() public {
         vm.expectRevert(CREReceiver.InvalidExpectedAuthor.selector);
-        new CREReceiver(forwarder, address(0), address(target), DO_SOMETHING);
+        new CREReceiver(forwarder, address(0), address(target), PING);
     }
 
     function test_constructor_skipsSeedWhenAllowedTargetZero() public {
         CREReceiver r = new CREReceiver(forwarder, expectedAuthor, address(0), bytes4(0));
-        assertFalse(r.isCallAllowed(address(target), DO_SOMETHING));
+        assertFalse(r.isCallAllowed(address(target), PING));
     }
 
     function test_constructor_emitsAllowedCallEvent() public {
         vm.expectEmit(true, true, false, true);
-        emit AllowedCallUpdated(address(target), DO_SOMETHING, true);
-        new CREReceiver(forwarder, expectedAuthor, address(target), DO_SOMETHING);
+        emit AllowedCallUpdated(address(target), PING, true);
+        new CREReceiver(forwarder, expectedAuthor, address(target), PING);
     }
 
     // ─── onReport: access control ──────────────────────────────────────
@@ -127,22 +135,22 @@ contract CREReceiverTest is Test {
     // ─── onReport: successful execution ────────────────────────────────
 
     function test_onReport_executesTargetCall() public {
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (123));
+        bytes memory data = abi.encodeCall(MockTarget.ping, ());
         bytes memory report = abi.encode(address(target), data);
 
         vm.prank(forwarder);
         receiver.onReport(_metadata(expectedAuthor), report);
 
-        assertEq(target.lastValue(), 123);
+        assertEq(target.lastValue(), 1);
     }
 
     function test_onReport_emitsCallExecuted() public {
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (456));
+        bytes memory data = abi.encodeCall(MockTarget.ping, ());
         bytes memory report = abi.encode(address(target), data);
 
         vm.prank(forwarder);
         vm.expectEmit(true, true, false, false);
-        emit CallExecuted(address(target), DO_SOMETHING, "");
+        emit CallExecuted(address(target), PING, "");
         receiver.onReport(_metadata(expectedAuthor), report);
     }
 
@@ -161,12 +169,12 @@ contract CREReceiverTest is Test {
 
     function test_onReport_revertsOnDisallowedTarget() public {
         MockTarget other = new MockTarget();
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (1));
+        bytes memory data = abi.encodeCall(MockTarget.ping, ());
         bytes memory report = abi.encode(address(other), data);
 
         vm.prank(forwarder);
         vm.expectRevert(
-            abi.encodeWithSelector(CREReceiver.CallNotAllowed.selector, address(other), DO_SOMETHING)
+            abi.encodeWithSelector(CREReceiver.CallNotAllowed.selector, address(other), PING)
         );
         receiver.onReport(_metadata(expectedAuthor), report);
     }
@@ -214,7 +222,7 @@ contract CREReceiverTest is Test {
 
     function test_onReport_revertsWhenTargetReverts() public {
         target.setShouldRevert(true);
-        bytes memory data = abi.encodeCall(MockTarget.doSomething, (1));
+        bytes memory data = abi.encodeCall(MockTarget.ping, ());
         bytes memory report = abi.encode(address(target), data);
 
         vm.prank(forwarder);
@@ -226,6 +234,21 @@ contract CREReceiverTest is Test {
             )
         );
         receiver.onReport(_metadata(expectedAuthor), report);
+    }
+
+    function test_onReport_revertsOnNonNullaryCall() public {
+        // F-2: even an explicitly allow-listed selector is rejected when the report carries
+        // arguments — only a bare 4-byte selector (a nullary call) may be dispatched.
+        receiver.setAllowedCall(address(target), DO_SOMETHING, true);
+        bytes memory data = abi.encodeCall(MockTarget.doSomething, (123)); // 4 selector + 32 arg = 36 bytes
+        bytes memory report = abi.encode(address(target), data);
+
+        vm.prank(forwarder);
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.NonNullaryCall.selector, address(target), uint256(36)));
+        receiver.onReport(_metadata(expectedAuthor), report);
+
+        // sanity: the parameterized call never reached the target
+        assertEq(target.lastValue(), 0);
     }
 
     // ─── Metadata parsing ──────────────────────────────────────────────
@@ -316,10 +339,19 @@ contract CREReceiverTest is Test {
     // ─── ERC165 ────────────────────────────────────────────────────────
 
     function test_supportsInterface_IReceiver() public {
+        // The CRE Keystone forwarder gates delivery on these two ids (ERC165Checker probes the
+        // ERC-165 base id first, then the onReport-only IReceiver id). BOTH must return true or
+        // reports are never delivered. See FINDINGS.md F-1.
+        assertTrue(receiver.supportsInterface(bytes4(0x805f2132)), "keystone IReceiver (onReport) id");
+        assertTrue(receiver.supportsInterface(bytes4(0x01ffc9a7)), "ERC-165 base id");
+        // After the F-1 fix the local IReceiver is onReport-only, so its id IS the keystone id.
+        assertTrue(type(IReceiver).interfaceId == bytes4(0x805f2132), "IReceiver must be onReport-only");
         assertTrue(receiver.supportsInterface(type(IReceiver).interfaceId));
     }
 
     function test_supportsInterface_unknownReturnsFalse() public {
+        // 0x21a4cdb3 was the buggy 3-function IReceiver id — it must NOT be advertised any more.
+        assertFalse(receiver.supportsInterface(bytes4(0x21a4cdb3)), "old 3-fn id must not be claimed");
         assertFalse(receiver.supportsInterface(bytes4(0xdeadbeef)));
     }
 

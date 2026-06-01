@@ -64,4 +64,8 @@ contract LineaL2UpgradeScript is L2UpgradeScriptBase, LineaL2Defaults {
     function _expectedChainId() internal pure override returns (uint256) {
         return C.LINEA_CHAIN_ID;
     }
+
+    function _expectedGovernanceExecutor() internal pure override returns (address) {
+        return C.LIDO_L2_GOVERNANCE_EXECUTOR;
+    }
 }

@@ -109,7 +109,7 @@ contract SepoliaL2UpgradeScript is L2UpgradeScriptBase, SepoliaL2Defaults {
     }
 
     function _runMigrateBody(address initialOwner) internal {
-        address governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
+        address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
