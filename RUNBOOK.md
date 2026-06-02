@@ -71,7 +71,7 @@ Run top-to-bottom; **Evidence** of each is its exit/print. Operator (any) SHALL 
 ```sh
 # a. Build + tests   (Evidence: each exits 0)
 forge build
-forge test --match-contract 'CREReceiverTest|SyncTriggerTest'   # contract unit tests (verify; no RPC)
+forge test --match-contract 'CREReceiverTest|SyncTriggerTest|L2GovernanceExecutorGuard'   # contract unit tests (verify; no RPC)
 just test-cre-workflow          # CRE TypeScript workflow (bun)
 just test-acceptance            # FORKS REHEARSAL (validate): deploy+migrate ×4 + L1 + state-mate + forge tests
 
@@ -122,6 +122,8 @@ just -E .env.<network> update-cre-config    # writes deployed addrs into cre con
 just -E .env.<network> deploy-cre-workflow  # cre workflow deploy; Duty: append printed CRE_WORKFLOW_ID= to .env
 just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = Lido Deployer, status ACTIVE
 ```
+> **Guard (both stages).** `deploy-stage1` and `migrate-stage2` assert `L2_GOVERNANCE_EXECUTOR == <per-network LIDO_L2_GOVERNANCE_EXECUTOR>` and revert (`L2UpgradeWrongGovernanceExecutor`) on mismatch — a wrong executor can't be baked into `SyncTrigger` ownership (Stage 1) or the admin/`ProxyAdmin` handover (Stage 2). Sepolia opts out (operator-supplied executor). See [`DOC.md` §6.3](DOC.md#63-how-the-final-state-is-verified).
+
 **Evidence for G2:** `verify-stage1` → `Script ran successfully`; `verify-cre-workflow` → `ACTIVE`. CRE workflow is deployed **before** Stage 2 so the new sync path is live the moment legacy `SYNC_ROLE` is revoked (minimises the no-sync window).
 
 ### Stage 2 — Duty: **Initial Owner** SHALL, per network (then L1 once)

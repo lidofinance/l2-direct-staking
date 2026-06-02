@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Vm} from "forge-std/Test.sol";
+import {console2} from "forge-std/console2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -626,6 +627,31 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
         assertEq(vm.activeFork(), l1Fork, "routing should switch to L1 fork");
 
+        // ── FeeOtoD.gasLimit adequacy carrier (A.10 validatedBy) ───────────────────────────────────
+        // Record the measured L1 `ccipReceive` gas — the work `FeeOtoD.gasLimit` budgets — as a
+        // regenerating, per-lane in-repo artifact. This replaces the old-value-relative justification
+        // in README §"Glamsterdam fee headroom bump" ("+25% over the prior baseline") with an
+        // independent carrier. Caveat (stated, not hidden): this route uses MockBridgeAdapter, so the
+        // figure is a LOWER BOUND — it omits the real per-network L1 bridge endpoint
+        // (L1StandardBridge / L1GatewayRouter / L1MessageService), which is also inside the budgeted
+        // path. Promote the projection check below to a hard assert once measured with the real adapter.
+        if (lastCcipReceiveGasUsed != 0) {
+            uint256 measuredGas = lastCcipReceiveGasUsed;
+            uint256 gasLimit = L2_SYNC_DESTINATION_GAS_LIMIT;
+            // Independent adequacy read (no prior value): Monitoring §5 wants ccipReceive/gasLimit < 80%,
+            // and Glamsterdam (EIP-7904/8038) reprices this cold-access-heavy path by ~+25%. So the
+            // post-Glamsterdam projection (x1.25) should still fit the budget.
+            console2.log("[FeeOtoD.gasLimit carrier] L2 CCIP selector:", L2_CCIP_CHAIN_SELECTOR);
+            console2.log("  measured ccipReceive gas (LOWER BOUND - mock adapter):", measuredGas);
+            console2.log("  configured FeeOtoD.gasLimit:", gasLimit);
+            console2.log("  utilization (bps of gasLimit):", measuredGas * 10_000 / gasLimit);
+            console2.log("  Glamsterdam-projected gas (x1.25):", measuredGas * 125 / 100);
+            // Safe regression floor: even the lower-bound receive must fit the configured budget.
+            assertLt(measuredGas, gasLimit, "ccipReceive lower-bound gas must fit FeeOtoD.gasLimit");
+        } else {
+            console2.log("[FeeOtoD.gasLimit carrier] ccipReceive gas not isolated (v1.5 route) - selector:", L2_CCIP_CHAIN_SELECTOR);
+        }
+
         Vm.Log[] memory entries = vm.getRecordedLogs();
         uint256 bridgedWstAmount = _assertAndGetAdapterDispatch(entries, address(newPool), feeDtoOHash);
 
@@ -641,6 +667,59 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
 
         _simulateL2BridgeFinalization(address(newPool), bridgedWstAmount);
+    }
+
+    /// @notice Faithful `FeeOtoD.gasLimit` adequacy carrier: measures L1 `ccipReceive` gas with the
+    ///         REAL per-network bridge adapter (no mock), so the figure includes the real bridge
+    ///         endpoint (`L1StandardBridge` / `L1GatewayRouter` / `L1MessageService`) that the mock
+    ///         routing test omits. Recorded as a regenerating artifact (A.10 `validatedBy`); the
+    ///         §5/Glamsterdam projection is hard-asserted here because the number is complete.
+    function test_ccipReceiveGasRealAdapter() public {
+        PausableImmutableOraclePool newPool = _deployAndMigrateL2();
+        _deployAndMigrateL1(); // leaves the REAL per-network L1 adapter configured (not the mock)
+
+        (bytes32 messageId,) = _prepareAndSyncL2(newPool);
+
+        vm.selectFork(l1Fork);
+        // In production the L1 receiver forwards FeeDtoO native value to the bridge (Arbitrum retryable
+        // submission cost); the fork message-injection doesn't carry that ETH, so pre-fund the receiver.
+        vm.deal(L1_LIDO_CUSTOM_RECEIVER, 1 ether);
+
+        _routeCCIPMessage(
+            ccipLocalSimulatorFork,
+            l2Fork,
+            l1Fork,
+            L2_CCIP_ROUTER,
+            ETH_CCIP_CHAIN_SELECTOR,
+            L1_LIDO_CUSTOM_RECEIVER,
+            L1_CCIP_ROUTER
+        );
+
+        assertEq(
+            ICustomReceiver(L1_LIDO_CUSTOM_RECEIVER).getFailedMessageHash(messageId),
+            bytes32(0),
+            "real-adapter ccipReceive must not enter the failed state"
+        );
+
+        uint256 measuredGas = lastCcipReceiveGasUsed;
+        if (measuredGas != 0) {
+            uint256 gasLimit = L2_SYNC_DESTINATION_GAS_LIMIT;
+            // Independent adequacy read (no prior value): Monitoring §5 wants ccipReceive/gasLimit < 80%,
+            // and Glamsterdam (EIP-7904/8038) reprices this cold-access-heavy path by ~+25%. So the
+            // post-Glamsterdam projection (x1.25) must still fit the configured budget.
+            console2.log("[FeeOtoD.gasLimit carrier - REAL adapter] L2 CCIP selector:", L2_CCIP_CHAIN_SELECTOR);
+            console2.log("  measured ccipReceive gas:", measuredGas);
+            console2.log("  configured FeeOtoD.gasLimit:", gasLimit);
+            console2.log("  utilization (bps of gasLimit):", measuredGas * 10_000 / gasLimit);
+            console2.log("  Glamsterdam-projected gas (x1.25):", measuredGas * 125 / 100);
+            assertLe(
+                measuredGas * 125,
+                gasLimit * 100,
+                "post-Glamsterdam ccipReceive (x1.25) would exceed FeeOtoD.gasLimit (OOG) - re-derive the gasLimit"
+            );
+        } else {
+            console2.log("[FeeOtoD.gasLimit carrier - REAL adapter] ccipReceive gas not isolated (v1.5 route) - selector:", L2_CCIP_CHAIN_SELECTOR);
+        }
     }
 
     function test_productionMigrationPath() public {

@@ -672,6 +672,50 @@ migrate-l1:
 test-optimism-upgrade:
     forge test --match-contract OptimismPoolUpgradeTest --rpc-url "$LOCAL_L2_OPTIMISM_RPC_URL" -vvv
 
+# Requires RPC_ETHEREUM + RPC_{OPTIMISM,ARBITRUM,BASE,LINEA} (forked mainnet, same env as the
+# acceptance test; legacy L1_RPC_URL / L2_<NET>_RPC_URL are still honoured as fallbacks).
+# Base/Arbitrum (v1.6 CCIP lanes) report a measured number; Optimism/Linea route
+# through the v1.5 simulator path, which this harness cannot isolate (printed as "not isolated").
+# Regenerates the table in README §"Measured ccipReceive gas".
+# Measure REAL per-lane L1 ccipReceive gas — the work FeeOtoD.gasLimit budgets.
+measure-fee-gas:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    # Resolve RPCs: prefer RPC_<NET> from the current env, fall back to the legacy names
+    # the Solidity tests read (L1_RPC_URL / L2_<NET>_RPC_URL) if already exported.
+    L1_RPC_URL="${RPC_ETHEREUM:-${L1_RPC_URL:-}}"
+    [[ -n "$L1_RPC_URL" ]] || { echo "Set RPC_ETHEREUM (or legacy L1_RPC_URL)" >&2; exit 1; }
+    cast chain-id --rpc-url "$L1_RPC_URL" >/dev/null 2>&1 \
+      || { echo "L1 RPC not reachable: $L1_RPC_URL (RPC_ETHEREUM)" >&2; exit 1; }
+    export L1_RPC_URL
+
+    SPECS=(    OptimismPoolUpgrade ArbitrumPoolUpgrade BasePoolUpgrade LineaPoolUpgrade)
+    RPC_ENVS=( RPC_OPTIMISM        RPC_ARBITRUM        RPC_BASE        RPC_LINEA)
+    # Legacy env-var names the tests read via vm.envString — consulted as fallbacks.
+    L2_ENVS=(  L2_OPTIMISM_RPC_URL L2_ARBITRUM_RPC_URL L2_BASE_RPC_URL L2_LINEA_RPC_URL)
+
+    rc=0
+    for i in $(seq 0 $(( ${#SPECS[@]} - 1 ))); do
+      spec="${SPECS[$i]}"; rpc_env="${RPC_ENVS[$i]}"; l2_env="${L2_ENVS[$i]}"
+      echo "──── ${spec} ────"
+      rpc_val="${!rpc_env:-}"
+      [[ -n "$rpc_val" ]] || rpc_val="${!l2_env:-}"
+      if [[ -z "$rpc_val" ]]; then
+        echo "  (skipped — set ${rpc_env} or legacy ${l2_env})"; rc=1
+        continue
+      fi
+      if ! cast chain-id --rpc-url "$rpc_val" >/dev/null 2>&1; then
+        echo "  (skipped — ${rpc_env} not reachable: ${rpc_val})"; rc=1
+        continue
+      fi
+      env "${l2_env}=${rpc_val}" \
+        forge test --match-path "test/${spec}.t.sol" --match-test test_ccipReceiveGasRealAdapter -vv 2>&1 \
+        | grep -E "FeeOtoD.gasLimit carrier|measured ccipReceive|configured FeeOtoD|utilization|Glamsterdam-proj|\[(PASS|FAIL)\]" \
+        || { echo "  (no carrier output — forge test produced none; rerun without the grep filter)"; rc=1; }
+    done
+    exit $rc
+
 [private]
 _optimism-state-migrate rpc_url='':
     #!/usr/bin/env bash

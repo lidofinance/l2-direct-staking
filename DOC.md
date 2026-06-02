@@ -205,8 +205,21 @@ four L1 adapters, `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper`.)
   - `CREReceiver` enforces **three independent gates** before acting:
     `msg.sender == CRE Forwarder`, report author `== expectedAuthor`, and
     `(target, selector)` on an owner-managed allow-list seeded only with
-    `(SyncTrigger, triggerSync)`. Its single external call is `target.call(data)`,
-    constrained by that allow-list.
+    `(SyncTrigger, triggerSync)` — **and the call must be argument-less** (calldata
+    exactly the 4-byte selector), so the report author controls nothing beyond
+    *which* allow-listed selector fires (the seed, `triggerSync()`, is nullary). Its
+    single external call is `target.call(data)`, constrained by both. Authentication
+    is deliberately **`(forwarder, workflowOwner)`** — the report's
+    `workflowName`/`workflowId` are *not* gated, since an owner-scoped label adds no
+    defence against owner-key compromise and the nullary lock already bounds the
+    blast radius to "trigger the intended, rate-limited sync."
+  - **ERC-165 delivery precondition.** The CRE Forwarder calls `onReport` only if
+    `CREReceiver.supportsInterface` returns true for **both** `0x805f2132`
+    (`onReport`-only `IReceiver`) and `0x01ffc9a7` (ERC-165 base) — it
+    `ERC165Checker`-gates first. A wrong id silently bricks the whole sync path (no
+    revert, just non-delivery); state-mate pins both ids at deploy. *Residual:*
+    confirm each L2's production Forwarder is this same ERC-165-gating
+    `KeystoneForwarder`.
   - `SyncTrigger.triggerSync()` is forwarder-only and **re-checks amount/delay
     on-chain** (defense-in-depth); `_delay` ships as `type(uint48).max`
     (deactivated), so a fresh deploy can't fire until configured; value flows only
@@ -219,9 +232,7 @@ four L1 adapters, `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper`.)
 - **Bounded blast radius.** After Stage 1 both are owned by governance / the LOL
   multisig, and the §3.4 kill switches disable them *without* an upgrade.
 - **Open items.** (1) No third-party audit artifact is in-repo — recommended
-  before/with mainnet rollout if not covered externally. (2) `CREReceiver.sol:20`
-  references `docs/SECURITY.md §6 invariant I1`, **but that file is not in the
-  repo** — a dangling reference to fix or restore. (3) Independently confirm the
+  before/with mainnet rollout if not covered externally. (2) Independently confirm the
   deployed bytecode is source-verified on each block explorer (state-mate pins the
   impl address, not source verification).
 
@@ -269,9 +280,10 @@ holder.
 
 **4. Generic adapter vs. domain logic — they change for different reasons.**
 `CREReceiver` is a *generic* CRE→on-chain dispatcher (it forwards any
-owner-allow-listed `(target, selector)`, not only `triggerSync`), and
-`SyncTrigger.onlyForwarder` accepts *any* configured caller, not necessarily a CRE
-receiver. Touching only through the two configurable addresses above, either can
+owner-allow-listed `(target, selector)`, not only `triggerSync` — though only
+**argument-less** calls, so the allow-list stays a routing table, not an
+arbitrary-calldata bridge; §2.6), and `SyncTrigger.onlyForwarder` accepts *any*
+configured caller, not necessarily a CRE receiver. Touching only through the two configurable addresses above, either can
 be replaced or rewired without redeploying the other: swap the CRE adapter without
 re-granting `SYNC_ROLE`, or retune the sync gates without re-exposing the CRE
 boundary. A CRE report-format change touches only `CREReceiver`; a sync-economics
@@ -628,6 +640,13 @@ authorization to run it.
   the legacy automation(s), and the Lido Deployer hot key) — new pool wired, allow-list
   `(SyncTrigger, triggerSync) = true`, EIP-1967 impl/admin slots, etc. — the
   on-chain check of every binding in §3.
+- **Broadcast-time guard (`L2_GOVERNANCE_EXECUTOR`)** — both Stage 1 and Stage 2
+  reject the run (`L2UpgradeWrongGovernanceExecutor`) unless the env-supplied executor
+  equals the per-network `LIDO_L2_GOVERNANCE_EXECUTOR` constant, so a wrong-but-nonzero
+  executor can't be baked into `SyncTrigger` ownership (Stage 1) or the admin /
+  `ProxyAdmin` handover (Stage 2). This is the **independent** check the caveat below
+  asks for — the executor is verified against a pinned constant, not against a value
+  derived from itself. (Sepolia opts out: its executor is operator-supplied.)
 
 Subject to the §6.1 caveat: state-mate is a strong check **except** where its
 expected values were derived from the same constants being verified.
