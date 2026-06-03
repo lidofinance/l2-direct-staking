@@ -336,15 +336,21 @@ Per-chain accounts (the only thing that varies between L2s):
 | **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6` |
 | **Ethereum L1** (shared) | Lido DAO Agent `0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c` | — |
 
-> **Why the CRE workflow owner is the Lido Deployer — and stays an EOA.** Unlike
-> every other role, this one is *not* handed to a multisig during the migration,
-> for two reasons. **(1) It's forced.** A CRE workflow's owner is whatever account
-> runs `cre workflow deploy` — here the same Lido Deployer key that broadcasts
-> Stage 1 — captured at registration and baked into every signed report as
-> `metadata.workflowOwner`. `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) exposes **no
-> per-workflow ownership-transfer function**, so the owner can't be moved to a
-> multisig in place; a different owner means deploying a *new* workflow under a new
-> CRE account and re-pinning `setExpectedAuthor` on all four L2s. **(2) It needs no
+> **Why the CRE workflow owner is the Lido Deployer EOA — though a multisig is the
+> stronger option.** Unlike every other role, this one is *not* handed to a multisig
+> during the migration, for two reasons. **(1) It's fixed at registration (not
+> transferable).** A CRE workflow's owner is whatever account `cre workflow deploy`
+> registers — here the same Lido Deployer key that broadcasts Stage 1 — captured at
+> registration and baked into every signed report as `metadata.workflowOwner`.
+> `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) exposes **no per-workflow
+> ownership-transfer function**, so the owner can't be *moved* afterwards; changing
+> it means deploying a *new* workflow and re-pinning `setExpectedAuthor` on all four
+> L2s. It does **not** have to be an EOA, though: CRE supports a **multisig (Safe)
+> owner** chosen at registration (`workflow-owner-address` + `--unsigned`), which
+> removes the single-key loss/compromise vector and is the recommended hardening —
+> see [README §Recommended hardening: make the workflow owner a multisig](README.md#recommended-hardening-make-the-workflow-owner-a-multisig-safe).
+> This migration used the EOA because **(2)** makes the extra robustness optional,
+> not because a multisig was impossible. **(2) It needs no
 > more authority.** The workflow owner holds **zero on-chain power** over Lido
 > contracts — its address only appears as the `expectedAuthor` pin, one of
 > `CREReceiver`'s three gates. A leaked deployer key can't extract funds alone (it
