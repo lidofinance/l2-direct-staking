@@ -26,6 +26,7 @@ contract L2UpgradeActions {
     error L2UpgradeInvalidChainSelector();
     error L2UpgradeWrongChain(uint256 actualChainId, uint256 expectedChainId);
     error L2UpgradePostConditionFailed(string what);
+    error L2UpgradeFloatBelowFloor(uint256 initialFloat, uint256 floor);
 
     struct L2UpgradeConfig {
         address initialOwner;
@@ -45,6 +46,7 @@ contract L2UpgradeActions {
         uint128 minSyncAmount;
         uint128 maxSyncAmount;
         uint48 minSyncDelay;
+        uint128 syncTriggerInitialFloat; // Native ETH funded into the SyncTrigger at deploy — it fronts maxFee+feeDtoO per sync from its own balance (README §Funding the float)
         address oldChainlinkAutomation; // Old Chainlink Automation to revoke SYNC_ROLE from (address(0) to skip)
         address oldGelatoAutomation; // Old Gelato automation, Linea only (address(0) to skip)
     }
@@ -66,6 +68,7 @@ contract L2UpgradeActions {
         address indexed syncTrigger, address indexed previousOwner, address indexed newOwner
     );
     event L2SyncTriggerForwarderSet(address indexed syncTrigger, address indexed forwarder);
+    event L2SyncTriggerFunded(address indexed syncTrigger, uint256 amount);
     event L2CREReceiverOwnershipTransferred(
         address indexed creReceiver, address indexed previousOwner, address indexed newOwner
     );
@@ -154,11 +157,35 @@ contract L2UpgradeActions {
         setSyncTriggerForwarder(address(st), address(cr));
         transferSyncTriggerOwnership(address(st), cfg.governanceExecutor);
         transferCREReceiverOwnership(address(cr), cfg.liquidityOwner);
+        fundSyncTrigger(address(st), cfg);
 
         syncTrigger = address(st);
         creReceiverAddr = address(cr);
 
         _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
+    }
+
+    /**
+     * @notice Fund the SyncTrigger's initial native-ETH fee float from the calling broadcaster.
+     * @dev The trigger fronts `maxFee + feeDtoO` per sync FROM ITS OWN BALANCE (the CRE forwarder
+     *      call carries no value), so an unfunded trigger reverts its first sync with a bare EVM
+     *      balance failure — see README §Funding the float. The configured float must cover at
+     *      least one worst-case sync; the floor mirrors `SyncTrigger.triggerSync`'s value math.
+     *      Funding is permissionless, but recovering excess is `sweep()` = owner-only, so the
+     *      constant should stay floor + bounded runway, not "generous".
+     */
+    function fundSyncTrigger(address syncTrigger, L2UpgradeConfig memory cfg) public {
+        _requireNonZeroL2(syncTrigger);
+
+        (uint256 feeAmountDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(cfg.feeDtoO);
+        uint256 floor = (cfg.destinationPayInLink ? 0 : cfg.destinationMaxFee) + (payInLinkDtoO ? 0 : feeAmountDtoO);
+        if (cfg.syncTriggerInitialFloat < floor) {
+            revert L2UpgradeFloatBelowFloor(cfg.syncTriggerInitialFloat, floor);
+        }
+
+        (bool ok,) = payable(syncTrigger).call{value: cfg.syncTriggerInitialFloat}("");
+        _requireL2PostCondition(ok, "syncTrigger funding transfer");
+        emit L2SyncTriggerFunded(syncTrigger, cfg.syncTriggerInitialFloat);
     }
 
     /// @dev Sanity checks the Stage 1 deploy; fails the broadcast if anything is off.
@@ -179,6 +206,9 @@ contract L2UpgradeActions {
             "creReceiver allow-list seed"
         );
         _requireL2PostCondition(Ownable(creReceiverAddr).owner() == cfg.liquidityOwner, "creReceiver owner");
+        // The float can only be drained by syncs, and no sync can run before Stage 2 grants
+        // SYNC_ROLE — so between deploy and Stage 2 the balance must still hold the full float.
+        _requireL2PostCondition(syncTrigger.balance >= cfg.syncTriggerInitialFloat, "syncTrigger fee float");
     }
 
     /**
@@ -199,7 +229,7 @@ contract L2UpgradeActions {
         _requireNonZeroL2(syncTrigger);
         _requireNonZeroL2(creReceiverAddr);
 
-        // Fail-fast guardrails: surface "Stage 2 already ran" before the 16 deploy-correctness reads below,
+        // Fail-fast guardrails: surface "Stage 2 already ran" before the 17 deploy-correctness reads below,
         // since verifying a post-Stage-2 state against a pre-Stage-2 expectation is meaningless.
         _requireL2PostCondition(
             ICustomSender(cfg.customSender).getOraclePool() != oraclePool,

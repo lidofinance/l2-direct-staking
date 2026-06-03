@@ -17,7 +17,7 @@ Rationale, fee math, full monitoring, and architecture live in [`README.md`](REA
 - **Evidence** — the **carrier + observation** that decides a gate (an exit code, a printed count, a revert, an on-chain read-back). A claim with no carrier is an opinion.
 
 **Def — verify vs validate** (two different evidence kinds, do not conflate):
-*verify* = read back values just written / immutables, decided **in-description** (`verify-stage1` → 18 reads; the in-tx read-backs → 7). *validate* = observe the deployed contracts **live over RPC** from outside (`state-mate` → ≥45 checks; fork tests). Both are required; they fail differently.
+*verify* = read back values just written / immutables, decided **in-description** (`verify-stage1` → 19 reads; the in-tx read-backs → 7). *validate* = observe the deployed contracts **live over RPC** from outside (`state-mate` → ≥45 checks; fork tests). Both are required; they fail differently.
 
 ---
 
@@ -58,7 +58,7 @@ Shared L1: Receiver `0x6F357d53d6bE3238180316BA5F8f11467e164588` · ProxyAdmin
 | ID | Admissibility predicate | Evidence that decides it (carrier + observation) | Blocks until it holds |
 |----|-------------------------|--------------------------------------------------|------------------------|
 | **G1** | Pre-live checks pass for this lane | `test-acceptance` / `forge test` exit 0 · `verify-constants-sync` prints `OK` · `preflight-check{,-l1}` print `OK` | any production tx (Stage 1) |
-| **G2** | Stage 1 *verified* on this network + CRE workflow live | `verify-stage1` → `Script ran successfully` (18 reads) · `verify-cre-workflow` → status `ACTIVE`, owner = Lido Deployer | `migrate-stage2` on this network |
+| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (19 reads — incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [README §Funding the float](README.md)) · `verify-cre-workflow` → status `ACTIVE`, owner = Lido Deployer | `migrate-stage2` on this network |
 | **G3** | **All 4** L2s migrated *and* validated | 4× `migrate-stage2` broadcast with no revert · 4× state-mate exit 0 | `migrate-l1` (the L1 seal) |
 | **G4** | This network *validated* (this is the **Def of "done/green"**) | `test-<net>-upgrade-state-verify` exit 0, tail `✔ Total: ≥45 checks passed` | LOL liquidity seed **and** legacy-upkeep cancel for this network |
 
@@ -94,7 +94,7 @@ for u in http://127.0.0.1:8650 http://127.0.0.1:8651; do for a in $DEPLOYER $IO 
 
 export L2_NETWORK=linea L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670 L2_CRE_FORWARDER=0x000000000000000000000000000000000000dEaD
 L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1            # → paste the 3 printed exports into the shell
-L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = 18 reads pass
+L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = 19 reads pass
 ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
   --sig 'runMigrateUnlocked()' --rpc-url http://127.0.0.1:8651 --broadcast --non-interactive --unlocked --sender $IO
 # validate: render template into /tmp with the deployed addresses, run state-mate --only l2 (see README §dress rehearsal)
@@ -115,9 +115,14 @@ pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 ### Stage 1 — Duty: **Lido Deployer** SHALL, per network
 
 ```sh
-just -E .env.<network> deploy-stage1        # deploys pool+trigger+receiver; PRINTS export L2_ORACLE_POOL/SYNC_TRIGGER/CRE_RECEIVER
+just -E .env.<network> deploy-stage1        # deploys pool+trigger+receiver AND funds the trigger's fee float; PRINTS export L2_ORACLE_POOL/SYNC_TRIGGER/CRE_RECEIVER
 #   → Duty: append those 3 lines to .env.<network>
-just -E .env.<network> verify-stage1        # verify (in-description): 18 read-backs incl. guardrails that Stage 2 has NOT run
+#   The float (L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5 ETH, MigrationConstants) is sent from the
+#   Lido Deployer wallet — it must hold ≥ 0.5 ETH + deploy gas per lane. The trigger fronts
+#   maxFee+feeDtoO per sync FROM ITS OWN BALANCE; the script reverts (L2UpgradeFloatBelowFloor)
+#   if the constant doesn't cover one worst-case sync. See README §Funding the float.
+just -E .env.<network> verify-stage1        # verify (in-description): 19 read-backs incl. trigger float + guardrails that Stage 2 has NOT run
+
 just -E .env.<network> update-cre-config    # writes deployed addrs into cre config json
 just -E .env.<network> deploy-cre-workflow  # cre workflow deploy; Duty: append printed CRE_WORKFLOW_ID= to .env
 just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = Lido Deployer, status ACTIVE
@@ -138,7 +143,7 @@ just -E .env.<any-network> migrate-l1       # ONCE: L1 Receiver admin + L1 Proxy
 ```
 Requires **G3**. ⚠️ **The L1 seal is the action that ends external control of the shared receiver — run it LAST and keep the "all L2s migrated → L1 sealed" window short.** Until it lands, the external Initial Owner retains upgrade power over the receiver that serves every chain (see `DOC.md` §6.4).
 
-**Def — transaction count:** 10 deploy + 6 migrate per L2 (7 for Linea) + 3 on L1 = **68 total**.
+**Def — transaction count:** 11 deploy (10 contract txs + 1 trigger-float funding, all inside `deploy-stage1`) + 6 migrate per L2 (7 for Linea) + 3 on L1 = **72 total**.
 
 ---
 
@@ -175,13 +180,24 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 ### Finalize (each requires **G4** for that network)
 
 - **Duty — LOL multisig** SHALL transfer initial wstETH to each **new** pool (1 ERC-20 transfer/net). Until seeded, `fastStake` reverts for lack of output liquidity. **Do not seed a network before its G4.**
-- **Duty — Lido Deployer / ops** SHALL cancel the old Chainlink Automation upkeeps (and Linea's Gelato bot) **only after G4** confirms the new SyncTrigger is the sole `SYNC_ROLE` holder.
+- **Duty — Lido Deployer / ops** SHALL cancel the old Chainlink Automation upkeeps (and Linea's Gelato bot) **only after G4** confirms the new SyncTrigger is the sole `SYNC_ROLE` holder. Residuals to recover alongside: the cancelled upkeeps' LINK balance (withdrawable ~50 blocks after cancel) and the legacy `SyncAutomation` contracts' leftover ETH fee float (same treasury pattern as the new trigger — owner-only `sweep()`, `lib/chainlink-csr/contracts/automations/SyncAutomation.sol:237`; recovery falls to whoever owns each legacy automation).
 
 ### Watch (first weeks) — full table in [`README.md` §Monitoring](README.md)
 
 - **CRITICAL:** the G4 invariant table above (any drift = key compromise / unintended governance); L1 Receiver balance ~0 (`MessageFailed` → page); CCIP manual-exec queue empty; Arbitrum retryable auto-redeems (≤7-day window or funds lost).
 - **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + funded.
-- **MEDIUM:** actual CCIP fee / `maxFee` < 80%; `ccipReceive` gas / `gasLimit` < 80%.
+- **MEDIUM:** actual CCIP fee / `maxFee` < 80%; `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees().maxNativeFee` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
+
+### Recover (Lido Deployer / CRE-workflow-owner key incident)
+
+The Lido Deployer EOA is the CRE workflow owner (= `expectedAuthor` on every L2 `CREReceiver`). The CRE
+`WorkflowRegistry` has **no ownership transfer**, but the on-chain `expectedAuthor` pin is rotatable — so the
+recovery hinge is **LOL `setExpectedAuthor(new)` on all 4 L2s + redeploy the workflow under a new owner**
+(*no DAO / GovExec motion*). **Def — lost ≠ compromised:** *lost* (availability) — the already-deployed
+workflow keeps running; rotate when it next needs a change or CRE credits near depletion. *Compromised*
+(integrity) — **Duty: LOL SHALL first `setForwarder(0x…dead)`** to contain, then rotate. Neither risks
+protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, admissible syncs). Full
+procedure + consequence table: [README §Workflow-owner key — lost vs compromised](README.md#workflow-owner-key--lost-vs-compromised-consequences--recovery).
 
 ---
 

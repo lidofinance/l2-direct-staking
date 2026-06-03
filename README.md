@@ -103,6 +103,54 @@ The sync operation moves accumulated WETH from an L2 OraclePool to Ethereum (via
 | **FeeOtoD** | L2 → Ethereum (CCIP) | CCIP message delivery + `ccipReceive` execution on Ethereum | `SyncTrigger.setFeeOtoD()` |
 | **FeeDtoO** | Ethereum → L2 (native bridge) | L1 adapter bridge call that sends wstETH back to L2 | `SyncTrigger.setFeeDtoO()` |
 
+## Fee denomination, the four quantities, and when money moves
+
+**What the CCIP fee is nominated in.** One CCIP fee exists per sync — the OtoD leg. It is quoted and
+charged in the message's `feeToken`: `payInLink ? LINK_TOKEN : address(0)`
+(`lib/chainlink-csr/contracts/ccip/CCIPSenderUpgradeable.sol:77`), where `address(0)` means the sending
+chain's native token. All four lanes set `payInLink = false` ([Current mainnet values](#current-mainnet-values)),
+so the fee is **native ETH of the originating L2, in wei**, fixed by `IRouterClient.getFee()` at send time
+(`CCIPSenderUpgradeable.sol:81`) and transferred to the Router at `ccipSend{value: fee}` (`:94`). The LINK
+rail (~10% discount) exists in the codec but is unused. Internally CCIP composes the quote as
+≈ `baseFee + premium + gasLimit × destChainGasPrice × tokenConversion`
+([billing model](#glamsterdam-fee-headroom-bump-may-2026)), but on-chain it is a single native-wei number.
+
+**Four quantities hide under the word "fee" — only one is a CCIP fee.**
+([DOC.md §5.2](DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way) splits the *parameters*
+by economic kind — cap / commitment / payment; this table splits the *quantities* a sync actually touches.)
+
+| Quantity | CCIP fee? | What it actually is |
+|---|---|---|
+| FeeOtoD **actual fee** | **yes — the only one** | the `getFee()` quote charged for the L2→L1 leg: flat premium + the L1 `gasLimit` execution commitment |
+| FeeOtoD **`maxFee`** | no — a revert bound | slippage guard: quote > `maxFee` ⇒ `CCIPSenderExceedsMaxFee` (`CCIPSenderUpgradeable.sol:82`), nothing charged. Never charged as such |
+| **FeeDtoO** | no — a native-bridge budget | the return leg rides each L2's native bridge, not CCIP ([why the legs differ](#l1l2-vs-l2l1--why-the-two-legs-differ)): Arbitrum retryable `maxSubmissionCost + gasPriceBid × maxGas` ≈ 0.001 ETH; OP/Base/Linea 0 |
+| FeeOtoD **`gasLimit`** | a component *inside* the actual fee | priced on the *committed* limit, not actual usage — unspent gas is never refunded ([Consequences](#consequences-of-unnecessarily-high-feeotod--feedtoo-limits)) |
+
+**When the money moves** — all of it from the SyncTrigger's own float (it is the fee
+[treasury](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound); stakers' deposits and
+the synced WETH are never touched — the user-initiated `slowStake` path fronts its own fees separately):
+
+1. **t₀ — L2, one transaction.** `triggerSync` forwards `maxFeeOtoD + feeAmountDtoO` native ETH from the
+   trigger's balance (`src/SyncTrigger.sol:142-143`). The Router quotes `getFee`; above `maxFee` the whole
+   tx reverts with nothing charged; otherwise **exactly the quote** is paid at `ccipSend`
+   (`CCIPSenderUpgradeable.sol:81-94`). The DtoO budget is wrapped and **added to the CCIP token transfer**
+   (`amount + feeAmountDtoO`, `lib/chainlink-csr/contracts/senders/CustomSender.sol:294`) — it leaves at t₀
+   too. Everything unspent refunds to the trigger before the tx ends (`CustomSender.sol:208`).
+2. **t₀ + ~20 min — L1, inside `ccipReceive`.** The DtoO budget is *consumed*: Arbitrum pays the Inbox as
+   `msg.value`; OP/Base burn L1 gas ~1.016:1 for the `l2Gas` commitment; Linea pays nothing.
+
+CRE ticks themselves move no money — most are free staticcalls; fees are paid only when `shouldSync()`
+flips (≤2 paid syncs/day/lane — [cadence](#sync-thresholds--cadence--why-these-values)).
+
+**Three different "excesses".** The `maxFee` row below says "excess is not spent" — that is true for
+exactly one of the three quantities that answer to "excess":
+
+| Excess | Fate |
+|---|---|
+| `maxFee − actualFee` | **refunded intra-tx** (`CustomSender.sol:208`) — genuinely never spent |
+| `gasLimit` committed − gas actually used | **spent at t₀, never refunded** — recurring linear overpayment ([Consequences](#consequences-of-unnecessarily-high-feeotod--feedtoo-limits)) |
+| Arbitrum FeeDtoO budget − actual bridge cost | **burned** — "refunded" on L2 to the unreachable alias `0x80467D…5699`, ~0.001 ETH/sync ([proven on-chain](#consequences-of-unnecessarily-high-feeotod--feedtoo-limits)) |
+
 ## How fees flow through the system
 
 ```
@@ -115,28 +163,47 @@ SyncTrigger.triggerSync()
   │     │  decodes feeOtoD → extracts maxFee, payInLink, gasLimit
   │     │  packs feeDtoO into CCIP message data alongside recipient + amount
   │     │
-  │     └─► CCIP Router.ccipSend()  ← pays feeOtoD here
-  │           │  routes message to Ethereum
-  │           │
-  │           └─► LidoCustomReceiver.ccipReceive()  ← gasLimit governs this execution
-  │                 │  unpacks feeDtoO from message data
-  │                 │  stakes ETH in Lido → receives wstETH
-  │                 │
-  │                 └─► L1 Adapter.sendToken(wstETH, feeDtoO)  ← pays feeDtoO here
-  │                       │  decodes feeDtoO per network format
-  │                       └─► native bridge (Arbitrum Gateway / OP Bridge / Linea Bridge)
-  │                             └─► wstETH arrives on L2 pool
+  │     ├─► CCIP Router.ccipSend()  ← pays feeOtoD here (only the *actual* fee)
+  │     │     │  routes message to Ethereum
+  │     │     │
+  │     │     └─► LidoCustomReceiver.ccipReceive()  ← gasLimit governs this execution
+  │     │           │  unpacks feeDtoO from message data
+  │     │           │  stakes ETH in Lido → receives wstETH
+  │     │           │
+  │     │           └─► L1 Adapter.sendToken(wstETH, feeDtoO)  ← pays feeDtoO here
+  │     │                 │  decodes feeDtoO per network format
+  │     │                 └─► native bridge (Arbitrum Gateway / OP Bridge / Linea Bridge)
+  │     │                       └─► wstETH arrives on L2 pool
+  │     │
+  │     └─► TokenHelper.refundExcessNative(msg.sender)  ← automatic, last line of sync()
+  │           refunds maxFee − actualFee back to the SyncTrigger, same tx (never called manually)
 ```
+
+## Excess CCIP-fee refund (`refundExcessNative`) — automatic, never manual
+
+`TokenHelper.refundExcessNative` is **not an operator action** — there is no manual call to make and no scheduled job to run, and it is impossible to invoke directly because it is an `internal` library function, not an external entrypoint (`lib/chainlink-csr/contracts/libraries/TokenHelper.sol:34`).
+
+**When it runs:** unconditionally, as the **last statement** of every send — `CustomSender.sync()`, `slowStake()`, and `fastStake()` (`CustomSender.sol:208`, `:137`, `:174`). It sweeps the sender's *entire* native balance to `msg.sender` **in the same transaction** as the send, after the CCIP fee has already been paid. For a sync, `msg.sender` is the SyncTrigger, so the `maxFee − actualFee` excess lands back in the trigger's float via its bare `receive()` (`src/SyncTrigger.sol:42`) **before `triggerSync()` even returns**. The float therefore depletes by the *actual* cost, never the fronted maximum (see [Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound) and [Cost framing](#cost-framing)).
+
+**Don't confuse it with the two refunds/recoveries that *are* manual:**
+
+| Mechanism | Manual? | What it does |
+|---|---|---|
+| `TokenHelper.refundExcessNative` | **No** — internal, automatic, intra-tx | Returns `maxFee − actualFee` to the SyncTrigger after each send |
+| `SyncTrigger.sweep()` | **Yes** — owner-only (L2 GovExec), `src/SyncTrigger.sol:168` | Withdraws the trigger's accumulated float |
+| `LidoCustomReceiver.retryFailedMessage` | **Yes** — re-drives a stuck L1 message | Recovers an OOG'd `processMessage` (not a fee refund) |
+
+This refund covers only the CCIP-fee excess (`FeeOtoD.maxFee`). The *other* two "excesses" are spent or burned, not refunded — see [Fee denomination](#fee-denomination-the-four-quantities-and-when-money-moves) and the Arbitrum [burned-refund](#feedtoo-arbitrum-overpayment-is-refunded-to-an-address-nobody-controls) case.
 
 ## FeeOtoD encoding (CCIP, all networks)
 
 Encoded with `FeeCodec.encodeCCIP(maxFee, payInLink, gasLimit)` — 21 bytes.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `maxFee` | `uint128` | Slippage guard — reverts if actual CCIP fee exceeds this. Only the actual fee is charged; excess is not spent. |
-| `payInLink` | `bool` | `true` = pay in LINK (~10% discount), `false` = pay in native ETH. |
-| `gasLimit` | `uint32` | Gas budget for `ccipReceive()` on Ethereum. Must be >= 75,000 (enforced by `CustomSender`). Covers: unpack message → Lido stake → adapter bridge call. |
+| Field       | Type      | Description                                                                                                                                            |
+| ----------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `maxFee`    | `uint128` | Slippage guard — reverts if actual CCIP fee exceeds this. Only the actual fee is charged; the `maxFee − actualFee` excess is refunded intra-tx — [the other two "excesses" are spent or burned](#fee-denomination-the-four-quantities-and-when-money-moves). |
+| `payInLink` | `bool`    | `true` = pay in LINK (~10% discount), `false` = pay in native ETH.                                                                                     |
+| `gasLimit`  | `uint32`  | Gas budget for `ccipReceive()` on Ethereum. Must be >= 75,000 (enforced by `CustomSender`). Covers: unpack message → Lido stake → adapter bridge call. |
 
 **Sizing `gasLimit`:** The receiver must unpack the message, stake ETH through Lido, approve wstETH, and delegate-call the bridge adapter. Current configured value is **1,000,000** for Optimism/Arbitrum/Base and **500,000** for Linea (each network bumped +25% from its prior baseline as a Glamsterdam pre-hardening — see [§Glamsterdam fee headroom bump](#glamsterdam-fee-headroom-bump-may-2026)). If too low, the CCIP message enters a failed state and requires [manual re-execution](https://docs.chain.link/ccip/concepts/manual-execution) with a higher gas limit.
 
@@ -327,6 +394,31 @@ gas-price spike gets *paid silently* instead of reverting with `CCIPSenderExceed
 spurious-but-authorized sync. `maxFee` is the only lever where
 "too high" weakens a *guard* rather than wasting ETH.
 
+**Funding the float.** The SyncTrigger is the fee **treasury**, not a pass-through: the CRE forwarder
+call carries no value, so every sync is paid from the trigger's own balance and nothing refills it
+automatically. The mechanics:
+
+- **Required balance**: ≥ `getMaxFees().maxNativeFee` (`src/SyncTrigger.sol:97-107` — currently
+  `maxFee` 0.125 ETH everywhere, + `feeAmountDtoO` ≈ 0.0016 ETH on Arbitrum). Below that, the next
+  `triggerSync` reverts at the value transfer with **no named error** — see [Failure modes](#failure-modes-and-recovery).
+- **Net drain per sync**: `actualFee + feeAmountDtoO` ≈ 0.005–0.007 ETH at measured fees — the
+  `maxFee − actualFee` excess is refunded to the trigger intra-transaction (bare `receive()`,
+  `src/SyncTrigger.sol:42`), so the float depletes by the *actual* cost, not the fronted maximum.
+  At ≤2 syncs/day that is ≤ ~0.013 ETH/day/lane.
+- **Funding is permissionless** (anyone can send ETH to the trigger); **recovering excess is not**
+  (`sweep()` is owner-only = L2 GovExec, `src/SyncTrigger.sol:168` — a governance round-trip). So
+  size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
+  "fill it up", and refill from the [§5 alert](#5-capacity--headroom--medium).
+- **Initial funding is part of `deploy-stage1` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
+  the amount is pinned as `L2_SYNC_TRIGGER_INITIAL_FLOAT` in each network's `MigrationConstants` (0.5 ETH;
+  Sepolia 0.15), sent from the Lido Deployer wallet during the Stage-1 broadcast. The script reverts with
+  `L2UpgradeFloatBelowFloor` if the constant doesn't cover one worst-case sync (`maxFee + feeDtoO`), and
+  both the in-broadcast assert and `verify-stage1` read the balance back. Fork-test coverage:
+  `test_productionDeployFundsSyncTriggerFloatForFirstSync` runs the first sync on the script-funded float
+  alone — no test-side `vm.deal`.
+- If `payInLink` were ever enabled, the same holds for a **LINK** balance (the constructor
+  pre-approves LINK to the sender, `src/SyncTrigger.sol:64`); `getMaxFees().maxLinkFee` is the floor.
+
 ### `FeeDtoO.l2Gas` (Optimism/Base): burns L1 gas inside `ccipReceive` — coupled to `FeeOtoD.gasLimit`
 
 `feeAmount` is 0 on OP-stack lanes, but `l2Gas` is **not free**: the deposit path
@@ -425,6 +517,7 @@ in the table after it describes the *reactive* case where the limit was already 
 |---|---|---|---|---|
 | `FeeOtoD.gasLimit` < actual `ccipReceive` gas | `processMessage` OOGs on L1; defensive catch stores `failedHashes[messageId]` ([`CCIPDefensiveReceiverUpgradeable.sol#L200`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPDefensiveReceiverUpgradeable.sol#L200), pinned at the vendored submodule commit); synced WETH (+ Arbitrum `feeAmountDtoO`) parks at the L1 receiver; every subsequent sync joins it | Parked, not lost | **Permissionless** `retryFailedMessage` (`:131`, no role gate) — the retry runs on the caller's own tx gas, so it succeeds with a bigger gas limit; if the *whole* `ccipReceive` reverted at CCIP level instead, use [CCIP manual execution](https://docs.chain.link/ccip/concepts/manual-execution) with a gas-limit override | Raise `gasLimit` via GovExec `setFeeOtoD` (procedure below) |
 | `FeeOtoD.maxFee` < actual CCIP fee | `triggerSync` reverts `CCIPSenderExceedsMaxFee` (`CCIPSenderUpgradeable.sol:82`); syncs stall, pool WETH accumulates on L2 | No — pure liveness; **self-heals if the fee spike is transient** (CRE re-attempts each tick) | Wait out a transient spike; nothing is stuck | If the fee regime shifted: raise `maxFee` via `setFeeOtoD` **and top up the SyncTrigger float** to ≥ new `maxFee + feeAmountDtoO` (it fronts that much per sync) |
+| SyncTrigger ETH balance < `maxFee + feeAmountDtoO` | `triggerSync` reverts at the value transfer (`src/SyncTrigger.sol:143`) with **no named error** — plain EVM balance failure; syncs stall, pool WETH accumulates. Symptom-identical to the row above, so **check `cast balance <trigger>` against `getMaxFees()` first** when diagnosing a stall | No — pure liveness | **Anyone** sends ETH to the trigger (bare `receive()`, permissionless — no governance needed); self-heals on the next CRE tick | Top up to ≥ `getMaxFees().maxNativeFee` + runway ([Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)); keep deposits modest — recovering excess is `sweep()` = GovExec-only |
 | Arbitrum `maxSubmissionCost` < actual submission fee | L1 `outboundTransfer` reverts `InsufficientSubmissionCost` (`AbsInbox.sol:298-301`) → defensive catch → `failedHashes`, as row 1. Headroom today: breach needs L1 basefee ≳200 gwei (`0.001 ETH ÷ (1400 + 6N)` at N ≈ 350–600 bytes of retryable calldata) | Parked, not lost | `retryFailedMessage` once basefee dips — the fee bytes are frozen inside the failed message, so retry *cannot* carry a bigger budget; it only succeeds when the fee falls back under it | Raise `maxSubmissionCost` via `setFeeDtoO` for future syncs |
 | Arbitrum `gasPriceBid` < L2 basefee | Ticket created but auto-redeem fails; wstETH not minted on L2 yet | **Yes if ignored**: manual-redeem window is ~7 days, then the ticket expires and the bridged wstETH is stranded ([Failure modes](#failure-modes-and-recovery)) | Manual redeem (permissionless) via the [retryable dashboard](https://retryable-dashboard.arbitrum.io/) within 7 days — redeemer pays current L2 gas | Raise `gasPriceBid` via `setFeeDtoO` |
 | OP/Base `l2Gas` < actual `finalizeDeposit` gas | L2 relay's target call fails; the L2 messenger records it in `failedMessages` ([OP messengers spec](https://specs.optimism.io/protocol/messengers.html)) | Parked, not lost (Bedrock) | **Permissionless replay**: call `relayMessage` on the L2 messenger with the same params and more gas (no ETH value rides the wstETH deposit, so replay is a plain tx) | Raise `l2Gas` via `setFeeDtoO` — re-measure the `FeeOtoD.gasLimit` coupling afterwards (the burn grows ~1:1, [see above](#feedtool2gas-optimismbase-burns-l1-gas-inside-ccipreceive--coupled-to-feeotodgaslimit)) |
@@ -608,6 +701,67 @@ The sync workflow is off-chain WASM on Chainlink's CRE platform; its only on-cha
 - Updating the WASM under the same owner key does **not** change `metadata.workflowOwner`, so `expectedAuthor` keeps accepting reports after a routine code update.
 - Rotating the workflow-owner key requires the LOL multisig to call `CREReceiver.setExpectedAuthor(newOwner)` on every L2 (4 txs).
 - CRE-side pause is instant but depends on Chainlink infra; the authoritative kill switches are on-chain — `LOL → CREReceiver.setForwarder(0)` and `GovExec → SyncTrigger.setForwarder(0)` / `setDelay(max)`. Neither the CRE DON nor the Forwarder is controllable by this project.
+
+## Workflow-owner key — lost vs compromised (consequences & recovery)
+
+The Lido Deployer EOA wears **three distinct hats** — do not conflate them (A.7):
+
+1. **CRE workflow owner.** The CRE-platform account that ran `cre workflow deploy`. Its EVM address is baked into every signed report as `metadata.workflowOwner` (`[42:62]`). `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) exposes **no per-workflow ownership-transfer function** ([DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold)), so this binding is **immutable for the life of that workflow**. *This — and only this — is the "irreplaceable admin":* what is irreplaceable is the **workflow↔owner binding inside Chainlink's registry**, not the trust the system places in the key.
+2. **`expectedAuthor` pin.** The *same* address sits in each L2 `CREReceiver._expectedAuthor`, one of three gates. It is **rotatable on-chain** by the **LOL multisig** via `setExpectedAuthor(new)` (4 txs, one per L2). This indirection is exactly what makes the irreplaceable registry binding **recoverable**: on any key incident you *abandon the workflow, not the system*.
+3. **Stage-1 signer / float-funder.** Migration-only. Post-migration it holds **zero on-chain power** over Lido contracts — it cannot move funds, grant roles, or upgrade ([DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold)); state-mate asserts `hasRole = false` for this hot key everywhere ([DOC.md §6.3](DOC.md#63-how-the-final-state-is-verified)).
+
+**What the key does — and does not — do.** The owner key does **not** sign each report; the **DON** signs, and the key's address only travels as metadata. So a key incident does **not** by itself stop the *already-deployed* workflow — it keeps emitting valid reports and `expectedAuthor` keeps matching. The key **is** required for workflow *lifecycle* (`deploy` / `pause` / `activate` / `delete` / update-WASM / `link-key`) and is the CRE-account credential through which **credit** allocation is administered ([Funding and billing](#funding-and-billing)). The blast radius of *misuse* is bounded to "fire an already-admissible, rate-limited, nullary `triggerSync()`" by the CREReceiver's three gates + argument-less call-lock and `SyncTrigger`'s on-chain amount/delay re-check ([DOC.md §2.6](DOC.md#26-credibility--security-of-the-application-layer-contracts)) — **no fund extraction, no recipient change, no arbitrary calldata.**
+
+### Lost vs compromised at a glance
+
+| Dimension | Key **lost** (gone, no adversary) | Key **compromised** (adversary holds it) |
+|---|---|---|
+| Failure kind (A.7) | **availability** | **integrity** |
+| Running sync *now* | **unaffected** — the DON keeps executing the `ACTIVE` workflow; the key is not consulted per tick; `expectedAuthor` still matches | **unaffected on funds** — attacker can at most fire already-admissible, rate-limited `triggerSync()` (call-lock + allow-list + on-chain gates) |
+| Worst the holder can do | nothing (the key is gone) | **DoS**: `pause`/`delete` the workflow → syncs stop; burn the EOA's ETH + CRE credits; spam *admissible* syncs (still ≤2/day/lane — the 12 h delay is on-chain) |
+| Management capability | lost: `pause`/`activate`/`delete`/update-WASM/`unlink-key`; CRE-credit admin → **eventual credit starvation → slow stop** | now the *attacker's*; you have none |
+| Protocol funds at risk | **no** | **no** ([DOC.md §2.6](DOC.md#26-credibility--security-of-the-application-layer-contracts), [§3.2](DOC.md#32-owners--actors-and-what-they-hold)) |
+| In-place fix? | **no** — registry has no ownership transfer | **no** — same |
+| Recovery hinge | LOL `setExpectedAuthor(new)` ×4 + redeploy workflow | LOL `setForwarder(0x…dead)` to **contain**, then `setExpectedAuthor(new)` ×4 + redeploy |
+| Authority needed | **LOL multisig only** — operational, *no DAO / GovExec motion* | LOL multisig (GovExec backstop available) |
+| Urgency | low → medium (deferred: credit runway / next needed change) | **high** — contain now, integrity at stake |
+
+### Recovery primitive — "redeploy + re-pin" (shared by both scenarios)
+
+| # | Duty — role *SHALL* | Gate / Evidence (carrier + observation) |
+|---|---|---|
+| **R1** | **Lido ops** provision a *new cold* CRE owner key + account (hardware / MPC); `cre workflow deploy` a fresh workflow → new `metadata.workflowOwner`; capture `CRE_WORKFLOW_ID` | — |
+| **R2** | *(gate before R3)* `verify-cre-workflow` → status `ACTIVE`, owner = new author | `VerifyCREWorkflow` 3-assert read. **Do not re-pin to a not-yet-live author** — that would stall syncs |
+| **R3** | **LOL multisig** `setExpectedAuthor(newOwner)` on **all 4** L2 `CREReceiver`s | [Monitoring §1](#1-access-control-invariants--critical) `getExpectedAuthor` = new on all 4 + `ExpectedAuthorUpdated` ×4 |
+| **R4** | **Lido ops** re-baseline `.env` (`L2_LIDO_DEPLOYER_*`, `CRE_WORKFLOW_ID`), the pinned author constant, and every `state-mate/<net>.yaml` **in lockstep** | state-mate [§1](#1-access-control-invariants--critical)/[§4](#4-cre-workflow-health--high) green against the new author (otherwise the monitors correctly fire on the change) |
+
+R3 needs **only the LOL multisig** — an operational signer, *not* a DAO / Aragon / GovExec motion. That is the payoff of the `expectedAuthor` indirection: recovery never touches value-path governance.
+
+### If LOST
+
+Run **redeploy + re-pin** (R1–R4) when *either* (a) the workflow needs any change (bug fix, cron, target, ABI) *or* (b) CRE-credit runway nears depletion ([Monitoring §4](#4-cre-workflow-health--high)) — whichever comes first. Until then the workflow runs untouched, **but** you can no longer pause or patch it and cannot guarantee credit top-ups, so:
+
+- **Treat "lost" as "schedule a planned rotation + keep a funded standby CRE account," not "do nothing."**
+- The old workflow is **abandoned, not deleted** (you can't delete it). After R3 its reports fail the author gate (`InvalidAuthor`) → rejected, no double-trigger; it idles once its credits drain. Record it as a dangling registry entry.
+- If you cannot *prove* the key was destroyed (vs. exfiltrated), **escalate to COMPROMISED.**
+
+### If COMPROMISED — contain before you rotate
+
+- **C1 — CONTAIN (LOL multisig, now).** `setForwarder(0x…dead)` on all 4 `CREReceiver`s — the [§3.4](DOC.md#34-what-the-project-still-controls-if-chainlink-misbehaves) "CRE infra hostile" lever — darkens the whole path while you rotate. Independent backstop from the *other* trust domain if the LOL multisig itself is in doubt: **GovExec** `SyncTrigger.setForwarder(0)` / `setDelay(max)` (§3.4 two-owner redundancy). *Judgement:* the blast radius is so bounded (attacker can only force already-admissible, rate-limited syncs) that an instant dark-out may be optional — decide on observed anomalies ([Monitoring §1](#1-access-control-invariants--critical)/[§3](#3-sync-liveness--high)). Containment is cheap and reversible; prefer to disarm.
+- **C2 — ROTATE + RE-PIN.** Run R1–R4. If you darked-out in C1, **re-arm last**: `setExpectedAuthor(new)` *then* `setForwarder(realForwarder)`, so the path returns live only against the new author.
+- **C3 — ABANDON + STARVE.** Never reuse the compromised workflow; after R3 its reports are rejected anyway. Cut any CRE-credit funding tied to the compromised account so the attacker can't burn credits; sweep residual ETH from the EOA (a race — it holds no protocol funds).
+- **C4 — RE-BASELINE + POST-MORTEM.** As R4, plus: confirm the key retains **no** residual on-chain role (re-run state-mate [§1](#1-access-control-invariants--critical) `hasRole = false` for the old hot key), determine the exposure vector, and rotate any secret it shared with the Stage-1 signer.
+
+### Pre-incident hardening (the real fix)
+
+Because "irreplaceable" is Chainlink's registry property, not Lido's to patch, resilience is front-loaded:
+
+- **Keep the workflow-owner key cold + backed up** (hardware / MPC / Shamir). Its in-place loss is unrecoverable **by construction** — the single highest-leverage control.
+- **In any future deployment, separate** the CRE-workflow-owner key from the Stage-1 broadcast key (they coincide today only because `cre workflow deploy` captures whoever runs it — [DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold)). A dedicated CRE account means a Stage-1 hot-key exposure never implies workflow-owner compromise.
+- **Confirm with Chainlink** whether a multisig / MPC-controlled CRE account or a `link-key`'d backup wallet can preserve owner control across a single-key loss *without* a redeploy — `metadata.workflowOwner` is a single EVM address, so this must be validated before being relied on.
+- **Keep a funded standby CRE account + this runbook pre-staged** so MTTR for "new workflow + re-pin" is minutes, not a procurement cycle.
+
+**FPF note.** A.7 (strict distinction) separates the **lost** (availability) and **compromised** (integrity) failure kinds, and the key's three hats (workflow owner ≠ `expectedAuthor` pin ≠ Stage-1 signer). A.6.P / A.6.Q restore precision to the load-bearing terms **"irreplaceable admin"** (scoped to the registry binding, not the system's trust) and **"recover"** (= abandon-and-redeploy, not in-place repair). Recovery steps are A.6.B boundary statements — each a **Duty** on a named role with a **Gate** / **Evidence** carrier (`verify-cre-workflow`, Monitoring §1/§4, state-mate); A.10 keeps every claim referred to its carrier.
 
 # Script reference (direct `forge script` / debugging)
 
@@ -894,6 +1048,7 @@ Alert on ≥ 2 consecutive crossings to filter transient spikes.
 |---|---|---|
 | actual CCIP fee / `SyncTrigger.getFeeOtoD().maxFee` (×4) | < 80% | raise `maxFee` before exhaustion |
 | `ccipReceive` gas used / `FeeOtoD.gasLimit` (×4) | < 80% | raise `gasLimit` before OOG reverts |
+| SyncTrigger ETH balance / `getMaxFees().maxNativeFee` (×4) | ≥ 2× (1× is the hard floor — below it the next sync reverts with no named error and the lane stalls) | top up — permissionless ETH send to the trigger ([Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)). Depletion is monotonic (~`actualFee` per sync), so this **will** cross eventually |
 | Arbitrum auto-redeem success rate | 100% | raise `maxGas` / `gasPriceBid` |
 
 ## Intentionally excluded (not alerts)

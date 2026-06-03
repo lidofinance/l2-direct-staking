@@ -64,7 +64,7 @@ hostile.
 
 | Component                                | Purpose                                                                                                                                                                                                                                 | Source                                                        |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder.                                         | `src/SyncTrigger.sol`                                         |
+| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = GovExec-only (README §Funding the float). | `src/SyncTrigger.sol`                                         |
 | **`CREReceiver`** (per L2)               | Receives signed CRE reports and authorizes them three ways (forwarder + report author + `(target, selector)` allow-list), then calls `SyncTrigger.triggerSync()`. Defense-in-depth between the off-chain network and the on-chain sync. | `src/cre/CREReceiver.sol`, `src/cre/interfaces/IReceiver.sol` |
 | **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network every 5 min, polls `SyncTrigger.shouldSync()`, and emits a signed report when a sync is due.                                                                           | `cre-workflows/sync-automation/*`                             |
 | **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (`*.yaml`). Not runtime contracts; they define and verify the target state.                                                                                                 | `script/**`                                                   |
@@ -380,6 +380,12 @@ on-chain control of the sync path through **kill switches**:
 | CRE infra hostile/degraded | LOL multisig | `CREReceiver.setForwarder(0x…dead)` |
 | SyncTrigger misconfigured | L2 governance executor | `SyncTrigger.setForwarder(0)` / `setDelay(max)` |
 
+> **If the Lido Deployer / CRE-workflow-owner key is lost or compromised**, these same LOL levers
+> (`setExpectedAuthor` / `setForwarder`) are the recovery hinge — the `expectedAuthor` binding is
+> rotatable on-chain even though the CRE workflow owner itself is not (the registry has no ownership
+> transfer; §3.2). Full consequence + recovery analysis (lost vs compromised, with the redeploy + re-pin
+> procedure): [README §Workflow-owner key — lost vs compromised](README.md#workflow-owner-key--lost-vs-compromised-consequences--recovery).
+
 ---
 
 ## 4. Diagrams
@@ -546,12 +552,18 @@ distinct things** it hides:
 - a **payment** — `FeeDtoO`'s `feeAmount`: ETH actually handed to a bridge (nonzero
   only on Arbitrum).
 
+(A fourth quantity — the **actual CCIP fee** the Router charges — is the only one of
+these that *is* a CCIP fee. What it is denominated in — native ETH of the originating
+L2, fixed by `getFee()` at send time — when each amount moves, and the fate of each
+"excess" — refunded / sunk / burned — is in `README.md` §Fee denomination, the four
+quantities, and when money moves.)
+
 | Parameter | Value | Kind | Why this value |
 |---|---|---|---|
 | `maxFee` (OtoD) | 0.125 ETH — all 4 | **cap** (refunded) | `0.1 + 25%`. Free headroom against L1 gas-price spikes — raising a refunded cap has **zero per-sync cost**. |
 | `gasLimit` (OtoD) | 1,000,000 (OP/Arb/Base); **500,000 (Linea)** | **commitment** (charged in full) | prior `800k` / `400k`, `+ 25%`. A **real** recurring cost, paid deliberately as insurance (see asymmetry below). Linea is half because its L1 return adapter is leaner (no `depositERC20To`), so `ccipReceive` needs less L1 gas. |
 | `payInLink` (OtoD) | false — all 4 | payment rail | CCIP leg paid in native ETH, not LINK. |
-| `FeeDtoO` (return leg) | OP/Base: `l2Gas = 100k`, pay 0 · Arbitrum: retryable, ≈ 0.001 ETH · Linea: zero blob | **payment** (+ L2-gas cap) | dictated by each L2's native bridge — **the main per-chain difference**: OP/Base sequencer-subsidized; Arbitrum retryable (excess self-refunds on L2); Linea postman (free). |
+| `FeeDtoO` (return leg) | OP/Base: `l2Gas = 100k`, pay 0 · Arbitrum: retryable, ≈ 0.001 ETH · Linea: zero blob | **payment** (+ L2-gas cap) | dictated by each L2's native bridge — **the main per-chain difference**: OP/Base sequencer-subsidized; Arbitrum retryable (the excess is "refunded" on L2 to an unreachable alias — effectively **burned**, proven on-chain: README §Consequences); Linea postman (free). |
 
 **Arbitrum return-leg caveat.** Arbitrum's `FeeDtoO` carries a `gasPriceBid` of `0.05
 gwei` (`L2_SYNC_ORIGIN_GAS_PRICE_BID`); if the L1→L2 retryable does not auto-redeem, it
@@ -629,8 +641,9 @@ authorization to run it.
 
 ### 6.3 How the final state is verified
 
-- **`verify-stage1`** — 18 read-only post-conditions per L2 (pool / SyncTrigger /
-  CREReceiver immutables + guardrails that Stage 2 hasn't run yet).
+- **`verify-stage1`** — 19 read-only post-conditions per L2 (pool / SyncTrigger /
+  CREReceiver immutables, the trigger's funded fee float, + guardrails that Stage 2
+  hasn't run yet).
 - **`verify-cre-workflow`** — `WorkflowRegistry` shows owner = Lido Deployer,
   status ACTIVE.
 - **state-mate** — ≥45 live-RPC assertions per chain: admin held only by the L2

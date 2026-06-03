@@ -752,6 +752,43 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         }
     }
 
+    /// @dev Production-parity float provenance test: the first post-migration sync must succeed
+    ///      funded ONLY by the float the deploy script itself put on the SyncTrigger. Deliberately
+    ///      no `vm.deal(address(syncTrigger), …)` here — that out-of-band funding in the other
+    ///      sync tests is exactly what masked an unfunded production trigger (the negative case,
+    ///      `test_syncTriggerRevertsWithInsufficientFees`, proves the revert; this proves the
+    ///      production recipe prevents it).
+    function test_productionDeployFundsSyncTriggerFloatForFirstSync() public {
+        (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver) =
+            _deployAndMigrateL2Production();
+        ISyncTrigger syncTrigger = ISyncTrigger(newSyncTrigger);
+
+        // Accounting: the deploy funded exactly the configured constant.
+        L2UpgradeConfig memory cfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        uint256 initialFloat = cfg.syncTriggerInitialFloat;
+        assertEq(newSyncTrigger.balance, initialFloat, "deploy should fund exactly the configured float");
+
+        // Floor invariant: the float covers at least one worst-case sync (mirrors fundSyncTrigger's guard).
+        (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
+        assertEq(maxLinkFee, 0, "no LINK leg expected in current config");
+        assertGe(initialFloat, maxNativeFee, "float must cover one worst-case sync");
+
+        _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
+        vm.warp(block.timestamp + L2_SYNC_DELAY);
+
+        (bool syncNeeded,) = syncTrigger.shouldSync();
+        assertTrue(syncNeeded, "sync should be needed");
+
+        // First sync, paid solely from the script-funded float (forwarder = CREReceiver in production wiring).
+        vm.prank(address(newCREReceiver));
+        syncTrigger.triggerSync();
+
+        // Refund mechanics: the float drains by the actual fee only; the maxFee excess refunds to the trigger.
+        assertLt(newSyncTrigger.balance, initialFloat, "sync should spend from the float");
+        assertGt(newSyncTrigger.balance, initialFloat - maxNativeFee, "maxFee excess should refund to the trigger");
+    }
+
     // ──────────────── Internal test helpers ──────────────────────────────
 
     function _deployAndLoadSyncTrigger()

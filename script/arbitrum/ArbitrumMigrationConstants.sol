@@ -47,6 +47,12 @@ library ArbitrumMigrationConstants {
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;
     uint48 internal constant L2_SYNC_DELAY = 12 hours;
+    // Initial native-ETH fee float funded into the SyncTrigger at Stage-1 deploy (it fronts
+    // maxFee + feeDtoO per sync from its own balance — README §Funding the float).
+    // Floor ≈ 0.1266 (0.125 maxFee + maxSubmissionCost + maxGas×gasPriceBid ≈ 0.0016);
+    // 0.5 ≈ floor + ~30 days runway at measured ~0.007 ETH/sync. Keep modest: recovering
+    // excess is sweep() = GovExec-only.
+    uint128 internal constant L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18;
 
     // CCIP / Chain IDs (Arbitrum-specific)
     uint64 internal constant ARBITRUM_CCIP_CHAIN_SELECTOR = 4949039107694359620;

@@ -227,6 +227,9 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         address lidoDeployer = makeAddr("lidoDeployer");
         newPool = _deployL2Pool(cfg);
 
+        // The deploy funds the SyncTrigger's fee float from the deployer's balance (production
+        // parity — see fundSyncTrigger), so the pranked deployer must hold it.
+        vm.deal(lidoDeployer, cfg.syncTriggerInitialFloat);
         vm.startPrank(lidoDeployer);
         address creReceiverAddr;
         (newSyncTrigger, creReceiverAddr) =

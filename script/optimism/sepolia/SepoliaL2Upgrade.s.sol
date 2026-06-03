@@ -47,6 +47,7 @@ contract SepoliaL2Defaults is Script, L2UpgradeActions {
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
             minSyncDelay: C.L2_SYNC_DELAY,
+            syncTriggerInitialFloat: C.L2_SYNC_TRIGGER_INITIAL_FLOAT,
             oldChainlinkAutomation: vm.envOr("L2_BOOTSTRAP_SYNC_AUTOMATION", address(0)),
             oldGelatoAutomation: address(0)
         });
