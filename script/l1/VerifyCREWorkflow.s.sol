@@ -38,8 +38,14 @@ interface IWorkflowRegistryV2 {
  *
  *         Runs against Ethereum mainnet — `WorkflowRegistry` lives on L1.
  *
- *         Required env: either `L2_LIDO_DEPLOYER_ADDRESS` or `L2_LIDO_DEPLOYER_PRIVATE_KEY`
- *         (the address pinned as the CRE workflow's owner and `CREReceiver.expectedAuthor`).
+ *         Expected owner is sourced (in order): `CRE_EXPECTED_AUTHOR`, else `L2_LIQUIDITY_OWNER` —
+ *         the LOL multisig (Safe) address, which is the CRE workflow's owner and
+ *         `CREReceiver.expectedAuthor` (ADR-0001 / DOC.md §3.2). The `verify-cre-workflow` recipe sets
+ *         `CRE_EXPECTED_AUTHOR` to the **on-chain** `CREReceiver.getExpectedAuthor()` read over the L2
+ *         RPC, so verification anchors to the authoritative on-chain pin rather than an env value that
+ *         could have drifted from what Stage 1 actually pinned. The workflow is registered under the
+ *         Safe via `cre workflow deploy --unsigned`, so its registry owner is the Safe address, NOT the
+ *         Lido Deployer EOA that broadcasts Stage 1.
  *
  *         Reverts with a descriptive key on any mismatch; prints key metadata for visual inspection.
  */
@@ -53,11 +59,14 @@ contract VerifyCREWorkflow is Script {
         if (!ok) revert CREWorkflowVerificationFailed(key);
     }
 
+    /// @dev The CRE workflow owner is the LOL multisig (Safe) — the same address pinned as
+    ///      `CREReceiver.expectedAuthor`. Prefer `CRE_EXPECTED_AUTHOR` (set by the recipe to the live
+    ///      on-chain pin), falling back to `L2_LIQUIDITY_OWNER` for manual runs.
     function _envExpectedAuthor() internal view returns (address) {
-        try vm.envAddress("L2_LIDO_DEPLOYER_ADDRESS") returns (address value) {
+        try vm.envAddress("CRE_EXPECTED_AUTHOR") returns (address value) {
             return value;
         } catch {
-            return vm.addr(vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY"));
+            return vm.envAddress("L2_LIQUIDITY_OWNER");
         }
     }
 

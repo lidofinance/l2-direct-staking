@@ -58,7 +58,8 @@ Shared L1: Receiver `0x6F357d53d6bE3238180316BA5F8f11467e164588` · ProxyAdmin
 | ID | Admissibility predicate | Evidence that decides it (carrier + observation) | Blocks until it holds |
 |----|-------------------------|--------------------------------------------------|------------------------|
 | **G1** | Pre-live checks pass for this lane | `test-acceptance` / `forge test` exit 0 · `verify-constants-sync` prints `OK` · `preflight-check{,-l1}` print `OK` | any production tx (Stage 1) |
-| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (19 reads — incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [README §Funding the float](README.md)) · `verify-cre-workflow` → status `ACTIVE`, owner = Lido Deployer | `migrate-stage2` on this network |
+| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (19 reads — incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [README §Funding the float](README.md)) · `verify-cre-workflow` → status `ACTIVE`, owner = LOL multisig (Safe). ⚠️ This confirms the **registry owner**, not that the DON embeds the Safe as report author — the author gate is only *proven* by a live `CREReceiver.CallExecuted` (see G2-author below) | `migrate-stage2` on this network |
+| **G2-author** | The DON-embedded report author actually matches the pinned `expectedAuthor` (Safe) | one observed `CREReceiver.CallExecuted` on this lane from the live DON path (or, equivalently, exercised end-to-end on a **throwaway testnet workflow first** — CRE Early-Access residual (a), [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). **If reports are rejected `InvalidAuthor`, the DON is embedding a different address** (e.g. the `--unsigned` artifact uploader, not the Safe) → re-pin via `LOL setExpectedAuthor(<address the DON actually embeds>)` | trusting this lane's sync path (not a hard block on `migrate-stage2`, but resolve before relying on automated syncs) |
 | **G3** | **All 4** L2s migrated *and* validated | 4× `migrate-stage2` broadcast with no revert · 4× state-mate exit 0 | `migrate-l1` (the L1 seal) |
 | **G4** | This network *validated* (this is the **Def of "done/green"**) | `test-<net>-upgrade-state-verify` exit 0, tail `✔ Total: ≥45 checks passed` | LOL liquidity seed **and** legacy-upkeep cancel for this network |
 
@@ -124,9 +125,11 @@ just -E .env.<network> deploy-stage1        # deploys pool+trigger+receiver AND 
 just -E .env.<network> verify-stage1        # verify (in-description): 19 read-backs incl. trigger float + guardrails that Stage 2 has NOT run
 
 just -E .env.<network> update-cre-config    # writes deployed addrs into cre config json
-just -E .env.<network> deploy-cre-workflow  # cre workflow deploy; Duty: append printed CRE_WORKFLOW_ID= to .env
-just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = Lido Deployer, status ACTIVE
+just -E .env.<network> deploy-cre-workflow  # cre workflow deploy --unsigned; Duty: EXECUTE the emitted WorkflowRegistry calldata FROM THE LOL SAFE (CRE_WORKFLOW_OWNER, defaults to L2_LIQUIDITY_OWNER), then append printed CRE_WORKFLOW_ID= to .env
+just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = LOL multisig (Safe = L2_LIQUIDITY_OWNER), status ACTIVE
 ```
+> **Owner = LOL multisig, not the deployer.** `deploy-cre-workflow` runs `--unsigned`: it prints raw `WorkflowRegistry` calldata instead of broadcasting. Before printing, it reads `CREReceiver.getExpectedAuthor()` on-chain and **aborts if it ≠ `CRE_WORKFLOW_OWNER`** — so the workflow can't be registered under an owner the author gate would reject. Execute the calldata **from the LOL Safe**, so the Safe becomes the on-chain workflow owner and matches the `CREReceiver.expectedAuthor` pin (which Stage 1 already set to the Safe). The Lido Deployer EOA only broadcasts the contract deploy above; it is **not** the workflow owner. See [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md) / [DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold).
+> **Prove the author gate on testnet first (CRE Early Access).** A green `verify-cre-workflow` confirms the *registry owner* only. Whether the DON actually stamps the Safe address into `metadata.workflowOwner` (so `expectedAuthor` matches) is residual (a) — exercise the full DON → report → `CREReceiver.CallExecuted` path on a **throwaway testnet workflow** before mainnet. If reports come back `InvalidAuthor`, the DON is embedding a different address (likely the `--unsigned` artifact uploader); the fix is `LOL setExpectedAuthor(<that address>)`. This is gate **G2-author**.
 > **Guard (both stages).** `deploy-stage1` and `migrate-stage2` assert `L2_GOVERNANCE_EXECUTOR == <per-network LIDO_L2_GOVERNANCE_EXECUTOR>` and revert (`L2UpgradeWrongGovernanceExecutor`) on mismatch — a wrong executor can't be baked into `SyncTrigger` ownership (Stage 1) or the admin/`ProxyAdmin` handover (Stage 2). Sepolia opts out (operator-supplied executor). See [`DOC.md` §6.3](DOC.md#63-how-the-final-state-is-verified).
 
 **Evidence for G2:** `verify-stage1` → `Script ran successfully`; `verify-cre-workflow` → `ACTIVE`. CRE workflow is deployed **before** Stage 2 so the new sync path is live the moment legacy `SYNC_ROLE` is revoked (minimises the no-sync window).
@@ -159,7 +162,7 @@ just -E .env.arbitrum test-arbitrum-upgrade-state-verify
 just -E .env.base     test-base-upgrade-state-verify
 just -E .env.linea    test-linea-upgrade-state-verify
 just -E .env.<any>    verify-l1-state-mate                 # shared L1 (once)
-just -E .env.<network> verify-cre-workflow                 # per network: ACTIVE + owner
+just -E .env.<network> verify-cre-workflow                 # per network: ACTIVE + owner = LOL Safe (L2_LIQUIDITY_OWNER)
 ```
 
 End-state invariants state-mate asserts (the **Def of "validated/green"** for a network). state-mate checks the **complete** role-member set, not mere presence:
@@ -173,7 +176,7 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 | L2 CustomSender ×4 | `getOraclePool()` | new OraclePool |
 | L2 ProxyAdmin ×4 / SyncTrigger ×4 | `owner()` | L2 Gov Executor |
 | SyncTrigger ×4 | `getForwarder()` | CREReceiver |
-| CREReceiver ×4 | `owner()` / `getForwarder()` / `getExpectedAuthor()` | LOL / CRE Forwarder / Lido Deployer |
+| CREReceiver ×4 | `owner()` / `getForwarder()` / `getExpectedAuthor()` | LOL / CRE Forwarder / **LOL** (owner == expectedAuthor == workflow owner; ADR-0001) |
 | CREReceiver ×4 | `isCallAllowed(SyncTrigger, 0x340b2b0b)` | `true` |
 | OraclePool (new) ×4 | `owner()` | LOL multisig |
 
@@ -185,19 +188,24 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 ### Watch (first weeks) — full table in [`README.md` §Monitoring](README.md)
 
 - **CRITICAL:** the G4 invariant table above (any drift = key compromise / unintended governance); L1 Receiver balance ~0 (`MessageFailed` → page); CCIP manual-exec queue empty; Arbitrum retryable auto-redeems (≤7-day window or funds lost).
-- **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + funded.
+- **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + owner = LOL Safe; **≥1 `CREReceiver.CallExecuted` observed** (the only proof the DON-embedded author matches the pin — a green registry-owner check does NOT prove it); **CRE credit funded under the LOL Safe's CRE account** (dashboard-only, no on-chain signal — a liveness stall with healthy fees + funded float ⇒ suspect credit starvation; see [README §4](README.md#4-cre-workflow-health--funding--high)).
 - **MEDIUM:** actual CCIP fee / `maxFee` < 80%; `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees().maxNativeFee` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
 
-### Recover (Lido Deployer / CRE-workflow-owner key incident)
+### Recover (CRE workflow-owner incident)
 
-The Lido Deployer EOA is the CRE workflow owner (= `expectedAuthor` on every L2 `CREReceiver`). The CRE
-`WorkflowRegistry` has **no ownership transfer**, but the on-chain `expectedAuthor` pin is rotatable — so the
-recovery hinge is **LOL `setExpectedAuthor(new)` on all 4 L2s + redeploy the workflow under a new owner**
-(*no DAO / GovExec motion*). **Def — lost ≠ compromised:** *lost* (availability) — the already-deployed
-workflow keeps running; rotate when it next needs a change or CRE credits near depletion. *Compromised*
-(integrity) — **Duty: LOL SHALL first `setForwarder(0x…dead)`** to contain, then rotate. Neither risks
+The CRE workflow owner is the **LOL multisig (Safe)** — the same Safe that owns each `CREReceiver` and is its
+`expectedAuthor` ([ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). **Everyday case — a Safe
+*signer* is lost or compromised (below threshold):** rotate it inside the Safe (`swapOwner` / `removeOwner` /
+`addOwner`). The Safe address is unchanged, so there is **no CRE redeploy and no `setExpectedAuthor` re-pin**,
+and the running workflow is untouched (*lost* = low urgency, *compromised signer* = evict promptly).
+**Escalation — the whole Safe is compromised (≥ threshold):** this is the protocol-wide worst case that also
+loses every other LOL lever. **Duty: contain from the independent domain first — GovExec
+`SyncTrigger.setForwarder(0)` / `setDelay(max)`** (no LOL quorum needed), then run the one-time "redeploy +
+re-pin" under a **new** LOL Safe (`setExpectedAuthor(newSafe)` ×4 + redeploy `--unsigned`). Neither case risks
 protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, admissible syncs). Full
-procedure + consequence table: [README §Workflow-owner key — lost vs compromised](README.md#workflow-owner-key--lost-vs-compromised-consequences--recovery).
+procedure + consequence tables + the rejected EOA alternative:
+[README §Workflow-owner key — lost vs compromised](README.md#workflow-owner-key--lost-vs-compromised-consequences--recovery)
+and [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md).
 
 ---
 

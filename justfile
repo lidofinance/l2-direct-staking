@@ -471,8 +471,9 @@ verify-constants-sync:
 # Usage: just -E .env.<network> verify-stage1
 #
 # Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL,
-#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER, and either
-#   L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY.
+#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER, and
+#   L2_LIQUIDITY_OWNER (the LOL multisig pinned as CREReceiver.expectedAuthor; defaults to the
+#   network LOL multisig when unset).
 verify-stage1:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -486,14 +487,15 @@ verify-stage1:
     forge script "$SCRIPT" --sig 'runVerifyStage1()' --rpc-url "$L2_RPC_URL"
 
 # Read-only verification that a CRE workflow is registered on the Chainlink WorkflowRegistry
-# (Ethereum mainnet) and owned by the expected author. Run after `cre workflow deploy` for each network.
-# Callable by anyone (no private key needed).
+# (Ethereum mainnet) and owned by the LOL multisig (Safe). Run after `cre workflow deploy` (executed
+# from the Safe) for each network. Callable by anyone (no private key needed).
 #
 # Usage: just -E .env.<network> verify-cre-workflow
 #
-# Required env (all loaded from .env.<network>): L1_RPC_URL, CRE_WORKFLOW_ID
-#   (0x + 64 hex chars, non-zero), and either L2_LIDO_DEPLOYER_ADDRESS or
-#   L2_LIDO_DEPLOYER_PRIVATE_KEY (= CREReceiver.expectedAuthor).
+# Required env (all loaded from .env.<network>): L1_RPC_URL, CRE_WORKFLOW_ID (0x + 64 hex chars,
+#   non-zero). The expected owner is read from the live on-chain CREReceiver.getExpectedAuthor()
+#   when L2_RPC_URL + L2_CRE_RECEIVER are available (authoritative — anchors to what Stage 1 pinned);
+#   otherwise falls back to L2_LIQUIDITY_OWNER.
 verify-cre-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -503,6 +505,20 @@ verify-cre-workflow:
       || { echo "Bad CRE_WORKFLOW_ID: $CRE_WORKFLOW_ID (expected 0x + 64 hex chars)" >&2; exit 1; }
     [[ "$CRE_WORKFLOW_ID" != "0x$(printf '0%.0s' {1..64})" ]] \
       || { echo "Refusing zero CRE_WORKFLOW_ID" >&2; exit 1; }
+
+    # Anchor the expected owner to the authoritative on-chain pin when we can reach L2; this is
+    # immune to a drifted L2_LIQUIDITY_OWNER env value. NOTE: this confirms the *registry owner*
+    # matches the pin — the report-author gate (DON-embedded metadata.workflowOwner) is only proven
+    # by observing a live CREReceiver.CallExecuted (see Monitoring §4 / RUNBOOK).
+    if [[ -n "${L2_RPC_URL:-}" && -n "${L2_CRE_RECEIVER:-}" ]]; then
+      command -v cast >/dev/null 2>&1 || { echo "Missing 'cast' (foundry)" >&2; exit 1; }
+      export CRE_EXPECTED_AUTHOR="$(cast call "$L2_CRE_RECEIVER" 'getExpectedAuthor()(address)' --rpc-url "$L2_RPC_URL" | tr -d '\r\n')"
+      echo "Expected owner (on-chain CREReceiver.expectedAuthor): $CRE_EXPECTED_AUTHOR"
+    else
+      : "${L2_LIQUIDITY_OWNER:?Set L2_RPC_URL + L2_CRE_RECEIVER (preferred, on-chain), or L2_LIQUIDITY_OWNER (the LOL multisig)}"
+      echo "Expected owner (env L2_LIQUIDITY_OWNER fallback): $L2_LIQUIDITY_OWNER"
+    fi
+
     forge script script/l1/VerifyCREWorkflow.s.sol:VerifyCREWorkflow \
       --sig 'run(bytes32)' "$CRE_WORKFLOW_ID" --rpc-url "$L1_RPC_URL"
 
@@ -592,18 +608,29 @@ deploy-stage1:
       echo "WARN broadcast JSON not found at $bcast; record addresses from the forge log above." >&2
     fi
 
-# Deploy the CRE workflow for <network> via the `cre` CLI. Run after
-# `update-cre-config` has populated the deploy config with the live SyncTrigger
-# and CREReceiver addresses. CRE deployer credentials must be configured for the
-# `cre` CLI separately (the workflow owner == Lido Deployer == CREReceiver.expectedAuthor).
+# Deploy the CRE workflow for <network> via the `cre` CLI, OWNED BY THE LOL MULTISIG (Safe).
+# Run after `update-cre-config` has populated the deploy config with the live SyncTrigger and
+# CREReceiver addresses.
 #
-# Required env (loaded from .env.<network>): L2_NETWORK.
+# The workflow owner is the LOL multisig — NOT the EOA running the CLI (ADR-0001, DOC.md §3.2).
+# `--unsigned` makes the CLI emit raw WorkflowRegistry calldata instead of broadcasting: you then
+# execute that calldata FROM THE SAFE, so the Safe address becomes the on-chain workflow owner and
+# the `CREReceiver.expectedAuthor` pin. A throwaway CRE_ETH_PRIVATE_KEY is still needed for RPC-client
+# init but never signs the owner transaction.
+#
+# Required env (loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_CRE_RECEIVER, and
+#   CRE_WORKFLOW_OWNER (the LOL multisig; defaults to L2_LIQUIDITY_OWNER when unset). Before emitting
+#   the calldata the recipe reads CREReceiver.getExpectedAuthor() on-chain and ABORTS if it does not
+#   equal CRE_WORKFLOW_OWNER — so a workflow can never be registered under an owner that the pinned
+#   author gate will reject (which would silently brick every sync).
 #
 # Usage: just -E .env.<network> deploy-cre-workflow
 deploy-cre-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK (used to read CREReceiver.getExpectedAuthor())}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
 
     case "$L2_NETWORK" in
       optimism|arbitrum|base|linea) ;;
@@ -611,12 +638,42 @@ deploy-cre-workflow:
     esac
 
     command -v cre >/dev/null 2>&1 || { echo "Missing 'cre' CLI" >&2; exit 1; }
+    command -v cast >/dev/null 2>&1 || { echo "Missing 'cast' (foundry)" >&2; exit 1; }
+
+    # The workflow owner is the LOL multisig (Safe). Default to L2_LIQUIDITY_OWNER so .env.<network>
+    # is the single source of truth; project.yaml interpolates ${CRE_WORKFLOW_OWNER}.
+    export CRE_WORKFLOW_OWNER="${CRE_WORKFLOW_OWNER:-${L2_LIQUIDITY_OWNER:-}}"
+    [[ "$CRE_WORKFLOW_OWNER" =~ ^0x[0-9a-fA-F]{40}$ ]] \
+      || { echo "CRE_WORKFLOW_OWNER (LOL multisig / Safe) must be set to a 0x+40-hex address; got '${CRE_WORKFLOW_OWNER}'. Set CRE_WORKFLOW_OWNER or L2_LIQUIDITY_OWNER in .env.$L2_NETWORK." >&2; exit 1; }
+    [[ "$CRE_WORKFLOW_OWNER" != "0x0000000000000000000000000000000000000000" ]] \
+      || { echo "Refusing zero CRE_WORKFLOW_OWNER" >&2; exit 1; }
+
+    # Cross-check against the on-chain pin: the workflow owner we are about to register MUST equal the
+    # already-deployed CREReceiver.expectedAuthor, or the author gate rejects every report (silent
+    # sync stall). Compare checksummed forms so case differences don't cause a false mismatch.
+    PINNED="$(cast call "$L2_CRE_RECEIVER" 'getExpectedAuthor()(address)' --rpc-url "$L2_RPC_URL" | tr -d '\r\n')"
+    OWNER_CS="$(cast to-check-sum-address "$CRE_WORKFLOW_OWNER")"
+    PINNED_CS="$(cast to-check-sum-address "$PINNED")"
+    if [[ "$OWNER_CS" != "$PINNED_CS" ]]; then
+      echo "ABORT: CRE_WORKFLOW_OWNER ($OWNER_CS) != on-chain CREReceiver.getExpectedAuthor() ($PINNED_CS)." >&2
+      echo "Registering the workflow under $OWNER_CS would make every report fail the author gate." >&2
+      echo "Fix: set CRE_WORKFLOW_OWNER / L2_LIQUIDITY_OWNER to the pinned author, or re-pin via LOL setExpectedAuthor first." >&2
+      exit 1
+    fi
+    echo "Cross-check OK: CRE_WORKFLOW_OWNER == CREReceiver.expectedAuthor ($OWNER_CS)."
 
     CONFIG="config.deploy.$L2_NETWORK.json"
     [[ -f "cre-workflows/sync-automation/$CONFIG" ]] \
       || { echo "Missing cre-workflows/sync-automation/$CONFIG. Run 'just -E .env.$L2_NETWORK update-cre-config' first." >&2; exit 1; }
 
-    cd cre-workflows/sync-automation && cre workflow deploy . --config "$CONFIG" --target=production-settings
+    echo "Deploying CRE workflow owned by LOL multisig $CRE_WORKFLOW_OWNER (--unsigned: execute the emitted calldata FROM THE SAFE)."
+    cd cre-workflows/sync-automation && cre workflow deploy . --config "$CONFIG" --target=production-settings --unsigned
+    echo
+    echo "===================================================================="
+    echo "Next: execute the WorkflowRegistry calldata printed above FROM THE LOL SAFE ($CRE_WORKFLOW_OWNER)."
+    echo "The Safe address becomes the workflow owner == CREReceiver.expectedAuthor."
+    echo "Then record CRE_WORKFLOW_ID= in .env.$L2_NETWORK and run 'just -E .env.$L2_NETWORK verify-cre-workflow'."
+    echo "===================================================================="
 
 # Stage 2 — migrate L2 admin (per network). Atomically: setOraclePool(new pool);
 # grant SYNC_ROLE to new SyncTrigger and revoke from legacy automation(s);
@@ -1622,7 +1679,8 @@ sepolia-deploy-stage1:
 # Stage-1 read-only verification: 18 post-state assertions inherited from L2UpgradeScriptBase.
 # Mirrors `just verify-stage1 <network>` on mainnet. Callable by anyone (no private key needed).
 # Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR,
-#               L2_CRE_FORWARDER, L2_LIDO_DEPLOYER_ADDRESS (or L2_LIDO_DEPLOYER_PRIVATE_KEY).
+#               L2_CRE_FORWARDER. The CREReceiver.expectedAuthor pin is the CRE workflow owner =
+#               L2_LIQUIDITY_OWNER (on testnet this defaults to L2_GOVERNANCE_EXECUTOR).
 sepolia-verify-stage1:
     forge script script/optimism/sepolia/SepoliaL2Upgrade.s.sol:SepoliaL2UpgradeScript \
         --sig "runVerifyStage1()" \

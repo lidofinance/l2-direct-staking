@@ -40,6 +40,10 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
     address internal LIDO_DAO_AGENT;
     address internal LIDO_L2_GOVERNANCE_EXECUTOR;
     address internal lidoL2LiquidityOwner;
+    /// @dev The Stage-1 broadcaster EOA used by `_deployAndMigrateL2Production`. Exposed as a field so
+    ///      tests can assert `expectedAuthor != lidoStage1Deployer` against the real value rather than a
+    ///      duplicated `makeAddr("lidoDeployer")` literal that could silently drift.
+    address internal lidoStage1Deployer;
 
     // L1
     address internal L1_LIDO_CUSTOM_RECEIVER;
@@ -128,6 +132,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         ETH_CHAIN_ID = L1.ETH_CHAIN_ID;
 
         lidoL2LiquidityOwner = makeAddr("l2LiquidityOwner");
+        lidoStage1Deployer = makeAddr("lidoDeployer");
         l2Fork = vm.createFork(_l2RpcUrl());
         l1Fork = vm.createFork(_l1RpcUrl());
 
@@ -224,7 +229,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
         // Stage 1: Deploy + configure (as Lido Deployer)
-        address lidoDeployer = makeAddr("lidoDeployer");
+        address lidoDeployer = lidoStage1Deployer;
         newPool = _deployL2Pool(cfg);
 
         // The deploy funds the SyncTrigger's fee float from the deployer's balance (production
@@ -232,8 +237,11 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         vm.deal(lidoDeployer, cfg.syncTriggerInitialFloat);
         vm.startPrank(lidoDeployer);
         address creReceiverAddr;
+        // expectedAuthor (4th arg) is the LOL multisig (= cfg.liquidityOwner), NOT the deployer:
+        // the CRE workflow is registered under the Safe via `cre workflow deploy --unsigned`, so
+        // metadata.workflowOwner is the Safe. The deployer only broadcasts Stage 1. See ADR-0001.
         (newSyncTrigger, creReceiverAddr) =
-            deploySyncInfrastructure(cfg, lidoDeployer, makeAddr("creForwarder"), lidoDeployer);
+            deploySyncInfrastructure(cfg, lidoDeployer, makeAddr("creForwarder"), cfg.liquidityOwner);
         newCREReceiver = CREReceiver(payable(creReceiverAddr));
         vm.stopPrank();
 

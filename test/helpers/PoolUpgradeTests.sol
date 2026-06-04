@@ -734,6 +734,20 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
             lidoL2LiquidityOwner,
             "CREReceiver owner should be liquidity owner (LOL)"
         );
+        // The CRE workflow owner is the LOL multisig (Safe), pinned as expectedAuthor — NOT the
+        // Lido Deployer EOA that broadcasts Stage 1 (ADR-0001 / DOC.md §3.2). Owner, expectedAuthor,
+        // and workflow owner are the same Safe address. (This is the static-state check; the
+        // CRE-suite test_productionExpectedAuthorIsLolMultisig additionally proves the behavioral
+        // accept/reject of the author gate — keep both.)
+        assertEq(
+            newCREReceiver.getExpectedAuthor(),
+            lidoL2LiquidityOwner,
+            "CREReceiver expectedAuthor should be the LOL multisig, not the deployer EOA"
+        );
+        assertTrue(
+            newCREReceiver.getExpectedAuthor() != lidoStage1Deployer,
+            "expectedAuthor must not be the Stage-1 deployer EOA"
+        );
         assertEq(
             newCREReceiver.getForwarder(),
             makeAddr("creForwarder"),

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePool.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
@@ -89,6 +90,46 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
             IERC20(L2_WETH).balanceOf(address(newPool)),
             uint256(L2_SYNC_MIN_AMOUNT) + 1 ether,
             "pool WETH should decrease after CRE-triggered sync"
+        );
+    }
+
+    /// @notice The production deploy path pins `expectedAuthor` to the LOL multisig (Safe) — NOT the
+    ///         Lido Deployer EOA — so the CRE workflow owner, the `expectedAuthor` pin, and the
+    ///         CREReceiver owner are all the same Safe address (ADR-0001 / DOC.md §3.2). A report
+    ///         authored by the Safe is accepted; one authored by the deployer EOA is rejected.
+    function test_productionExpectedAuthorIsLolMultisig() public {
+        (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver prodReceiver) =
+            _deployAndMigrateL2Production();
+
+        // Invariant: workflow owner == expectedAuthor == CREReceiver owner == the LOL multisig.
+        assertEq(prodReceiver.getExpectedAuthor(), lidoL2LiquidityOwner, "expectedAuthor must be LOL multisig");
+        assertEq(Ownable(address(prodReceiver)).owner(), lidoL2LiquidityOwner, "CREReceiver owner must be LOL multisig");
+        // It must NOT be the Stage-1 broadcaster (the deployer EOA used inside the production path).
+        assertTrue(prodReceiver.getExpectedAuthor() != lidoStage1Deployer, "expectedAuthor must not be the deployer EOA");
+
+        uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
+        _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
+        vm.warp(block.timestamp + L2_SYNC_DELAY);
+
+        // Production wiring sets the SyncTrigger forwarder to the CREReceiver; the deploy funds the
+        // float, so no extra vm.deal is needed.
+        bytes memory report = abi.encode(newSyncTrigger, abi.encodeCall(ISyncTrigger.triggerSync, ()));
+
+        // A report authored by the Lido Deployer EOA (a plausible mis-pin / stale workflow) is rejected.
+        vm.prank(prodReceiver.getForwarder());
+        vm.expectRevert(
+            abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, lidoStage1Deployer, lidoL2LiquidityOwner)
+        );
+        prodReceiver.onReport(_buildCREMetadata(lidoStage1Deployer), report);
+
+        // A report authored by the LOL multisig (Safe) is accepted and drives the sync.
+        uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
+        vm.prank(prodReceiver.getForwarder());
+        prodReceiver.onReport(_buildCREMetadata(lidoL2LiquidityOwner), report);
+        assertLt(
+            IERC20(L2_WETH).balanceOf(address(newPool)),
+            poolWethBefore,
+            "pool WETH should decrease after Safe-authored CRE sync"
         );
     }
 

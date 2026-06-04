@@ -136,7 +136,7 @@ them — it does not redeploy them (except the new pool).
 | `TransparentUpgradeableProxy`, `AccessControl`, `Ownable` | **OpenZeppelin** | Proxy + role/ownership primitives underlying every contract above. |
 | **CRE network + CRE Forwarder** | **Chainlink** (external) | The decentralized network runs the WASM and signs reports; the Forwarder verifies signatures and calls `CREReceiver.onReport`. **Not controllable by Lido** — only gated by the §3.4 kill switches. |
 | **CCIP Router** (per chain) | **Chainlink** (external) | Routes the L2→L1 sync message. |
-| **`WorkflowRegistry 2.0.0`** (`0x4Ac5…E7e5`, L1) | **Chainlink** | Records the CRE workflow owner; `verify-cre-workflow` checks owner = Lido Deployer, status ACTIVE. |
+| **`WorkflowRegistry 2.0.0`** (`0x4Ac5…E7e5`, L1) | **Chainlink** | Records the CRE workflow owner; `verify-cre-workflow` checks owner = LOL multisig (Safe), status ACTIVE. |
 | **WETH / wstETH / stETH / LINK** | token issuers / Lido core (external) | Value tokens. wstETH is the bridged output; Lido core staking mints it on L1. |
 | **Native bridges** (OP Standard Bridge, Arbitrum Gateway, Linea Message Service) | L2 ecosystems (external) | The L1→L2 return leg for wstETH. |
 | **Legacy Chainlink Automation** (per L2) + **Gelato bot** (Linea only) | Chainlink / Gelato | Pre-migration `SYNC_ROLE` holders; **revoked** during migration — present here only as removed holders. |
@@ -318,12 +318,12 @@ first, then the contract actors, then the external (Chainlink) actor.
 |---|---|---|---|
 | **Lido DAO Agent** `0x3e40…9C8c` | L1 contract/multisig | Admin of `L1Receiver`; owner of L1 `ProxyAdmin` | every action = Aragon DAO vote (days–weeks) |
 | **L2 Governance Executor** (per net) | L2 bridge-executor contract | Admin of `CustomSender`; owner of `SyncTrigger`; owner of L2 `ProxyAdmin` | driven by Lido DAO via the L1→L2 governance bridge; holds the on-chain kill switches |
-| **LOL multisig** (per net) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver` | provides the wstETH seed; holds the CRE pause switch |
-| **Lido Deployer** (EOA, addr TBD) | off-chain key | CRE workflow owner (= `expectedAuthor` on every L2 `CREReceiver`) | **no on-chain admin**; the key authorizes every sync report — rotated only by LOL via `setExpectedAuthor` |
+| **LOL multisig** (per net) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | provides the wstETH seed; holds the CRE pause switch; the workflow is registered under this Safe via `cre workflow deploy --unsigned` (ADR-0001) |
+| **Lido Deployer** (EOA, addr TBD) | off-chain key | **nothing in the final state** — Stage-1 broadcast + SyncTrigger float funding only | **no on-chain admin** and **not the CRE workflow owner**; post-migration holds zero on-chain power over Lido contracts |
 | **Initial Owner** `0xb5c3…91a8` | EOA — **external (not Lido-controlled)** | **nothing** — revoked from every migrated contract | external migration-handoff key (upstream `chainlink-csr` admin); executes Stage 2 and is renounced once it completes — **but completion across all chains depends on this external party** (§6.4) |
 | **Initial Liquidity Owner** `0x2897…b18c` | EOA | Owner of the **old** pools only | retains `sweep()` on the old pools; no control over any new infrastructure |
 | **`SyncTrigger`** (contract) | L2 contract | Holds `SYNC_ROLE` on `CustomSender` | acts only on calls from its forwarder (`CREReceiver`); config owned by L2 governance executor |
-| **`CREReceiver`** (contract) | L2 contract | Is the configured `forwarder` on `SyncTrigger` | accepts reports only from the CRE Forwarder; owned by LOL |
+| **`CREReceiver`** (contract) | L2 contract | Is the configured `forwarder` on `SyncTrigger` | accepts reports only from the CRE Forwarder; owned by LOL, which is also its pinned `expectedAuthor` / CRE workflow owner |
 | **CRE Forwarder / CRE network** | Chainlink (external) | The accepted forwarder address; **no on-chain role on Lido contracts** otherwise | **not controllable by Lido**; the §3.4 kill switches override it |
 
 Per-chain accounts (the only thing that varies between L2s):
@@ -336,30 +336,26 @@ Per-chain accounts (the only thing that varies between L2s):
 | **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6` |
 | **Ethereum L1** (shared) | Lido DAO Agent `0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c` | — |
 
-> **Why the CRE workflow owner is the Lido Deployer EOA — though a multisig is the
-> stronger option.** Unlike every other role, this one is *not* handed to a multisig
-> during the migration, for two reasons. **(1) It's fixed at registration (not
-> transferable).** A CRE workflow's owner is whatever account `cre workflow deploy`
-> registers — here the same Lido Deployer key that broadcasts Stage 1 — captured at
-> registration and baked into every signed report as `metadata.workflowOwner`.
-> `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) exposes **no per-workflow
-> ownership-transfer function**, so the owner can't be *moved* afterwards; changing
-> it means deploying a *new* workflow and re-pinning `setExpectedAuthor` on all four
-> L2s. It does **not** have to be an EOA, though: CRE supports a **multisig (Safe)
-> owner** chosen at registration (`workflow-owner-address` + `--unsigned`), which
-> removes the single-key loss/compromise vector and is the recommended hardening —
-> see [README §Recommended hardening: make the workflow owner a multisig](README.md#recommended-hardening-make-the-workflow-owner-a-multisig-safe).
-> This migration used the EOA because **(2)** makes the extra robustness optional,
-> not because a multisig was impossible. **(2) It needs no
-> more authority.** The workflow owner holds **zero on-chain power** over Lido
-> contracts — its address only appears as the `expectedAuthor` pin, one of
-> `CREReceiver`'s three gates. A leaked deployer key can't extract funds alone (it
-> still faces the forwarder gate, the allow-list, and `SyncTrigger`'s on-chain
-> amount/delay re-check), and the **LOL multisig can revoke it at any time** via
-> `setExpectedAuthor(new)` on every L2 (§3.4). So it's a rotatable,
-> on-chain-revocable credential, not a root of trust. The address is "TBD" only
-> because it's a runtime key (`L2_LIDO_DEPLOYER_PRIVATE_KEY`), never committed to
-> the repo.
+> **Why the CRE workflow owner is the LOL multisig (Safe), not an EOA.** Unlike every
+> other role, this one is *fixed at registration*: a CRE workflow's owner is whatever
+> account `cre workflow deploy` registers, baked into every signed report as
+> `metadata.workflowOwner`, and `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) exposes **no
+> per-workflow ownership-transfer function** — so the owner can't be *moved* afterwards
+> (changing it means deploying a *new* workflow and re-pinning `setExpectedAuthor` on all
+> four L2s). To avoid that single-key cliff, the workflow is registered under the **LOL
+> multisig (Safe)** — the same Safe that owns each `CREReceiver` — via
+> `cre workflow deploy … --unsigned` (`workflow-owner-address` = the Safe; the emitted
+> `WorkflowRegistry` calldata is executed *from the Safe*). The Safe address becomes both
+> the on-chain owner and the pinned `expectedAuthor`. A lost or compromised *signer* is
+> then handled by **rotating that signer inside the Safe** — the workflow-owner address
+> never changes, so there is **no redeploy and no `setExpectedAuthor` re-pin**. The
+> single-EOA loss/compromise vector folds into the LOL-multisig risk already accepted
+> everywhere else. The Lido Deployer EOA only **broadcasts Stage 1** and funds the
+> SyncTrigger float; it holds **zero on-chain power** afterwards and is **not** the
+> workflow owner. Full rationale, the EOA alternative, and the recovery primitive:
+> [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md). The Safe owner relies on
+> three CRE Early-Access residuals (see ADR-0001 "Residuals"); confirm them on a throwaway
+> testnet workflow before GA.
 
 ### 3.3 Granting and revoking — both matter
 
@@ -386,11 +382,14 @@ on-chain control of the sync path through **kill switches**:
 | CRE infra hostile/degraded | LOL multisig | `CREReceiver.setForwarder(0x…dead)` |
 | SyncTrigger misconfigured | L2 governance executor | `SyncTrigger.setForwarder(0)` / `setDelay(max)` |
 
-> **If the Lido Deployer / CRE-workflow-owner key is lost or compromised**, these same LOL levers
-> (`setExpectedAuthor` / `setForwarder`) are the recovery hinge — the `expectedAuthor` binding is
-> rotatable on-chain even though the CRE workflow owner itself is not (the registry has no ownership
-> transfer; §3.2). Full consequence + recovery analysis (lost vs compromised, with the redeploy + re-pin
-> procedure): [README §Workflow-owner key — lost vs compromised](README.md#workflow-owner-key--lost-vs-compromised-consequences--recovery).
+> **CRE workflow owner = LOL multisig (Safe).** A lost or compromised Safe **signer** is handled by
+> rotating that signer inside the Safe (`addOwner` / `swapOwner` / `removeOwner`) — the workflow-owner
+> address never changes, so **no redeploy and no `setExpectedAuthor` re-pin** (§3.2, ADR-0001). The levers
+> above (`setExpectedAuthor` / `setForwarder`) are the recovery hinge only for the catastrophic case where
+> the **whole Safe** is compromised (≥ threshold signers) — the same event that already loses every other
+> LOL-held lever — via the one-time "redeploy + re-pin" primitive
+> ([ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). The GovExec backstop
+> (`SyncTrigger.setForwarder(0)` / `setDelay(max)`) stays in an independent trust domain regardless.
 
 ---
 
@@ -457,7 +456,7 @@ flowchart LR
     DAO["Lido DAO Agent"]
     GOV["L2 Gov Executor<br/>(per network)"]
     LOL["LOL multisig<br/>(per network)"]
-    DEP["Lido Deployer<br/>(off-chain key)"]
+    DEP["Lido Deployer<br/>(Stage-1 broadcast only)"]
     IO["Initial Owner"]
     ILO["Initial Liquidity Owner"]
 
@@ -482,9 +481,10 @@ flowchart LR
 
     LOL -->|owner| NEW
     LOL -->|owner| CRER
+    LOL -->|workflow owner via --unsigned| WFREG
+    LOL -.->|= expectedAuthor| CRER
 
-    DEP -->|workflow owner| WFREG
-    DEP -.->|= expectedAuthor| CRER
+    DEP -.->|Stage-1 deploy only — no final role| CS
 
     ST -->|SYNC_ROLE| CS
     CRER -->|forwarder| ST
@@ -650,7 +650,7 @@ authorization to run it.
 - **`verify-stage1`** — 19 read-only post-conditions per L2 (pool / SyncTrigger /
   CREReceiver immutables, the trigger's funded fee float, + guardrails that Stage 2
   hasn't run yet).
-- **`verify-cre-workflow`** — `WorkflowRegistry` shows owner = Lido Deployer,
+- **`verify-cre-workflow`** — `WorkflowRegistry` shows owner = LOL multisig (Safe),
   status ACTIVE.
 - **state-mate** — ≥45 live-RPC assertions per chain: admin held only by the L2
   governance executor and `SYNC_ROLE` only by the new `SyncTrigger` — asserted as the

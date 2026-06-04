@@ -83,16 +83,6 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return vm.envOr("L2_LIQUIDITY_OWNER", _defaultLiquidityOwner());
     }
 
-    /// @dev Prefer an explicit `L2_LIDO_DEPLOYER_ADDRESS`, falling back to deriving from the private key.
-    ///      `runVerifyStage1` must be callable without the deployer's private key in the operator's environment.
-    function _envLidoDeployerAddress() internal view returns (address) {
-        try vm.envAddress("L2_LIDO_DEPLOYER_ADDRESS") returns (address value) {
-            return value;
-        } catch {
-            return vm.addr(vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY"));
-        }
-    }
-
     error L2UpgradeWrongGovernanceExecutor(address actual, address expected);
 
     /// @dev Reads `L2_GOVERNANCE_EXECUTOR` and asserts it matches this network's known-correct executor
@@ -116,9 +106,12 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         returns (address oraclePool, address syncTrigger, address creReceiverAddr)
     {
         oraclePool = address(deployPool(cfg));
-        // The CRE workflow is deployed by the Lido Deployer (same key), so the workflow owner
-        // recorded in `metadata.workflowOwner` equals `deployer`. We pin _expectedAuthor to that.
-        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, creForwarder, deployer);
+        // The CRE workflow is registered under the LOL multisig (Safe) via `cre workflow deploy
+        // --unsigned`, executed from the Safe — so the workflow owner recorded in
+        // `metadata.workflowOwner` is the Safe (= `cfg.liquidityOwner`). We pin `_expectedAuthor` to
+        // that Safe address, the same entity that owns the CREReceiver. The Lido Deployer EOA only
+        // broadcasts this Stage-1 deploy; it is NOT the workflow owner. See ADR-0001 and DOC.md §3.2.
+        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, creForwarder, cfg.liquidityOwner);
     }
 
     // ── Stage 1: Lido Deployer ───────────────────────────────────────
@@ -144,8 +137,9 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     // ── Stage 1 verification (read-only, between Stage 1 and Stage 2) ─
 
     /// @notice Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run. Actor: anyone.
-    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER,
-    ///      and either L2_LIDO_DEPLOYER_ADDRESS or L2_LIDO_DEPLOYER_PRIVATE_KEY (the address pinned as CREReceiver.expectedAuthor).
+    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER.
+    ///      The CREReceiver.expectedAuthor pin is the LOL multisig (= liquidity owner / CRE workflow owner),
+    ///      sourced from L2_LIQUIDITY_OWNER (or the network's default LOL multisig) — not the broadcasting EOA.
     function runVerifyStage1() public view {
         assertL2ChainId(_expectedChainId());
 
@@ -153,7 +147,9 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
-        address expectedAuthor = _envLidoDeployerAddress();
+        // The CRE workflow owner pinned as expectedAuthor is the LOL multisig (Safe), the same
+        // address that owns the CREReceiver — see ADR-0001 / DOC.md §3.2.
+        address expectedAuthor = liquidityOwner;
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
         address creReceiverAddr = vm.envAddress("L2_CRE_RECEIVER");

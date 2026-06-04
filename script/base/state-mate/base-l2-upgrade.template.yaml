@@ -167,7 +167,7 @@ l2:
       checks:
         owner: *l2LiquidityOwner
         getForwarder: *l2CreForwarder
-        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        getExpectedAuthor: *l2LiquidityOwner # CRE workflow owner = LOL multisig = CREReceiver owner (ADR-0001)
         isCallAllowed:
           - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
             result: true
