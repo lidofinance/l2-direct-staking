@@ -114,7 +114,7 @@ contract SepoliaL2UpgradeScript is L2UpgradeScriptBase, SepoliaL2Defaults {
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        // L-6/L-8: needed by executeMigrationSteps' Stage-1-completeness precondition.
+        // needed by executeMigrationSteps' Stage-1-completeness precondition.
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
         address bootstrapSyncAutomation = vm.envOr("L2_BOOTSTRAP_SYNC_AUTOMATION", address(0));

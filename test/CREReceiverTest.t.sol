@@ -166,7 +166,7 @@ contract CREReceiverTest is Test {
     }
 
     function test_onReport_revertsOnShortMetadata() public {
-        // L-4: metadata shorter than the 62-byte Keystone layout (workflowId 32 + name 10 +
+        // metadata shorter than the 62-byte Keystone layout (workflowId 32 + name 10 +
         // owner 20) is rejected with a named error rather than an implicit calldata-bounds panic.
         bytes memory report = abi.encode(address(target), abi.encodeCall(MockTarget.ping, ()));
         bytes memory shortMetadata = abi.encodePacked(bytes32("wfId"), bytes10("wfName")); // 42 bytes, no owner
@@ -248,7 +248,7 @@ contract CREReceiverTest is Test {
     }
 
     function test_onReport_revertsOnNonNullaryCall() public {
-        // F-2: even an explicitly allow-listed selector is rejected when the report carries
+        // even an explicitly allow-listed selector is rejected when the report carries
         // arguments — only a bare 4-byte selector (a nullary call) may be dispatched.
         receiver.setAllowedCall(address(target), DO_SOMETHING, true);
         bytes memory data = abi.encodeCall(MockTarget.doSomething, (123)); // 4 selector + 32 arg = 36 bytes
@@ -352,10 +352,10 @@ contract CREReceiverTest is Test {
     function test_supportsInterface_IReceiver() public {
         // The CRE Keystone forwarder gates delivery on these two ids (ERC165Checker probes the
         // ERC-165 base id first, then the onReport-only IReceiver id). BOTH must return true or
-        // reports are never delivered. See FINDINGS.md F-1.
+        // reports are never delivered.
         assertTrue(receiver.supportsInterface(bytes4(0x805f2132)), "keystone IReceiver (onReport) id");
         assertTrue(receiver.supportsInterface(bytes4(0x01ffc9a7)), "ERC-165 base id");
-        // After the F-1 fix the local IReceiver is onReport-only, so its id IS the keystone id.
+        // The local IReceiver is onReport-only, so its id IS the keystone id.
         assertTrue(type(IReceiver).interfaceId == bytes4(0x805f2132), "IReceiver must be onReport-only");
         assertTrue(receiver.supportsInterface(type(IReceiver).interfaceId));
     }

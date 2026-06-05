@@ -54,7 +54,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     ///      out of the check (e.g. Sepolia, where the executor is operator-supplied and has no
     ///      canonical value). Production networks override this to their per-chain
     ///      LIDO_L2_GOVERNANCE_EXECUTOR constant so that a wrong `L2_GOVERNANCE_EXECUTOR` env value is
-    ///      rejected before any irreversible admin/ownership handover (FINDINGS.md F-4).
+    ///      rejected before any irreversible admin/ownership handover.
     ///      `pure` like `_expectedChainId` (every network returns a constant or the address(0) opt-out;
     ///      none reads state). The expected executor is a known canonical value, never derived from env.
     function _expectedGovernanceExecutor() internal pure virtual returns (address) {
@@ -86,7 +86,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     error L2UpgradeWrongGovernanceExecutor(address actual, address expected);
 
     /// @dev Reads `L2_GOVERNANCE_EXECUTOR` and asserts it matches this network's known-correct executor
-    ///      (FINDINGS.md F-4). The per-network constant previously lived only in tests, so a wrong-but-
+    ///      The per-network constant previously lived only in tests, so a wrong-but-
     ///      nonzero env value would have been baked into SyncTrigger ownership (Stage 1) and the
     ///      DEFAULT_ADMIN_ROLE / ProxyAdmin handover (Stage 2) with no on-chain guardrail — the same class
     ///      of bug as the historical wrong Base/Linea executor. No-op when `_expectedGovernanceExecutor()`
@@ -170,7 +170,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        // L-6/L-8: needed by executeMigrationSteps' Stage-1-completeness precondition.
+        // needed by executeMigrationSteps' Stage-1-completeness precondition.
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 
@@ -190,7 +190,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        // L-6/L-8: needed by executeMigrationSteps' Stage-1-completeness precondition.
+        // needed by executeMigrationSteps' Stage-1-completeness precondition.
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
         address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 

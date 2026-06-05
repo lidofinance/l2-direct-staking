@@ -130,7 +130,7 @@ contract SyncTriggerTest is Test {
     }
 
     function test_setForwarder_revertsOnZero() public {
-        // L-13: setting the forwarder to address(0) would brick triggerSync (onlyForwarder
+        // setting the forwarder to address(0) would brick triggerSync (onlyForwarder
         // compares against address(0)); the guard rejects it, aligning with CREReceiver.
         trigger.setForwarder(forwarder);
         vm.expectRevert(ISyncTrigger.SyncTriggerInvalidForwarder.selector);
@@ -222,7 +222,7 @@ contract SyncTriggerTest is Test {
     }
 
     function test_setFeeOtoD_revertsOnWrongLength() public {
-        // L-2: feeOtoD must be exactly 21 bytes (CustomSender re-decodes with FeeCodec.decodeCCIP).
+        // feeOtoD must be exactly 21 bytes (CustomSender re-decodes with FeeCodec.decodeCCIP).
         // A 20-byte buffer previously passed the setter then self-DoSed inside sync.
         bytes memory tooShort = new bytes(20);
         vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(20), uint256(21)));
@@ -230,7 +230,7 @@ contract SyncTriggerTest is Test {
     }
 
     function test_setFeeDtoO_revertsOnTooShort() public {
-        // L-2: feeDtoO must be >= 17 bytes (FeeCodec.decodeFee).
+        // feeDtoO must be >= 17 bytes (FeeCodec.decodeFee).
         bytes memory tooShort = new bytes(16);
         vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(16), uint256(17)));
         trigger.setFeeDtoO(tooShort);
@@ -268,7 +268,7 @@ contract SyncTriggerTest is Test {
     // ─── shouldSync ────────────────────────────────────────────────────
 
     function test_shouldSync_falseWhenDeactivated() public {
-        // L-1: default delay is type(uint48).max ("deactivated"). The threshold
+        // default delay is type(uint48).max ("deactivated"). The threshold
         // uint256(lastExecution) + delay is unreachable, so shouldSync cleanly returns
         // (false, 0) instead of overflow-reverting (the off-chain CRE eth_call probe needs
         // a clean "no sync", not a revert).

@@ -29,7 +29,7 @@ contract SepoliaGuardHarness is SepoliaL2UpgradeScript {
     }
 }
 
-/// @notice FINDINGS.md F-4: `L2_GOVERNANCE_EXECUTOR` must be validated against the per-network
+/// @notice `L2_GOVERNANCE_EXECUTOR` must be validated against the per-network
 ///         known-correct executor before any irreversible admin/ownership handover. A wrong-but-
 ///         nonzero value previously had no on-chain guardrail (the historical wrong Base/Linea
 ///         executor). RPC-free — exercises only the env guard, not the broadcast/fork paths.
@@ -56,7 +56,7 @@ contract L2GovernanceExecutorGuardTest is Test {
         vm.setEnv("L2_GOVERNANCE_EXECUTOR", vm.toString(C.LIDO_L2_GOVERNANCE_EXECUTOR));
         assertEq(opt.envGovernanceExecutor(), C.LIDO_L2_GOVERNANCE_EXECUTOR, "correct executor accepted");
 
-        // Wrong-but-nonzero value → reverts (mainnet). This is the F-4 guard the historical bug needed.
+        // Wrong-but-nonzero value → reverts (mainnet). This is the guard the historical bug needed.
         address wrong = makeAddr("wrongExecutor");
         vm.setEnv("L2_GOVERNANCE_EXECUTOR", vm.toString(wrong));
         vm.expectRevert(

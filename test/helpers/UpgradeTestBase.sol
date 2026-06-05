@@ -196,7 +196,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
         // Stage 1: Deploy + configure full sync infrastructure (SyncTrigger + CREReceiver, wired),
-        // mirroring production so the Stage-2 precondition (FINDINGS L-6/L-8) is satisfied.
+        // mirroring production so the Stage-2 precondition is satisfied.
         newPool = _deployL2Pool(cfg);
 
         address creForwarder = makeAddr("creForwarder");

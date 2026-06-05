@@ -544,7 +544,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertTrue(syncNeeded, "sync should be needed");
 
         // The migration funds the trigger's fee float (production parity). Drain it so this test
-        // exercises the float-ran-dry path (FINDINGS L-5): with a 0 balance, triggerSync must revert
+        // exercises the float-ran-dry path: with a 0 balance, triggerSync must revert
         // when it tries to forward the native CCIP fee from its own balance.
         uint256 floatBalance = address(syncTrigger).balance;
         if (floatBalance > 0) {
@@ -558,7 +558,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         syncTrigger.triggerSync();
     }
 
-    /// @dev L-6/L-8: Stage 2 must refuse a mis-wired or half-configured Stage 1 BEFORE any
+    /// @dev Stage 2 must refuse a mis-wired or half-configured Stage 1 BEFORE any
     ///      irreversible write (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin
     ///      handover). Here Stage 1 is deployed correctly, but Stage 2 is handed a creReceiver the
     ///      trigger's forwarder does not point at — the precondition fails and nothing is mutated.

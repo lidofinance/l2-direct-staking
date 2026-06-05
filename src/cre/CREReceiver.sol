@@ -17,11 +17,11 @@ import {IReceiver} from "./interfaces/IReceiver.sol";
  *      3. the decoded (target, selector) pair must be explicitly allowed by the owner, AND the
  *         call must be ARGUMENT-LESS: calldata must be exactly the 4-byte selector. The lone
  *         production entry is SyncTrigger.triggerSync() — a nullary, rate-limited action — so the
- *         report author controls nothing beyond which allow-listed selector fires (FINDINGS.md F-2).
+ *         report author controls nothing beyond which allow-listed selector fires.
  *
  *      Call chain: CRE DON → CRE Forwarder → CREReceiver.onReport() → target.call(data)
  *
- *      Intentionally NOT enforced (FINDINGS.md F-3): the report's workflowName (metadata[32:42])
+ *      Intentionally NOT enforced: the report's workflowName (metadata[32:42])
  *      and workflowId (metadata[0:32]) are populated by the DON but not checked here. The
  *      workflowName is an owner-chosen, owner-scoped label — not globally unique, and an attacker
  *      who controls the pinned owner key can register a workflow under the expected name, so a
@@ -90,7 +90,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
 
     /// @inheritdoc IReceiver
     function onReport(bytes calldata metadata, bytes calldata report) external override onlyForwarder {
-        // workflowName/workflowId intentionally not checked — see contract @dev / FINDINGS.md F-3.
+        // workflowName/workflowId intentionally not checked — see contract @dev.
         address workflowOwner = _extractWorkflowOwner(metadata);
         if (workflowOwner != _expectedAuthor) {
             revert InvalidAuthor(workflowOwner, _expectedAuthor);
@@ -103,7 +103,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         bytes4 selector = bytes4(data);
         if (!_allowedCalls[target][selector]) revert CallNotAllowed(target, selector);
 
-        // F-2: every allow-listed call is argument-less (the production seed is the nullary
+        // every allow-listed call is argument-less (the production seed is the nullary
         // SyncTrigger.triggerSync()). Reject any calldata beyond the bare 4-byte selector so the
         // report author cannot control the arguments passed to target.call(data).
         if (data.length != 4) revert NonNullaryCall(target, data.length);
@@ -167,7 +167,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     /// @dev Extracts the workflow owner from packed CRE metadata.
     ///      Layout: bytes32 workflowId | bytes10 workflowName | address workflowOwner (offset 42, length 20).
     function _extractWorkflowOwner(bytes calldata metadata) internal pure returns (address workflowOwner) {
-        // L-4: explicit length guard. The slice metadata[42:62] already reverts on a short buffer via
+        // explicit length guard. The slice metadata[42:62] already reverts on a short buffer via
         // Solidity's implicit calldata bounds-check, but that is brittle if the metadata format ever
         // changes; assert the Keystone layout's minimum (32 workflowId + 10 workflowName + 20 owner)
         // explicitly so the failure mode is a clear named error rather than an implicit panic.
