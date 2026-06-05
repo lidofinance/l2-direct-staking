@@ -197,6 +197,10 @@ contract L2UpgradeActions {
         address expectedAuthor
     ) private view {
         CREReceiver cr = CREReceiver(payable(creReceiverAddr));
+        // L-6: pin the trigger to the real CustomSender. A typo'd/wrong syncTrigger address would
+        // not have SENDER pointing at this CustomSender, so this catches a mis-wired trigger before
+        // it is granted SYNC_ROLE (and, via the Stage-2 precondition, before any irreversible handover).
+        _requireL2PostCondition(ISyncTrigger(syncTrigger).SENDER() == cfg.customSender, "syncTrigger SENDER");
         _requireL2PostCondition(ISyncTrigger(syncTrigger).getForwarder() == creReceiverAddr, "syncTrigger forwarder");
         _requireL2PostCondition(Ownable(syncTrigger).owner() == cfg.governanceExecutor, "syncTrigger owner");
         _requireL2PostCondition(cr.getForwarder() == creForwarder, "creReceiver forwarder");
@@ -335,8 +339,18 @@ contract L2UpgradeActions {
     function executeMigrationSteps(
         L2UpgradeConfig memory cfg,
         address newPool,
-        address newSyncTrigger
+        address newSyncTrigger,
+        address creReceiver,
+        address creForwarder
     ) public {
+        // L-8: refuse to run Stage 2 against a half-configured or mis-wired Stage 1. This re-asserts
+        // the full sync-infrastructure wiring (SyncTrigger SENDER/forwarder/owner, CREReceiver
+        // forwarder/expectedAuthor/allow-list/owner, fee float) BEFORE any irreversible write below
+        // (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin handover). It reads only
+        // SyncTrigger/CREReceiver state that Stage 2 never mutates, so it is safe as a precondition.
+        // Also subsumes L-6 (the SENDER/forwarder wiring check) before SYNC_ROLE is granted.
+        _assertSyncInfrastructure(cfg, newSyncTrigger, creReceiver, creForwarder, cfg.liquidityOwner);
+
         setOraclePool(cfg.customSender, newPool);
         grantSyncRole(cfg.customSender, newSyncTrigger);
         if (cfg.oldChainlinkAutomation != address(0)) {

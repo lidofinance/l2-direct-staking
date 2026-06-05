@@ -129,10 +129,13 @@ contract SyncTriggerTest is Test {
         assertEq(trigger.getForwarder(), forwarder);
     }
 
-    function test_setForwarder_canSetToZero() public {
+    function test_setForwarder_revertsOnZero() public {
+        // L-13: setting the forwarder to address(0) would brick triggerSync (onlyForwarder
+        // compares against address(0)); the guard rejects it, aligning with CREReceiver.
         trigger.setForwarder(forwarder);
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidForwarder.selector);
         trigger.setForwarder(address(0));
-        assertEq(trigger.getForwarder(), address(0));
+        assertEq(trigger.getForwarder(), forwarder);
     }
 
     function test_setForwarder_emitsEvent() public {
@@ -207,15 +210,30 @@ contract SyncTriggerTest is Test {
     // ─── setFeeOtoD / setFeeDtoO ───────────────────────────────────────
 
     function test_setFeeOtoD_updatesFee() public {
-        bytes memory fee = hex"deadbeef";
+        bytes memory fee = _encodeFee(0.1 ether, false); // 21-byte CCIP blob
         trigger.setFeeOtoD(fee);
         assertEq(keccak256(trigger.getFeeOtoD()), keccak256(fee));
     }
 
     function test_setFeeDtoO_updatesFee() public {
-        bytes memory fee = hex"cafebabe";
+        bytes memory fee = _encodeFee(0.05 ether, false); // 21 bytes (>= 17)
         trigger.setFeeDtoO(fee);
         assertEq(keccak256(trigger.getFeeDtoO()), keccak256(fee));
+    }
+
+    function test_setFeeOtoD_revertsOnWrongLength() public {
+        // L-2: feeOtoD must be exactly 21 bytes (CustomSender re-decodes with FeeCodec.decodeCCIP).
+        // A 20-byte buffer previously passed the setter then self-DoSed inside sync.
+        bytes memory tooShort = new bytes(20);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(20), uint256(21)));
+        trigger.setFeeOtoD(tooShort);
+    }
+
+    function test_setFeeDtoO_revertsOnTooShort() public {
+        // L-2: feeDtoO must be >= 17 bytes (FeeCodec.decodeFee).
+        bytes memory tooShort = new bytes(16);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(16), uint256(17)));
+        trigger.setFeeDtoO(tooShort);
     }
 
     function test_setFeeOtoD_revertsIfNotOwner() public {
@@ -249,12 +267,16 @@ contract SyncTriggerTest is Test {
 
     // ─── shouldSync ────────────────────────────────────────────────────
 
-    function test_shouldSync_revertsWhenDeactivated() public {
-        // Default delay is type(uint48).max — addition with lastExecution overflows uint48
+    function test_shouldSync_falseWhenDeactivated() public {
+        // L-1: default delay is type(uint48).max ("deactivated"). The threshold
+        // uint256(lastExecution) + delay is unreachable, so shouldSync cleanly returns
+        // (false, 0) instead of overflow-reverting (the off-chain CRE eth_call probe needs
+        // a clean "no sync", not a revert).
         trigger.setAmounts(1 ether, 10 ether);
         weth.mint(oraclePool, 5 ether);
-        vm.expectRevert();
-        trigger.shouldSync();
+        (bool needed, uint256 amount) = trigger.shouldSync();
+        assertFalse(needed);
+        assertEq(amount, 0);
     }
 
     function test_shouldSync_falseBeforeDelay() public {

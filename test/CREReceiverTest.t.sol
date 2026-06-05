@@ -165,6 +165,17 @@ contract CREReceiverTest is Test {
         receiver.onReport(_metadata(wrong), report);
     }
 
+    function test_onReport_revertsOnShortMetadata() public {
+        // L-4: metadata shorter than the 62-byte Keystone layout (workflowId 32 + name 10 +
+        // owner 20) is rejected with a named error rather than an implicit calldata-bounds panic.
+        bytes memory report = abi.encode(address(target), abi.encodeCall(MockTarget.ping, ()));
+        bytes memory shortMetadata = abi.encodePacked(bytes32("wfId"), bytes10("wfName")); // 42 bytes, no owner
+
+        vm.prank(forwarder);
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.MetadataTooShort.selector, uint256(42)));
+        receiver.onReport(shortMetadata, report);
+    }
+
     // ─── onReport: allow-list enforcement ──────────────────────────────
 
     function test_onReport_revertsOnDisallowedTarget() public {

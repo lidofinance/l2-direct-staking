@@ -82,6 +82,12 @@ just verify-constants-sync      # needs yq
 # c. Preflight against the PRODUCTION RPCs (read-only, per network)   (Evidence: prints "OK")
 just -E .env.<network> preflight-check       # chain-id, sender bytecode, legacy-sync age, old-pool balances, Sync events (~12h)
 just -E .env.<network> preflight-check-l1     # L1 mainnet + receiver adapter/sender wiring for this lane
+
+# c (cont.) CRE forwarder version (FINDINGS L-3)   (Evidence: prints "Forwarder and Router 1.0.0")
+#    The repo vendors TWO Keystone forwarders with INCOMPATIBLE onReport/metadata ABIs. CREReceiver
+#    assumes the CCIP onReport(bytes,bytes) + metadata[42:62] layout, so L2_CRE_FORWARDER MUST be the
+#    CCIP one. Reject the legacy "KeystoneForwarder 1.0.0" (onReport(bytes32,address,bytes)).
+cast call $L2_CRE_FORWARDER "typeAndVersion()(string)" --rpc-url $L2_RPC_URL   # expect: "Forwarder and Router 1.0.0"
 ```
 
 **d. Dress rehearsal** — the *actual* operator recipes on an anvil fork of one L2 + L1 (validates recipe wiring end-to-end; Linea shown, substitute per net):

@@ -6,6 +6,7 @@ interface ISyncTrigger {
     error SyncTriggerInvalidParameters();
     error SyncTriggerSyncNotNeeded();
     error SyncTriggerOnlyForwarder();
+    error SyncTriggerInvalidForwarder();
 
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
     event DelaySet(uint48 delay);

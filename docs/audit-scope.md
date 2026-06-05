@@ -92,12 +92,20 @@ whose assurance belongs to its upstream maintainer. Pinned carriers:
 > `62108f7`) — but `SyncTrigger` is a **refactor, not byte-for-byte**: the Chainlink
 > Keeper surface (`checkUpkeep`/`performUpkeep`, `AutomationCompatibleInterface`,
 > `cannotExecute`) was replaced with the CRE `triggerSync()` / `onlyForwarder` surface.
-> The "audited" status of `SyncAutomation` is **not evidenced in this repo** (no upstream
-> audit report is vendored). **Before this exclusion can be relied on, the team must
-> attach: (a) the upstream audit report ref + hash, and (b) a `git diff` of the shared
-> accounting between `SyncTrigger` and `SyncAutomation` at the pinned commits.** Until
-> then the fee accounting is *unverified-by-this-document*, and the auditor should treat
-> the shared logic as in-scope-by-default.
+> **The upstream `SyncAutomation` is not known to be audited.** No audit report is vendored
+> in `lib/chainlink-csr/**` (no `audits/` dir, no reference in its README), and the upstream
+> is the reference implementation behind Chainlink's official Direct Staking template, whose
+> documentation explicitly disclaims it: *"This template is provided 'AS IS' and 'AS
+> AVAILABLE' without warranties of any kind, **has not been audited**…"*
+> ([Chainlink CCIP Direct Staking guide](https://docs.chain.link/quickstarts/ccip-direct-staking),
+> retrieved 2026-06-04). Lido's own [audits index](https://docs.lido.fi/security/audits/) lists
+> no audit for direct staking / CCIP / Custom Sender. **So the "audited upstream" framing used
+> elsewhere should not be relied on.** Before any audit-exclusion based on upstream provenance
+> can be claimed, the team must attach: (a) a concrete upstream audit report ref + hash (if one
+> ever exists), and (b) a `git diff` of the shared accounting between `SyncTrigger` and
+> `SyncAutomation` at the pinned commits. Until then the fee accounting is
+> *unverified-by-this-document*, and the auditor should treat the shared logic as
+> in-scope-by-default.
 
 ### Out of scope — separate track
 
@@ -131,6 +139,23 @@ forge test --match-path "test/{CREReceiverTest,SyncTriggerTest}.t.sol"   # unit 
 Fork suites (`test/*PoolUpgrade.t.sol`) require per-chain RPC env
 (`L1_RPC_URL`, `L2_{OPTIMISM,ARBITRUM,LINEA,BASE}_RPC_URL`) — see `foundry.toml`
 `[rpc_endpoints]`. **Verified 2026-06-04:** `forge build` = BUILD OK.
+
+### Review-lead verification coverage
+
+The `FINDINGS.md` review-leads that are not closed by an on-chain code change are verified
+operationally; this maps each to **where** it is checked (so the residual process risk is explicit,
+not silent). The first three are enforced in code (with tests); the rest are verification/operational:
+
+| Lead | How it is addressed | Where |
+| --- | --- | --- |
+| **L-2** (fee-length mismatch) | `SyncTrigger` setters validate with the consumer's decoders (`decodeCCIP`==21 / `decodeFee`≥17) at set-time | code + `SyncTriggerTest` |
+| **L-6** (SYNC_ROLE on mis-wired trigger) | `_assertSyncInfrastructure` asserts `SyncTrigger.SENDER()==customSender` | code + fork test |
+| **L-8** (handover before Stage 1 complete) | `executeMigrationSteps` runs the full Stage-1-wiring precondition before any irreversible write | code + `test_executeMigrationStepsRevertsOnMiswiredStage1` |
+| **L-3** (forwarder version coupling) | Pre-live check: confirm `L2_CRE_FORWARDER.typeAndVersion()` == `"Forwarder and Router 1.0.0"` (CCIP), **not** the legacy `"KeystoneForwarder 1.0.0"` (different `onReport`/metadata ABI) | RUNBOOK §1 pre-live |
+| **L-7** (sole SYNC_ROLE holder) | `AccessControlUpgradeable` is non-enumerable on-chain; state-mate reconstructs the **complete** role-member set from logs and asserts `count(SYNC_ROLE)==1` | RUNBOOK G4 table / state-mate |
+| **L-9** (L2 author pin ↔ L1 workflow owner) | Reconciled via two independent on-chain reads: live L2 `CREReceiver.getExpectedAuthor()` (the `deploy-cre-workflow` recipe aborts if the registered owner ≠ this pin) vs L1 `WorkflowRegistry.getWorkflowById(id).owner` (`VerifyCREWorkflow`); gate **G2-author** further requires a live `CallExecuted`. Manual `VerifyCREWorkflow` runs must set `CRE_EXPECTED_AUTHOR` from the on-chain L2 pin, not the `L2_LIQUIDITY_OWNER` env fallback | RUNBOOK §2/§3, `VerifyCREWorkflow.s.sol` |
+| **L-5** (native fee float runs dry) | Operational: trigger fronts each sync's native fee from its own balance; monitored (`SyncTrigger` balance ≥ 2× `getMaxFees().maxNativeFee`, depletes ~0.005 ETH/sync), top up via `receive()`, recover via owner `sweep()` | RUNBOOK §3 Watch, README §Funding the float |
+| **L-10** (new OraclePool unfunded) | Operational: LOL multisig seeds wstETH into each new pool post-G4; until seeded `fastStake` reverts (`sync`/slowStake unaffected) | RUNBOOK §3 Finalize |
 
 ---
 

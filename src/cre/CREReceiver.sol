@@ -50,6 +50,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     error InvalidAuthor(address received, address expected);
     error CallNotAllowed(address target, bytes4 selector);
     error ReportTooShort(uint256 length);
+    error MetadataTooShort(uint256 length);
     error NonNullaryCall(address target, uint256 length);
     error CallExecutionFailed(address target, bytes reason);
     error ETHTransferFailed();
@@ -166,6 +167,11 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     /// @dev Extracts the workflow owner from packed CRE metadata.
     ///      Layout: bytes32 workflowId | bytes10 workflowName | address workflowOwner (offset 42, length 20).
     function _extractWorkflowOwner(bytes calldata metadata) internal pure returns (address workflowOwner) {
+        // L-4: explicit length guard. The slice metadata[42:62] already reverts on a short buffer via
+        // Solidity's implicit calldata bounds-check, but that is brittle if the metadata format ever
+        // changes; assert the Keystone layout's minimum (32 workflowId + 10 workflowName + 20 owner)
+        // explicitly so the failure mode is a clear named error rather than an implicit panic.
+        if (metadata.length < 62) revert MetadataTooShort(metadata.length);
         workflowOwner = address(uint160(bytes20(metadata[42:62])));
     }
 

@@ -186,16 +186,6 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         newPool = deployPool(cfg);
     }
 
-    function _deployL2SyncTrigger(L2UpgradeConfig memory cfg)
-        internal
-        returns (address newSyncTrigger)
-    {
-        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
-        newSyncTrigger = address(deploySyncTrigger(cfg, LIDO_L2_GOVERNANCE_EXECUTOR));
-        configureSyncTrigger(newSyncTrigger, cfg);
-        vm.stopPrank();
-    }
-
     function _deployAndMigrateL2WithSyncTrigger()
         internal
         returns (PausableImmutableOraclePool newPool, address newSyncTrigger)
@@ -205,13 +195,21 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
 
-        // Stage 1: Deploy + configure (SyncTrigger owned by governance executor in test)
+        // Stage 1: Deploy + configure full sync infrastructure (SyncTrigger + CREReceiver, wired),
+        // mirroring production so the Stage-2 precondition (FINDINGS L-6/L-8) is satisfied.
         newPool = _deployL2Pool(cfg);
-        newSyncTrigger = _deployL2SyncTrigger(cfg);
+
+        address creForwarder = makeAddr("creForwarder");
+        address creReceiver;
+        vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
+        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        (newSyncTrigger, creReceiver) =
+            deploySyncInfrastructure(cfg, LIDO_L2_GOVERNANCE_EXECUTOR, creForwarder, cfg.liquidityOwner);
+        vm.stopPrank();
 
         // Stage 2: Migrate existing contracts (as Initial Owner)
         vm.startPrank(INITIAL_OWNER);
-        executeMigrationSteps(cfg, address(newPool), newSyncTrigger);
+        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, creReceiver, creForwarder);
         vm.stopPrank();
     }
 
@@ -235,19 +233,20 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         // The deploy funds the SyncTrigger's fee float from the deployer's balance (production
         // parity — see fundSyncTrigger), so the pranked deployer must hold it.
         vm.deal(lidoDeployer, cfg.syncTriggerInitialFloat);
+        address creForwarder = makeAddr("creForwarder");
         vm.startPrank(lidoDeployer);
         address creReceiverAddr;
         // expectedAuthor (4th arg) is the LOL multisig (= cfg.liquidityOwner), NOT the deployer:
         // the CRE workflow is registered under the Safe via `cre workflow deploy --unsigned`, so
         // metadata.workflowOwner is the Safe. The deployer only broadcasts Stage 1. See ADR-0001.
         (newSyncTrigger, creReceiverAddr) =
-            deploySyncInfrastructure(cfg, lidoDeployer, makeAddr("creForwarder"), cfg.liquidityOwner);
+            deploySyncInfrastructure(cfg, lidoDeployer, creForwarder, cfg.liquidityOwner);
         newCREReceiver = CREReceiver(payable(creReceiverAddr));
         vm.stopPrank();
 
         // Stage 2: Migrate existing contracts (as Initial Owner)
         vm.startPrank(INITIAL_OWNER);
-        executeMigrationSteps(cfg, address(newPool), newSyncTrigger);
+        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, creReceiverAddr, creForwarder);
         vm.stopPrank();
     }
 

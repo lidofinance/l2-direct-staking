@@ -170,11 +170,14 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
+        // L-6/L-8: needed by executeMigrationSteps' Stage-1-completeness precondition.
+        address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
+        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver, creForwarder);
         vm.stopBroadcast();
     }
 
@@ -187,11 +190,14 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
+        // L-6/L-8: needed by executeMigrationSteps' Stage-1-completeness precondition.
+        address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
+        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
         vm.startBroadcast(initialOwner);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver, creForwarder);
         vm.stopBroadcast();
     }
 
@@ -236,7 +242,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder);
         vm.stopBroadcast();
     }
 
@@ -258,7 +264,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         vm.stopBroadcast();
 
         vm.startBroadcast(initialOwner);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger);
+        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder);
         vm.stopBroadcast();
     }
 }

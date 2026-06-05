@@ -543,12 +543,44 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         (bool syncNeeded,) = syncTrigger.shouldSync();
         assertTrue(syncNeeded, "sync should be needed");
 
-        // Do NOT fund the SyncTrigger — leave its balance at 0
+        // The migration funds the trigger's fee float (production parity). Drain it so this test
+        // exercises the float-ran-dry path (FINDINGS L-5): with a 0 balance, triggerSync must revert
+        // when it tries to forward the native CCIP fee from its own balance.
+        uint256 floatBalance = address(syncTrigger).balance;
+        if (floatBalance > 0) {
+            vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+            syncTrigger.sweep(address(0), makeAddr("floatSink"), floatBalance);
+        }
         assertEq(address(syncTrigger).balance, 0, "sync trigger should have no ETH");
 
         vm.prank(forwarder);
         vm.expectRevert();
         syncTrigger.triggerSync();
+    }
+
+    /// @dev L-6/L-8: Stage 2 must refuse a mis-wired or half-configured Stage 1 BEFORE any
+    ///      irreversible write (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin
+    ///      handover). Here Stage 1 is deployed correctly, but Stage 2 is handed a creReceiver the
+    ///      trigger's forwarder does not point at — the precondition fails and nothing is mutated.
+    function test_executeMigrationStepsRevertsOnMiswiredStage1() public {
+        vm.selectFork(l2Fork);
+        L2UpgradeConfig memory cfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+
+        PausableImmutableOraclePool newPool = _deployL2Pool(cfg);
+
+        address creForwarder = makeAddr("creForwarder");
+        vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
+        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        (address syncTrigger,) =
+            deploySyncInfrastructure(cfg, LIDO_L2_GOVERNANCE_EXECUTOR, creForwarder, cfg.liquidityOwner);
+        vm.stopPrank();
+
+        // Call via `this.` so executeMigrationSteps runs as a single external call and the
+        // precondition revert is caught atomically (expectRevert latches onto the next external call).
+        address wrongReceiver = makeAddr("wrongReceiver");
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger forwarder"));
+        this.executeMigrationSteps(cfg, address(newPool), syncTrigger, wrongReceiver, creForwarder);
     }
 
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
