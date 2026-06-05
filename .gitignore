@@ -13,3 +13,4 @@ node_modules
 
 # CRE workflow build artifacts
 cre-workflows/**/dist
+/x-ray

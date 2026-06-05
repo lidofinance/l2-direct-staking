@@ -3,15 +3,19 @@ parameters:
   - &ethMainnetCcipChainSelector 5009297550715157269
   - &l1LidoCustomReceiverBytes32 "0x0000000000000000000000006f357d53d6be3238180316ba5f8f11467e164588"
   - &l2CustomSender "__L2_CUSTOM_SENDER__"
+  - &l2CustomSenderImpl "__L2_CUSTOM_SENDER_IMPL__"
   - &l2ProxyAdmin "__L2_PROXY_ADMIN__"
   - &initialOwner "__INITIAL_OWNER__"
   - &l2GovernanceExecutor "__L2_GOVERNANCE_EXECUTOR__"
+  - &lidoDaoAgent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
   - &l2LiquidityOwner "__L2_LIQUIDITY_OWNER__"
   - &l2LidoDeployer "__L2_LIDO_DEPLOYER__"
   - &l2OraclePool "__L2_ORACLE_POOL__"
+  - &l2OldOraclePool "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
   - &l2SyncTrigger "__L2_SYNC_TRIGGER__"
-  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A" # legacy SYNC_ROLE holder (revocation asserted below)
+  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
   - &l2CreReceiver "__L2_CRE_RECEIVER__"
+  - &l2CreForwarder "__L2_CRE_FORWARDER__"
   - &l2Weth "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
   - &l2Wsteth "0x5979D7b546E38E414F7E9822514be443A4800529"
   - &l2LinkToken "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4"
@@ -25,6 +29,10 @@ parameters:
 roles:
   - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
   - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"
+
+misc:
+  - &EIP1967_IMPLEMENTATION_SLOT "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+  - &EIP1967_ADMIN_SLOT "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
 
 deployed:
   l1:
@@ -47,6 +55,16 @@ l2:
     customSender:
       name: CustomSenderReferral
       address: *l2CustomSender
+      proxyName: TransparentUpgradeableProxy
+      implementation: *l2CustomSenderImpl
+      proxyChecks: {}
+      storage:
+        - slot: *EIP1967_IMPLEMENTATION_SLOT
+          expected: *l2CustomSenderImpl
+          label: implementation
+        - slot: *EIP1967_ADMIN_SLOT
+          expected: *l2ProxyAdmin
+          label: admin
       checks:
         CCIP_ROUTER: *l2CcipRouter
         DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
@@ -73,6 +91,19 @@ l2:
         supportsInterface:
           - args: ["0x01ffc9a7"] # IERC165
             result: true
+      implementationChecks:
+        CCIP_ROUTER: *l2CcipRouter
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
+        LINK_TOKEN: *l2LinkToken
+        MIN_PROCESS_MESSAGE_GAS: *minProcessMessageGas
+        SYNC_ROLE: *SYNC_ROLE
+        TOKEN: *l2Weth
+        WNATIVE: *l2Weth
+        getOraclePool: null
+        getReceiver: null
+        hasRole: null
+        getRoleAdmin: null
+        supportsInterface: null
       ozNonEnumerableAcl:
         *DEFAULT_ADMIN_ROLE : [*l2GovernanceExecutor]
         *SYNC_ROLE : [*l2SyncTrigger]
@@ -82,6 +113,21 @@ l2:
       address: *l2ProxyAdmin
       checks:
         owner: *l2GovernanceExecutor
+
+    governanceExecutor:
+      name: ArbitrumBridgeExecutor
+      address: *l2GovernanceExecutor
+      checks:
+        getEthereumGovernanceExecutor: *lidoDaoAgent
+        getDelay: 0
+        getGracePeriod: 86400 # 24h
+        getGuardian: "0x0000000000000000000000000000000000000000"
+        getMinimumDelay: 0
+        getMaximumDelay: 1
+        getActionsSetCount: null
+        getActionsSetById: null
+        getCurrentState: null
+        isActionQueued: null
 
     oraclePool:
       name: PausableImmutableOraclePool
@@ -93,6 +139,19 @@ l2:
         getFee: 0
         getOracle: *l2PriceOracle
         owner: *l2LiquidityOwner
+        paused: false
+
+    # Old pool — orphaned post-Stage-2 (customSender.getOraclePool() now points at the new pool).
+    oldOraclePool:
+      name: PausableImmutableOraclePool
+      address: *l2OldOraclePool
+      checks:
+        SENDER: *l2CustomSender
+        TOKEN_IN: *l2Weth
+        TOKEN_OUT: *l2Wsteth
+        getFee: 0
+        getOracle: *l2PriceOracle
+        owner: # intentionally not asserted: migration leaves the Initial Liquidity Owner as owner of the orphaned pool.
         paused: false
 
     syncTrigger:
@@ -107,7 +166,7 @@ l2:
         getAmounts:
           result: [*syncMinAmount, *syncMaxAmount]
         getAmountToSync: 0
-        getForwarder: null # CREReceiver address — set after CRE deployment
+        getForwarder: *l2CreReceiver # pinned during Stage 1 deploy
         getFeeOtoD: null # encoded fee bytes — set during migration
         getFeeDtoO: null # encoded fee bytes — set during migration
         getLastExecution: null # deployment timestamp
@@ -120,11 +179,13 @@ l2:
       address: *l2CreReceiver
       checks:
         owner: *l2LiquidityOwner
-        getForwarder: null # CRE Forwarder (KeystoneForwarder) address
-        getExpectedAuthor: *l2LidoDeployer # pinned at construction to the Stage 1 broadcaster
+        getForwarder: *l2CreForwarder
+        getExpectedAuthor: *l2LiquidityOwner # CRE workflow owner = LOL multisig = CREReceiver owner (ADR-0001)
         isCallAllowed:
           - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
             result: true
         supportsInterface:
-          - args: ["0x21a4cdb3"] # IReceiver
+          - args: ["0x805f2132"] # IReceiver (onReport-only) id the CRE forwarder queries
+            result: true
+          - args: ["0x01ffc9a7"] # ERC-165 base id (ERC165Checker probes this first)
             result: true

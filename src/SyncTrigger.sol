@@ -172,7 +172,11 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     // ──────────────── Internal ───────────────────────────────────────────
 
     function _getAmountToSync() internal view virtual returns (uint256 amount) {
-        if (block.timestamp >= _lastExecution + _delay) {
+        // L-1: widen to uint256 before adding. With uint48 operands, _lastExecution + _delay
+        // overflow-reverts when _delay == type(uint48).max (the "deactivated" default), turning the
+        // intended "no sync" into a panic that the off-chain CRE eth_call probe sees as a revert.
+        // In uint256 the threshold is simply unreachable, so the deactivated state cleanly returns 0.
+        if (block.timestamp >= uint256(_lastExecution) + _delay) {
             address oraclePool = ICustomSender(SENDER).getOraclePool();
             uint256 wnativeAmount = IERC20(WNATIVE).balanceOf(oraclePool);
 
@@ -184,6 +188,10 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     }
 
     function _setForwarder(address forwarder) internal virtual {
+        // L-13: reject address(0) to align with CREReceiver.setForwarder. Without this a single
+        // owner call to setForwarder(0) would permanently brick triggerSync (its onlyForwarder
+        // compares msg.sender != address(0), which is always true). Owner-only self-brick guard.
+        if (forwarder == address(0)) revert SyncTriggerInvalidForwarder();
         _forwarder = forwarder;
         emit ForwarderSet(forwarder);
     }
@@ -203,11 +211,20 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     }
 
     function _setFeeOtoD(bytes calldata fee) internal virtual {
+        // L-2: validate at set-time with the same decoder the consumer uses. `CustomSender`
+        // re-decodes feeOtoD with `FeeCodec.decodeCCIP` (length must be exactly 21), but the
+        // setter previously accepted any length, so a 17–20-byte config passed here then
+        // self-DoSed inside `sync`. decodeCCIP reverts unless length == 21.
+        FeeCodec.decodeCCIP(fee);
         _feeOtoD = fee;
         emit FeeOtoDSet(fee);
     }
 
     function _setFeeDtoO(bytes calldata fee) internal virtual {
+        // L-2: validate at set-time with the same decoder the consumer uses. `CustomSender`
+        // re-decodes feeDtoO with `FeeCodec.decodeFee` (length must be >= 17); reject shorter
+        // buffers here rather than letting them self-DoS inside `sync`.
+        FeeCodec.decodeFee(fee);
         _feeDtoO = fee;
         emit FeeDtoOSet(fee);
     }

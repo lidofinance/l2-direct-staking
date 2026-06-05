@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {L2UpgradeScriptBase} from "script/shared/L2UpgradeScriptBase.s.sol";
-import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
+import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 import {OptimismMigrationConstants as C} from "script/optimism/OptimismMigrationConstants.sol";
 
 /**
@@ -40,6 +40,7 @@ contract OptimismL2Defaults is L2UpgradeActions {
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
             minSyncDelay: C.L2_SYNC_DELAY,
+            syncTriggerInitialFloat: C.L2_SYNC_TRIGGER_INITIAL_FLOAT,
             oldChainlinkAutomation: C.L2_OLD_CHAINLINK_AUTOMATION,
             oldGelatoAutomation: address(0)
         });
@@ -63,5 +64,9 @@ contract OptimismL2UpgradeScript is L2UpgradeScriptBase, OptimismL2Defaults {
 
     function _expectedChainId() internal pure override returns (uint256) {
         return C.OPTIMISM_CHAIN_ID;
+    }
+
+    function _expectedGovernanceExecutor() internal pure override returns (address) {
+        return C.LIDO_L2_GOVERNANCE_EXECUTOR;
     }
 }

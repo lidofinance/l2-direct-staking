@@ -7,6 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {SyncTrigger} from "src/SyncTrigger.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 
 /// @notice Minimal mock for ICustomSender — just enough for SyncTrigger constructor + sync
 contract MockCustomSender {
@@ -16,6 +17,7 @@ contract MockCustomSender {
 
     bool public shouldRevertSync;
     uint256 public lastSyncAmount;
+    uint256 public lastSyncValue;
 
     constructor(address wnative_, address linkToken_) {
         WNATIVE = wnative_;
@@ -37,6 +39,7 @@ contract MockCustomSender {
     function sync(uint64, uint256 amount, bytes calldata, bytes calldata) external payable returns (bytes32) {
         if (shouldRevertSync) revert("sync failed");
         lastSyncAmount = amount;
+        lastSyncValue = msg.value;
         return keccak256(abi.encode(amount));
     }
 }
@@ -126,10 +129,13 @@ contract SyncTriggerTest is Test {
         assertEq(trigger.getForwarder(), forwarder);
     }
 
-    function test_setForwarder_canSetToZero() public {
+    function test_setForwarder_revertsOnZero() public {
+        // L-13: setting the forwarder to address(0) would brick triggerSync (onlyForwarder
+        // compares against address(0)); the guard rejects it, aligning with CREReceiver.
         trigger.setForwarder(forwarder);
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidForwarder.selector);
         trigger.setForwarder(address(0));
-        assertEq(trigger.getForwarder(), address(0));
+        assertEq(trigger.getForwarder(), forwarder);
     }
 
     function test_setForwarder_emitsEvent() public {
@@ -204,15 +210,30 @@ contract SyncTriggerTest is Test {
     // ─── setFeeOtoD / setFeeDtoO ───────────────────────────────────────
 
     function test_setFeeOtoD_updatesFee() public {
-        bytes memory fee = hex"deadbeef";
+        bytes memory fee = _encodeFee(0.1 ether, false); // 21-byte CCIP blob
         trigger.setFeeOtoD(fee);
         assertEq(keccak256(trigger.getFeeOtoD()), keccak256(fee));
     }
 
     function test_setFeeDtoO_updatesFee() public {
-        bytes memory fee = hex"cafebabe";
+        bytes memory fee = _encodeFee(0.05 ether, false); // 21 bytes (>= 17)
         trigger.setFeeDtoO(fee);
         assertEq(keccak256(trigger.getFeeDtoO()), keccak256(fee));
+    }
+
+    function test_setFeeOtoD_revertsOnWrongLength() public {
+        // L-2: feeOtoD must be exactly 21 bytes (CustomSender re-decodes with FeeCodec.decodeCCIP).
+        // A 20-byte buffer previously passed the setter then self-DoSed inside sync.
+        bytes memory tooShort = new bytes(20);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(20), uint256(21)));
+        trigger.setFeeOtoD(tooShort);
+    }
+
+    function test_setFeeDtoO_revertsOnTooShort() public {
+        // L-2: feeDtoO must be >= 17 bytes (FeeCodec.decodeFee).
+        bytes memory tooShort = new bytes(16);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(16), uint256(17)));
+        trigger.setFeeDtoO(tooShort);
     }
 
     function test_setFeeOtoD_revertsIfNotOwner() public {
@@ -246,12 +267,16 @@ contract SyncTriggerTest is Test {
 
     // ─── shouldSync ────────────────────────────────────────────────────
 
-    function test_shouldSync_revertsWhenDeactivated() public {
-        // Default delay is type(uint48).max — addition with lastExecution overflows uint48
+    function test_shouldSync_falseWhenDeactivated() public {
+        // L-1: default delay is type(uint48).max ("deactivated"). The threshold
+        // uint256(lastExecution) + delay is unreachable, so shouldSync cleanly returns
+        // (false, 0) instead of overflow-reverting (the off-chain CRE eth_call probe needs
+        // a clean "no sync", not a revert).
         trigger.setAmounts(1 ether, 10 ether);
         weth.mint(oraclePool, 5 ether);
-        vm.expectRevert();
-        trigger.shouldSync();
+        (bool needed, uint256 amount) = trigger.shouldSync();
+        assertFalse(needed);
+        assertEq(amount, 0);
     }
 
     function test_shouldSync_falseBeforeDelay() public {
@@ -306,6 +331,99 @@ contract SyncTriggerTest is Test {
         trigger.triggerSync();
     }
 
+    function test_triggerSync_happyPath_nativeFees() public {
+        uint128 maxFeeOtoD = 0.1 ether;
+        uint128 feeDtoO = 0.05 ether;
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(maxFeeOtoD, false), _encodeFee(feeDtoO, false));
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+
+        assertEq(sender.lastSyncAmount(), 5 ether, "synced amount");
+        assertEq(sender.lastSyncValue(), uint256(maxFeeOtoD) + feeDtoO, "native fee forwarded");
+        assertEq(trigger.getLastExecution(), uint48(block.timestamp), "lastExecution advanced");
+    }
+
+    function test_triggerSync_linkFees_sendsZeroValue() public {
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, true), _encodeFee(0.05 ether, true));
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+
+        // Both legs paid in LINK → no native value should accompany the sync call.
+        assertEq(sender.lastSyncValue(), 0, "no native fee when both legs pay in LINK");
+        assertEq(sender.lastSyncAmount(), 5 ether, "synced amount");
+    }
+
+    function test_triggerSync_mixedFees_forwardsOnlyNativeLeg() public {
+        uint128 maxFeeOtoD = 0.1 ether;
+        // OtoD native, DtoO in LINK → only the OtoD leg contributes native value.
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(maxFeeOtoD, false), _encodeFee(0.05 ether, true));
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+
+        assertEq(sender.lastSyncValue(), maxFeeOtoD, "only native OtoD leg forwarded");
+    }
+
+    function test_triggerSync_capsAtMax() public {
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 50 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+
+        assertEq(sender.lastSyncAmount(), 10 ether, "synced amount capped at maxAmount");
+    }
+
+    function test_triggerSync_blocksImmediateRetrigger() public {
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+
+        // Same delay window → _lastExecution was just set, so a second call is rate-limited.
+        vm.prank(forwarder);
+        vm.expectRevert(ISyncTrigger.SyncTriggerSyncNotNeeded.selector);
+        trigger.triggerSync();
+    }
+
+    // ─── getMaxFees ────────────────────────────────────────────────────
+
+    function test_getMaxFees_nativeBoth() public {
+        trigger.setFeeOtoD(_encodeFee(0.1 ether, false));
+        trigger.setFeeDtoO(_encodeFee(0.05 ether, false));
+        (uint256 maxNativeFee, uint256 maxLinkFee) = trigger.getMaxFees();
+        assertEq(maxNativeFee, 0.15 ether, "native sum");
+        assertEq(maxLinkFee, 0, "no link fee");
+    }
+
+    function test_getMaxFees_linkBoth() public {
+        trigger.setFeeOtoD(_encodeFee(0.1 ether, true));
+        trigger.setFeeDtoO(_encodeFee(0.05 ether, true));
+        (uint256 maxNativeFee, uint256 maxLinkFee) = trigger.getMaxFees();
+        assertEq(maxNativeFee, 0, "no native fee");
+        assertEq(maxLinkFee, 0.15 ether, "link sum");
+    }
+
+    function test_getMaxFees_mixed() public {
+        trigger.setFeeOtoD(_encodeFee(0.1 ether, false)); // native
+        trigger.setFeeDtoO(_encodeFee(0.05 ether, true)); // link
+        (uint256 maxNativeFee, uint256 maxLinkFee) = trigger.getMaxFees();
+        assertEq(maxNativeFee, 0.1 ether, "native OtoD leg");
+        assertEq(maxLinkFee, 0.05 ether, "link DtoO leg");
+    }
+
+    // ─── getAmountToSync (public wrapper) ──────────────────────────────
+
+    function test_getAmountToSync_returnsAmount() public {
+        _configureForSync(1 ether, 10 ether, 1 hours);
+        weth.mint(oraclePool, 5 ether);
+        vm.warp(block.timestamp + 1 hours);
+        (, uint256 expected) = trigger.shouldSync();
+        assertEq(trigger.getAmountToSync(), expected, "wrapper matches shouldSync");
+        assertEq(trigger.getAmountToSync(), 5 ether);
+    }
+
     // ─── receive ───────────────────────────────────────────────────────
 
     function test_canReceiveEth() public {
@@ -320,5 +438,31 @@ contract SyncTriggerTest is Test {
     function _configureForSync(uint128 minAmount, uint128 maxAmount, uint48 delay) internal {
         trigger.setAmounts(minAmount, maxAmount);
         trigger.setDelay(delay);
+    }
+
+    /// @dev Builds a valid (21-byte) CCIP fee buffer; `decodeFeeMemory` reads the first 17 bytes.
+    function _encodeFee(uint128 maxFee, bool payInLink) internal pure returns (bytes memory) {
+        return FeeCodec.encodeCCIP(maxFee, payInLink, 1_000_000);
+    }
+
+    /// @dev Arms the trigger for a successful triggerSync: amounts, delay, forwarder, both fee
+    ///      buffers, a funded pool, native ETH on the trigger to front the CCIP fee, and a warp
+    ///      past `delay`.
+    function _armTriggerSync(
+        uint128 minAmount,
+        uint128 maxAmount,
+        uint48 delay,
+        uint256 poolBalance,
+        bytes memory feeOtoD,
+        bytes memory feeDtoO
+    ) internal {
+        trigger.setAmounts(minAmount, maxAmount);
+        trigger.setDelay(delay);
+        trigger.setForwarder(forwarder);
+        trigger.setFeeOtoD(feeOtoD);
+        trigger.setFeeDtoO(feeDtoO);
+        weth.mint(oraclePool, poolBalance);
+        vm.deal(address(trigger), 100 ether); // ample native float to front any fee
+        vm.warp(block.timestamp + delay);
     }
 }

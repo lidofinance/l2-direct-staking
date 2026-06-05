@@ -27,15 +27,19 @@ library OptimismMigrationConstants {
     // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x3776CC14ce997827F7A87091018Daa1739dc2790;
 
-    // L2 SyncTrigger defaults
-    // Current mainnet values: https://optimistic.etherscan.io/address/0x3776CC14ce997827F7A87091018Daa1739dc2790#readContract (getFeeOtoD / getFeeDtoO)
-    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
+    // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
+    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
-    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 800_000;
+    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
     uint32 internal constant L2_SYNC_ORIGIN_L2_GAS = 100_000;
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;
     uint48 internal constant L2_SYNC_DELAY = 12 hours;
+    // Initial native-ETH fee float funded into the SyncTrigger at Stage-1 deploy (it fronts
+    // maxFee + feeDtoO per sync from its own balance — README §Funding the float).
+    // Floor = 0.125 (maxFee, DtoO is free on OP-stack); 0.5 ≈ floor + ~30 days runway at
+    // measured ~0.005 ETH/sync. Keep modest: recovering excess is sweep() = GovExec-only.
+    uint128 internal constant L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18;
 
     // CCIP / Chain IDs (Optimism-specific)
     uint64 internal constant OPTIMISM_CCIP_CHAIN_SELECTOR = 3734403246176062136;

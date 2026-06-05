@@ -3,22 +3,21 @@ pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
 
-import {L1UpgradeActions} from "script/shared/L1UpgradeActions.s.sol";
-import {L1MigrationConstants as L1} from "script/shared/L1MigrationConstants.sol";
+import {L1UpgradeActions} from "script/l1/L1UpgradeActions.s.sol";
+import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 
 /**
- * @notice Shared broadcast script for L1 upgrade operations.
+ * @notice Broadcast script for L1 admin migration. Runs ONCE — the L1
+ *         LidoCustomReceiver is shared across all four L2 lanes.
  *         Actor: Initial Owner.
  *
  * Migrates L1 Receiver admin and ProxyAdmin ownership to Lido DAO Agent.
- * The L1 receiver is shared across all L2 networks, so this only needs
- * to run if L1 admin migration hasn't already been done via another network.
  *
  * Required env:
  * - INITIAL_OWNER_PRIVATE_KEY (or L1_INITIAL_OWNER_PRIVATE_KEY)
  * - LIDO_DAO_AGENT (or LIDO_NEW_OWNER)
  */
-abstract contract L1UpgradeScriptBase is Script, L1UpgradeActions {
+contract L1UpgradeScript is Script, L1UpgradeActions {
     function _envInitialOwnerPrivateKey() internal view returns (uint256) {
         try vm.envUint("INITIAL_OWNER_PRIVATE_KEY") returns (uint256 value) {
             return value;

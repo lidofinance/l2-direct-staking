@@ -32,6 +32,10 @@ library SepoliaMigrationConstants {
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 0.01e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 1e18;
     uint48 internal constant L2_SYNC_DELAY = 5 minutes;
+    // Initial native-ETH fee float funded into the SyncTrigger at deploy (it fronts
+    // maxFee + feeDtoO per sync from its own balance — README §Funding the float).
+    // Floor = 0.1 (maxFee, DtoO is free on OP-stack); small runway is fine on testnet.
+    uint128 internal constant L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.15e18;
 
     // CCIP / Chain IDs (Sepolia)
     uint64 internal constant ETH_CCIP_CHAIN_SELECTOR = 16015286601757825753;

@@ -7,7 +7,7 @@
 default: &default
   cre-cli:
     don-family: "zone-a"
-  rpcs:
+  rpcs: &rpcs
     - chain-name: ethereum-mainnet-optimism-1
       url: "${L2_OPTIMISM_RPC_URL}"
     - chain-name: ethereum-mainnet
@@ -18,10 +18,22 @@ default: &default
       url: "${L1_SEPOLIA_RPC_URL}"
 
 # ==========================================================================
+# simulate/test deliberately do NOT set workflow-owner-address: local simulation
+# runs under whatever key the CLI uses and must not require CRE_WORKFLOW_OWNER.
 simulate-settings: *default
 
 # ==========================================================================
 test-settings: *default
 
 # ==========================================================================
-production-settings: *default
+# Production only: the CRE workflow owner is the LOL multisig (Safe) — NOT the EOA that runs the
+# CLI. Deploy with `cre workflow deploy … --unsigned` so the CLI emits raw WorkflowRegistry calldata
+# you execute from the Safe; the Safe address becomes the on-chain owner and the
+# `CREReceiver.expectedAuthor` pin. `CRE_WORKFLOW_OWNER` is set per-network in .env.<network> to the
+# network's LOL multisig (ADR-0001, DOC.md §3.2). A throwaway CRE_ETH_PRIVATE_KEY is still needed for
+# RPC-client init but never signs the owner transaction.
+production-settings:
+  cre-cli:
+    don-family: "zone-a"
+    workflow-owner-address: "${CRE_WORKFLOW_OWNER}"
+  rpcs: *rpcs

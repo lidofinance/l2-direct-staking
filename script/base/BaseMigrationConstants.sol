@@ -5,7 +5,7 @@ pragma solidity ^0.8.20;
 /// @dev L1 and shared constants live in L1MigrationConstants.
 library BaseMigrationConstants {
     // L2 governance executor
-    address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x2897A1b134050c01503843db48e034d4C9e2b18c;
+    address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x0E37599436974a25dDeEdF795C848d30Af46eaCF;
 
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61;
@@ -27,15 +27,19 @@ library BaseMigrationConstants {
     // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x3776CC14ce997827F7A87091018Daa1739dc2790;
 
-    // L2 SyncTrigger defaults
-    // Current mainnet values: https://basescan.org/address/0x3776CC14ce997827F7A87091018Daa1739dc2790#readContract (getFeeOtoD / getFeeDtoO)
-    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
+    // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
+    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
-    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 800_000;
+    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
     uint32 internal constant L2_SYNC_ORIGIN_L2_GAS = 100_000;
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;
     uint48 internal constant L2_SYNC_DELAY = 12 hours;
+    // Initial native-ETH fee float funded into the SyncTrigger at Stage-1 deploy (it fronts
+    // maxFee + feeDtoO per sync from its own balance — README §Funding the float).
+    // Floor = 0.125 (maxFee, DtoO is free on OP-stack); 0.5 ≈ floor + ~30 days runway at
+    // measured ~0.005 ETH/sync. Keep modest: recovering excess is sweep() = GovExec-only.
+    uint128 internal constant L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18;
 
     // CCIP / Chain IDs (Base-specific)
     uint64 internal constant BASE_CCIP_CHAIN_SELECTOR = 15971525489660198786;

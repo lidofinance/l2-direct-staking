@@ -4,15 +4,11 @@ pragma solidity ^0.8.20;
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {UpgradeTestBase} from "test/helpers/UpgradeTestBase.sol";
 import {OptimismL2Defaults} from "script/optimism/OptimismL2Upgrade.s.sol";
-import {OptimismL1Defaults} from "script/optimism/OptimismL1Upgrade.s.sol";
 import {OptimismMigrationConstants as C} from "script/optimism/OptimismMigrationConstants.sol";
 
-/**
- * @title OptimismUpgradeTestBase
- * @notice Populates UpgradeTestBase with Optimism mainnet constants.
- *         Delegates config construction to OptimismL2Defaults / OptimismL1Defaults.
- */
-abstract contract OptimismUpgradeTestBase is UpgradeTestBase, OptimismL2Defaults, OptimismL1Defaults {
+/// @notice Populates UpgradeTestBase with Optimism mainnet constants.
+/// @dev L2 config from OptimismL2Defaults; L1 actions inherited via UpgradeTestBase.
+abstract contract OptimismUpgradeTestBase is UpgradeTestBase, OptimismL2Defaults {
     function setUp() public virtual override {
         // L2 governance executor (network-specific)
         LIDO_L2_GOVERNANCE_EXECUTOR = C.LIDO_L2_GOVERNANCE_EXECUTOR;

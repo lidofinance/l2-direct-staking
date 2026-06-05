@@ -27,11 +27,10 @@ library ArbitrumMigrationConstants {
     // Old Chainlink Automation (to be retired during migration — revoke SYNC_ROLE)
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A;
 
-    // L2 SyncTrigger defaults
-    // Current mainnet values: https://arbiscan.io/address/0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A#readContract (getFeeOtoD / getFeeDtoO)
-    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
+    // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
+    uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
-    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 800_000;
+    uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
     // Arbitrum retryable ticket parameters (used by FeeCodec.encodeArbitrumL1toL2).
     // NOTE: The live SyncAutomation at 0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A had its
     // FeeDtoO re-encoded from 29-byte ArbitrumL1toL2 format to 21-byte CCIP format
@@ -48,6 +47,12 @@ library ArbitrumMigrationConstants {
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;
     uint48 internal constant L2_SYNC_DELAY = 12 hours;
+    // Initial native-ETH fee float funded into the SyncTrigger at Stage-1 deploy (it fronts
+    // maxFee + feeDtoO per sync from its own balance — README §Funding the float).
+    // Floor ≈ 0.1266 (0.125 maxFee + maxSubmissionCost + maxGas×gasPriceBid ≈ 0.0016);
+    // 0.5 ≈ floor + ~30 days runway at measured ~0.007 ETH/sync. Keep modest: recovering
+    // excess is sweep() = GovExec-only.
+    uint128 internal constant L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18;
 
     // CCIP / Chain IDs (Arbitrum-specific)
     uint64 internal constant ARBITRUM_CCIP_CHAIN_SELECTOR = 4949039107694359620;

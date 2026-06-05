@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Vm} from "forge-std/Test.sol";
+import {console2} from "forge-std/console2.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -542,12 +543,44 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         (bool syncNeeded,) = syncTrigger.shouldSync();
         assertTrue(syncNeeded, "sync should be needed");
 
-        // Do NOT fund the SyncTrigger — leave its balance at 0
+        // The migration funds the trigger's fee float (production parity). Drain it so this test
+        // exercises the float-ran-dry path (FINDINGS L-5): with a 0 balance, triggerSync must revert
+        // when it tries to forward the native CCIP fee from its own balance.
+        uint256 floatBalance = address(syncTrigger).balance;
+        if (floatBalance > 0) {
+            vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+            syncTrigger.sweep(address(0), makeAddr("floatSink"), floatBalance);
+        }
         assertEq(address(syncTrigger).balance, 0, "sync trigger should have no ETH");
 
         vm.prank(forwarder);
         vm.expectRevert();
         syncTrigger.triggerSync();
+    }
+
+    /// @dev L-6/L-8: Stage 2 must refuse a mis-wired or half-configured Stage 1 BEFORE any
+    ///      irreversible write (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin
+    ///      handover). Here Stage 1 is deployed correctly, but Stage 2 is handed a creReceiver the
+    ///      trigger's forwarder does not point at — the precondition fails and nothing is mutated.
+    function test_executeMigrationStepsRevertsOnMiswiredStage1() public {
+        vm.selectFork(l2Fork);
+        L2UpgradeConfig memory cfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+
+        PausableImmutableOraclePool newPool = _deployL2Pool(cfg);
+
+        address creForwarder = makeAddr("creForwarder");
+        vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
+        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        (address syncTrigger,) =
+            deploySyncInfrastructure(cfg, LIDO_L2_GOVERNANCE_EXECUTOR, creForwarder, cfg.liquidityOwner);
+        vm.stopPrank();
+
+        // Call via `this.` so executeMigrationSteps runs as a single external call and the
+        // precondition revert is caught atomically (expectRevert latches onto the next external call).
+        address wrongReceiver = makeAddr("wrongReceiver");
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger forwarder"));
+        this.executeMigrationSteps(cfg, address(newPool), syncTrigger, wrongReceiver, creForwarder);
     }
 
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
@@ -615,8 +648,41 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         vm.selectFork(l1Fork);
         uint256 receiverWstBefore = IERC20(L1_WSTETH).balanceOf(L1_LIDO_CUSTOM_RECEIVER);
 
-        ccipLocalSimulatorFork.switchChainAndRouteMessage(l1Fork);
+        _routeCCIPMessage(
+            ccipLocalSimulatorFork,
+            l2Fork,
+            l1Fork,
+            L2_CCIP_ROUTER,
+            ETH_CCIP_CHAIN_SELECTOR,
+            L1_LIDO_CUSTOM_RECEIVER,
+            L1_CCIP_ROUTER
+        );
         assertEq(vm.activeFork(), l1Fork, "routing should switch to L1 fork");
+
+        // ── FeeOtoD.gasLimit adequacy carrier (A.10 validatedBy) ───────────────────────────────────
+        // Record the measured L1 `ccipReceive` gas — the work `FeeOtoD.gasLimit` budgets — as a
+        // regenerating, per-lane in-repo artifact. This replaces the old-value-relative justification
+        // in README §"Glamsterdam fee headroom bump" ("+25% over the prior baseline") with an
+        // independent carrier. Caveat (stated, not hidden): this route uses MockBridgeAdapter, so the
+        // figure is a LOWER BOUND — it omits the real per-network L1 bridge endpoint
+        // (L1StandardBridge / L1GatewayRouter / L1MessageService), which is also inside the budgeted
+        // path. Promote the projection check below to a hard assert once measured with the real adapter.
+        if (lastCcipReceiveGasUsed != 0) {
+            uint256 measuredGas = lastCcipReceiveGasUsed;
+            uint256 gasLimit = L2_SYNC_DESTINATION_GAS_LIMIT;
+            // Independent adequacy read (no prior value): Monitoring §5 wants ccipReceive/gasLimit < 80%,
+            // and Glamsterdam (EIP-7904/8038) reprices this cold-access-heavy path by ~+25%. So the
+            // post-Glamsterdam projection (x1.25) should still fit the budget.
+            console2.log("[FeeOtoD.gasLimit carrier] L2 CCIP selector:", L2_CCIP_CHAIN_SELECTOR);
+            console2.log("  measured ccipReceive gas (LOWER BOUND - mock adapter):", measuredGas);
+            console2.log("  configured FeeOtoD.gasLimit:", gasLimit);
+            console2.log("  utilization (bps of gasLimit):", measuredGas * 10_000 / gasLimit);
+            console2.log("  Glamsterdam-projected gas (x1.25):", measuredGas * 125 / 100);
+            // Safe regression floor: even the lower-bound receive must fit the configured budget.
+            assertLt(measuredGas, gasLimit, "ccipReceive lower-bound gas must fit FeeOtoD.gasLimit");
+        } else {
+            console2.log("[FeeOtoD.gasLimit carrier] ccipReceive gas not isolated (v1.5 route) - selector:", L2_CCIP_CHAIN_SELECTOR);
+        }
 
         Vm.Log[] memory entries = vm.getRecordedLogs();
         uint256 bridgedWstAmount = _assertAndGetAdapterDispatch(entries, address(newPool), feeDtoOHash);
@@ -635,6 +701,59 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         _simulateL2BridgeFinalization(address(newPool), bridgedWstAmount);
     }
 
+    /// @notice Faithful `FeeOtoD.gasLimit` adequacy carrier: measures L1 `ccipReceive` gas with the
+    ///         REAL per-network bridge adapter (no mock), so the figure includes the real bridge
+    ///         endpoint (`L1StandardBridge` / `L1GatewayRouter` / `L1MessageService`) that the mock
+    ///         routing test omits. Recorded as a regenerating artifact (A.10 `validatedBy`); the
+    ///         §5/Glamsterdam projection is hard-asserted here because the number is complete.
+    function test_ccipReceiveGasRealAdapter() public {
+        PausableImmutableOraclePool newPool = _deployAndMigrateL2();
+        _deployAndMigrateL1(); // leaves the REAL per-network L1 adapter configured (not the mock)
+
+        (bytes32 messageId,) = _prepareAndSyncL2(newPool);
+
+        vm.selectFork(l1Fork);
+        // In production the L1 receiver forwards FeeDtoO native value to the bridge (Arbitrum retryable
+        // submission cost); the fork message-injection doesn't carry that ETH, so pre-fund the receiver.
+        vm.deal(L1_LIDO_CUSTOM_RECEIVER, 1 ether);
+
+        _routeCCIPMessage(
+            ccipLocalSimulatorFork,
+            l2Fork,
+            l1Fork,
+            L2_CCIP_ROUTER,
+            ETH_CCIP_CHAIN_SELECTOR,
+            L1_LIDO_CUSTOM_RECEIVER,
+            L1_CCIP_ROUTER
+        );
+
+        assertEq(
+            ICustomReceiver(L1_LIDO_CUSTOM_RECEIVER).getFailedMessageHash(messageId),
+            bytes32(0),
+            "real-adapter ccipReceive must not enter the failed state"
+        );
+
+        uint256 measuredGas = lastCcipReceiveGasUsed;
+        if (measuredGas != 0) {
+            uint256 gasLimit = L2_SYNC_DESTINATION_GAS_LIMIT;
+            // Independent adequacy read (no prior value): Monitoring §5 wants ccipReceive/gasLimit < 80%,
+            // and Glamsterdam (EIP-7904/8038) reprices this cold-access-heavy path by ~+25%. So the
+            // post-Glamsterdam projection (x1.25) must still fit the configured budget.
+            console2.log("[FeeOtoD.gasLimit carrier - REAL adapter] L2 CCIP selector:", L2_CCIP_CHAIN_SELECTOR);
+            console2.log("  measured ccipReceive gas:", measuredGas);
+            console2.log("  configured FeeOtoD.gasLimit:", gasLimit);
+            console2.log("  utilization (bps of gasLimit):", measuredGas * 10_000 / gasLimit);
+            console2.log("  Glamsterdam-projected gas (x1.25):", measuredGas * 125 / 100);
+            assertLe(
+                measuredGas * 125,
+                gasLimit * 100,
+                "post-Glamsterdam ccipReceive (x1.25) would exceed FeeOtoD.gasLimit (OOG) - re-derive the gasLimit"
+            );
+        } else {
+            console2.log("[FeeOtoD.gasLimit carrier - REAL adapter] ccipReceive gas not isolated (v1.5 route) - selector:", L2_CCIP_CHAIN_SELECTOR);
+        }
+    }
+
     function test_productionMigrationPath() public {
         (, address newSyncTrigger, CREReceiver newCREReceiver) =
             _deployAndMigrateL2Production();
@@ -646,6 +765,20 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
             Ownable(address(newCREReceiver)).owner(),
             lidoL2LiquidityOwner,
             "CREReceiver owner should be liquidity owner (LOL)"
+        );
+        // The CRE workflow owner is the LOL multisig (Safe), pinned as expectedAuthor — NOT the
+        // Lido Deployer EOA that broadcasts Stage 1 (ADR-0001 / DOC.md §3.2). Owner, expectedAuthor,
+        // and workflow owner are the same Safe address. (This is the static-state check; the
+        // CRE-suite test_productionExpectedAuthorIsLolMultisig additionally proves the behavioral
+        // accept/reject of the author gate — keep both.)
+        assertEq(
+            newCREReceiver.getExpectedAuthor(),
+            lidoL2LiquidityOwner,
+            "CREReceiver expectedAuthor should be the LOL multisig, not the deployer EOA"
+        );
+        assertTrue(
+            newCREReceiver.getExpectedAuthor() != lidoStage1Deployer,
+            "expectedAuthor must not be the Stage-1 deployer EOA"
         );
         assertEq(
             newCREReceiver.getForwarder(),
@@ -663,6 +796,43 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
                 ETH_CCIP_CHAIN_SELECTOR, 1 ether, feeOtoD, feeDtoO
             );
         }
+    }
+
+    /// @dev Production-parity float provenance test: the first post-migration sync must succeed
+    ///      funded ONLY by the float the deploy script itself put on the SyncTrigger. Deliberately
+    ///      no `vm.deal(address(syncTrigger), …)` here — that out-of-band funding in the other
+    ///      sync tests is exactly what masked an unfunded production trigger (the negative case,
+    ///      `test_syncTriggerRevertsWithInsufficientFees`, proves the revert; this proves the
+    ///      production recipe prevents it).
+    function test_productionDeployFundsSyncTriggerFloatForFirstSync() public {
+        (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver) =
+            _deployAndMigrateL2Production();
+        ISyncTrigger syncTrigger = ISyncTrigger(newSyncTrigger);
+
+        // Accounting: the deploy funded exactly the configured constant.
+        L2UpgradeConfig memory cfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        uint256 initialFloat = cfg.syncTriggerInitialFloat;
+        assertEq(newSyncTrigger.balance, initialFloat, "deploy should fund exactly the configured float");
+
+        // Floor invariant: the float covers at least one worst-case sync (mirrors fundSyncTrigger's guard).
+        (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
+        assertEq(maxLinkFee, 0, "no LINK leg expected in current config");
+        assertGe(initialFloat, maxNativeFee, "float must cover one worst-case sync");
+
+        _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
+        vm.warp(block.timestamp + L2_SYNC_DELAY);
+
+        (bool syncNeeded,) = syncTrigger.shouldSync();
+        assertTrue(syncNeeded, "sync should be needed");
+
+        // First sync, paid solely from the script-funded float (forwarder = CREReceiver in production wiring).
+        vm.prank(address(newCREReceiver));
+        syncTrigger.triggerSync();
+
+        // Refund mechanics: the float drains by the actual fee only; the maxFee excess refunds to the trigger.
+        assertLt(newSyncTrigger.balance, initialFloat, "sync should spend from the float");
+        assertGt(newSyncTrigger.balance, initialFloat - maxNativeFee, "maxFee excess should refund to the trigger");
     }
 
     // ──────────────── Internal test helpers ──────────────────────────────

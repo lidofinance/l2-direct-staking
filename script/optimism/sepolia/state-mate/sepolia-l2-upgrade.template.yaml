@@ -1,0 +1,139 @@
+---
+parameters:
+  - &ethSepoliaCcipChainSelector 16015286601757825753
+  - &l1LidoCustomReceiverBytes32 "__L1_LIDO_CUSTOM_RECEIVER_BYTES32__"
+  - &l2CustomSender "__L2_CUSTOM_SENDER__"
+  - &l2ProxyAdmin "__L2_PROXY_ADMIN__"
+  - &initialOwner "__INITIAL_OWNER__"
+  - &l2GovernanceExecutor "__L2_GOVERNANCE_EXECUTOR__"
+  - &l2LiquidityOwner "__L2_LIQUIDITY_OWNER__"
+  - &l2LidoDeployer "__L2_LIDO_DEPLOYER__"
+  - &l2OraclePool "__L2_ORACLE_POOL__"
+  - &l2SyncTrigger "__L2_SYNC_TRIGGER__"
+  - &l2BootstrapSyncAutomation "__L2_BOOTSTRAP_SYNC_AUTOMATION__" # bootstrap SYNC_ROLE holder retired during migration
+  - &l2CreReceiver "__L2_CRE_RECEIVER__"
+  - &l2Weth "0x4200000000000000000000000000000000000006"
+  - &l2Wsteth "0x24B47cd3A74f1799b32B2de11073764Cb1bb318B"
+  - &l2LinkToken "0xE4aB69C077896252FAFBD49EFD26B5D171A32410"
+  - &l2CcipRouter "0x114A20A10b43D4115e5aeef7345a1A71d2a60C57"
+  - &l2PriceOracle "__L2_PRICE_ORACLE__"
+  - &minProcessMessageGas 75000
+  - &syncMinAmount 10000000000000000        # 0.01 ETH (testnet — vs 5 ETH on mainnet)
+  - &syncMaxAmount 1000000000000000000      # 1 ETH    (testnet — vs 100 ETH on mainnet)
+  - &syncDelay 300                          # 5 minutes (testnet — vs 12h on mainnet)
+
+roles:
+  - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
+  - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"
+
+deployed:
+  l1:
+    - "0x0000000000000000000000000000000000000001"
+  l2:
+    - *l2CustomSender
+    - *l2ProxyAdmin
+    - *l2OraclePool
+    - *l2SyncTrigger
+    - *l2CreReceiver
+
+l1:
+  rpcUrl: L1_RPC_URL
+  contracts: {}
+
+l2:
+  rpcUrl: L2_STATE_MATE_RPC_URL
+  chainId: 11155420
+  contracts:
+    customSender:
+      name: CustomSenderReferral
+      address: *l2CustomSender
+      checks:
+        CCIP_ROUTER: *l2CcipRouter
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
+        LINK_TOKEN: *l2LinkToken
+        MIN_PROCESS_MESSAGE_GAS: *minProcessMessageGas
+        SYNC_ROLE: *SYNC_ROLE
+        TOKEN: *l2Weth
+        WNATIVE: *l2Weth
+        getOraclePool: *l2OraclePool
+        getReceiver:
+          args: [*ethSepoliaCcipChainSelector]
+          result: *l1LidoCustomReceiverBytes32
+        hasRole:
+          - args: [*DEFAULT_ADMIN_ROLE, *l2GovernanceExecutor]
+            result: true
+          - args: [*DEFAULT_ADMIN_ROLE, *initialOwner]
+            result: false
+          - args: [*SYNC_ROLE, *l2SyncTrigger]
+            result: true
+          - args: [*SYNC_ROLE, *l2BootstrapSyncAutomation]
+            result: false
+          - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
+            result: false
+        supportsInterface:
+          - args: ["0x01ffc9a7"] # IERC165
+            result: true
+      ozNonEnumerableAcl:
+        *DEFAULT_ADMIN_ROLE : [*l2GovernanceExecutor]
+        *SYNC_ROLE : [*l2SyncTrigger]
+
+    proxyAdmin:
+      name: ProxyAdmin
+      address: *l2ProxyAdmin
+      checks:
+        owner: *l2GovernanceExecutor
+
+    oraclePool:
+      name: PausableImmutableOraclePool
+      address: *l2OraclePool
+      checks:
+        SENDER: *l2CustomSender
+        TOKEN_IN: *l2Weth
+        TOKEN_OUT: *l2Wsteth
+        getFee: 0
+        getOracle: *l2PriceOracle
+        owner: *l2LiquidityOwner
+        paused: false
+
+    syncTrigger:
+      name: SyncTrigger
+      address: *l2SyncTrigger
+      checks:
+        SENDER: *l2CustomSender
+        DEST_CHAIN_SELECTOR: *ethSepoliaCcipChainSelector
+        WNATIVE: *l2Weth
+        owner: *l2GovernanceExecutor
+        getDelay: *syncDelay
+        getAmounts:
+          result: [*syncMinAmount, *syncMaxAmount]
+        getAmountToSync: 0
+        getForwarder: null # CREReceiver address — set after CRE deployment
+        getFeeOtoD: null # encoded fee bytes — set during migration
+        getFeeDtoO: null # encoded fee bytes — set during migration
+        getLastExecution: null # deployment timestamp
+        getMaxFees: null # derived from fee blobs
+        shouldSync:
+          result: [false, 0]
+
+    creReceiver:
+      name: CREReceiver
+      address: *l2CreReceiver
+      checks:
+        owner: *l2LiquidityOwner
+        getForwarder: null # CRE Forwarder (KeystoneForwarder) address — testnet may use a placeholder
+        getExpectedAuthor: *l2LiquidityOwner # CRE workflow owner = LOL multisig = CREReceiver owner (ADR-0001)
+        isCallAllowed:
+          - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
+            result: true
+        supportsInterface:
+          - args: ["0x805f2132"] # IReceiver (onReport-only) id the CRE forwarder queries
+            result: true
+          - args: ["0x01ffc9a7"] # ERC-165 base id (ERC165Checker probes this first)
+            result: true
+
+# Note on the bootstrap SyncAutomation (`l2BootstrapSyncAutomation`):
+# - The role-revoke is verified above via `customSender.hasRole(SYNC_ROLE, l2BootstrapSyncAutomation) == false`.
+# - We do NOT add a separate state-mate section for it: post-migration `getAmountToSync()` reverts
+#   (uint48 overflow when `_delay = uint48.max + _lastExecution`), and state-mate's strict
+#   ABI-coverage check would fail. The neutralization extras (`getForwarder == 0`,
+#   `getDelay == uint48.max`, `owner == governance`) can be spot-checked manually via `cast call`.
