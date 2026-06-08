@@ -17,7 +17,7 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
 - **Evidence** — the **carrier + observation** that decides a gate (an exit code, a printed count, a revert, an on-chain read-back). A claim with no carrier is an opinion.
 
 **Def — verify vs validate** (two different evidence kinds, do not conflate):
-*verify* = read back values just written / immutables, decided **in-description** (`verify-stage1` → 19 reads; the in-tx read-backs → 7). *validate* = observe the deployed contracts **live over RPC** from outside (`state-mate` → ≥45 checks; fork tests). Both are required; they fail differently.
+*verify* = read back values just written / immutables, decided **in-description** (`verify-stage1`; the in-tx read-backs). *validate* = observe the deployed contracts **live over RPC** from outside (`state-mate` → ≥45 checks; fork tests). Both are required; they fail differently.
 
 ---
 
@@ -58,7 +58,7 @@ Shared L1: Receiver `0x6F357d53d6bE3238180316BA5F8f11467e164588` · ProxyAdmin
 | ID | Admissibility predicate | Evidence that decides it (carrier + observation) | Blocks until it holds |
 |----|-------------------------|--------------------------------------------------|------------------------|
 | **G1** | Pre-live checks pass for this lane | `test-acceptance` / `forge test` exit 0 · `verify-constants-sync` prints `OK` · `preflight-check{,-l1}` print `OK` | any production tx (Stage 1) |
-| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (19 reads — incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [docs/fees.md §Funding the float](docs/fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)) · `verify-cre-workflow` → status `ACTIVE`, owner = LOL multisig (Safe). ⚠️ This confirms the **registry owner**, not that the DON embeds the Safe as report author — the author gate is only *proven* by a live `CREReceiver.CallExecuted` (see G2-author below) | `migrate-stage2` on this network |
+| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [docs/fees.md §Funding the float](docs/fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)) · `verify-cre-workflow` → status `ACTIVE`, owner = LOL multisig (Safe). ⚠️ This confirms the **registry owner**, not that the DON embeds the Safe as report author — the author gate is only *proven* by a live `CREReceiver.CallExecuted` (see G2-author below) | `migrate-stage2` on this network |
 | **G2-author** | The DON-embedded report author actually matches the pinned `expectedAuthor` (Safe) | one observed `CREReceiver.CallExecuted` on this lane from the live DON path (or, equivalently, exercised end-to-end on a **throwaway testnet workflow first** — CRE Early-Access residual (a), [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). **If reports are rejected `InvalidAuthor`, the DON is embedding a different address** (e.g. the `--unsigned` artifact uploader, not the Safe) → re-pin via `LOL setExpectedAuthor(<address the DON actually embeds>)` | trusting this lane's sync path (not a hard block on `migrate-stage2`, but resolve before relying on automated syncs) |
 | **G3** | **All 4** L2s migrated *and* validated | 4× `migrate-stage2` broadcast with no revert · 4× state-mate exit 0 | `migrate-l1` (the L1 seal) |
 | **G4** | This network *validated* (this is the **Def of "done/green"**) | `test-<net>-upgrade-state-verify` exit 0, tail `✔ Total: ≥45 checks passed` | LOL liquidity seed **and** legacy-upkeep cancel for this network |
@@ -101,7 +101,7 @@ for u in http://127.0.0.1:8650 http://127.0.0.1:8651; do for a in $DEPLOYER $IO 
 
 export L2_NETWORK=linea L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670 L2_CRE_FORWARDER=0x000000000000000000000000000000000000dEaD
 L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1            # → paste the 3 printed exports into the shell
-L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = 19 reads pass
+L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = all read-backs pass
 ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
   --sig 'runMigrateUnlocked()' --rpc-url http://127.0.0.1:8651 --broadcast --non-interactive --unlocked --sender $IO
 # validate: render template into /tmp with the deployed addresses, run state-mate --only l2 (see docs/development.md §dress rehearsal)

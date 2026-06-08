@@ -178,6 +178,12 @@ contract L2UpgradeActions {
         _requireNonZeroL2(syncTrigger);
 
         (uint256 feeAmountDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(cfg.feeDtoO);
+        // floor mirrors the worst-case native value SyncTrigger.triggerSync fronts: the OtoD cap plus the
+        // DtoO bridge fee, each counted only when paid in native (not LINK). NOTE: this validates
+        // float >= the CONFIGURED cap, NOT float >= the LIVE CCIP router fee. Whether destinationMaxFee
+        // itself sits above the live ccipReceive fee is a separate config-adequacy question, validated
+        // off-chain via the fee-measurement recipe (README §Fee-denomination); a cap set below the live
+        // fee would pass this floor yet revert inside CCIPSenderUpgradeable at sync time.
         uint256 floor = (cfg.destinationPayInLink ? 0 : cfg.destinationMaxFee) + (payInLinkDtoO ? 0 : feeAmountDtoO);
         if (cfg.syncTriggerInitialFloat < floor) {
             revert L2UpgradeFloatBelowFloor(cfg.syncTriggerInitialFloat, floor);
@@ -197,12 +203,30 @@ contract L2UpgradeActions {
         address expectedAuthor
     ) private view {
         CREReceiver cr = CREReceiver(payable(creReceiverAddr));
+        ISyncTrigger st = ISyncTrigger(syncTrigger);
         // pin the trigger to the real CustomSender. A typo'd/wrong syncTrigger address would
         // not have SENDER pointing at this CustomSender, so this catches a mis-wired trigger before
         // it is granted SYNC_ROLE (and, via the Stage-2 precondition, before any irreversible handover).
-        _requireL2PostCondition(ISyncTrigger(syncTrigger).SENDER() == cfg.customSender, "syncTrigger SENDER");
-        _requireL2PostCondition(ISyncTrigger(syncTrigger).getForwarder() == creReceiverAddr, "syncTrigger forwarder");
+        _requireL2PostCondition(st.SENDER() == cfg.customSender, "syncTrigger SENDER");
+        _requireL2PostCondition(st.getForwarder() == creReceiverAddr, "syncTrigger forwarder");
         _requireL2PostCondition(Ownable(syncTrigger).owner() == cfg.governanceExecutor, "syncTrigger owner");
+        // operational parameters — verified IN-broadcast (Stage 1) and re-checked as a Stage-2
+        // precondition. A typo in a MigrationConstants value (e.g. a gas-limit of 100 instead of
+        // 1_000_000, a wrong selector, or a mis-encoded fee) is written by configureSyncTrigger without
+        // reverting, so without these reads the deploy looks green and the defect only surfaces if the
+        // operator separately runs verifyStage1 — or, worse, after go-live when sync() OOGs/reverts.
+        _requireL2PostCondition(st.DEST_CHAIN_SELECTOR() == cfg.destChainSelector, "syncTrigger DEST_CHAIN_SELECTOR");
+        _requireL2PostCondition(st.WNATIVE() == cfg.tokenIn, "syncTrigger WNATIVE");
+        _requireL2PostCondition(st.getDelay() == cfg.minSyncDelay, "syncTrigger delay");
+        (uint128 minAmount, uint128 maxAmount) = st.getAmounts();
+        _requireL2PostCondition(minAmount == cfg.minSyncAmount, "syncTrigger minAmount");
+        _requireL2PostCondition(maxAmount == cfg.maxSyncAmount, "syncTrigger maxAmount");
+        _requireL2PostCondition(keccak256(st.getFeeDtoO()) == keccak256(cfg.feeDtoO), "syncTrigger feeDtoO");
+        _requireL2PostCondition(
+            keccak256(st.getFeeOtoD())
+                == keccak256(FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit)),
+            "syncTrigger feeOtoD"
+        );
         _requireL2PostCondition(cr.getForwarder() == creForwarder, "creReceiver forwarder");
         _requireL2PostCondition(cr.getExpectedAuthor() == expectedAuthor, "creReceiver expectedAuthor");
         _requireL2PostCondition(
@@ -233,7 +257,7 @@ contract L2UpgradeActions {
         _requireNonZeroL2(syncTrigger);
         _requireNonZeroL2(creReceiverAddr);
 
-        // Fail-fast guardrails: surface "Stage 2 already ran" before the 17 deploy-correctness reads below,
+        // Fail-fast guardrails: surface "Stage 2 already ran" before the deploy-correctness reads below,
         // since verifying a post-Stage-2 state against a pre-Stage-2 expectation is meaningless.
         _requireL2PostCondition(
             ICustomSender(cfg.customSender).getOraclePool() != oraclePool,
@@ -242,6 +266,16 @@ contract L2UpgradeActions {
         _requireL2PostCondition(
             !IAccessControl(cfg.customSender).hasRole(SYNC_ROLE, syncTrigger),
             "stage 2 already ran: SYNC_ROLE already granted to the new SyncTrigger"
+        );
+        // Pool/trigger-INDEPENDENT tripwire: the two guards above key on the specific (pool, trigger)
+        // passed in, so if runDeploy ran twice and Stage 2 completed against a DIFFERENT pair, verifying
+        // the orphaned first deployment would slip past them. The DEFAULT_ADMIN_ROLE handover is global
+        // to the CustomSender — pre-Stage-2 the executor does NOT yet hold it — so this catches a
+        // completed Stage 2 regardless of which pool/trigger it targeted. (initialOwner != executor by
+        // construction, so the executor cannot already hold admin pre-migration.)
+        _requireL2PostCondition(
+            !IAccessControl(cfg.customSender).hasRole(DEFAULT_ADMIN_ROLE, cfg.governanceExecutor),
+            "stage 2 already ran: governanceExecutor already holds DEFAULT_ADMIN_ROLE"
         );
 
         _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
@@ -255,20 +289,9 @@ contract L2UpgradeActions {
         _requireL2PostCondition(Ownable(oraclePool).owner() == cfg.liquidityOwner, "oraclePool owner");
         _requireL2PostCondition(!PausableImmutableOraclePool(oraclePool).paused(), "oraclePool paused");
 
-        ISyncTrigger st = ISyncTrigger(syncTrigger);
-        _requireL2PostCondition(st.SENDER() == cfg.customSender, "syncTrigger SENDER");
-        _requireL2PostCondition(st.DEST_CHAIN_SELECTOR() == cfg.destChainSelector, "syncTrigger DEST_CHAIN_SELECTOR");
-        _requireL2PostCondition(st.WNATIVE() == cfg.tokenIn, "syncTrigger WNATIVE");
-        _requireL2PostCondition(st.getDelay() == cfg.minSyncDelay, "syncTrigger delay");
-        (uint128 minAmount, uint128 maxAmount) = st.getAmounts();
-        _requireL2PostCondition(minAmount == cfg.minSyncAmount, "syncTrigger minAmount");
-        _requireL2PostCondition(maxAmount == cfg.maxSyncAmount, "syncTrigger maxAmount");
-        _requireL2PostCondition(keccak256(st.getFeeDtoO()) == keccak256(cfg.feeDtoO), "syncTrigger feeDtoO");
-        _requireL2PostCondition(
-            keccak256(st.getFeeOtoD())
-                == keccak256(FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit)),
-            "syncTrigger feeOtoD"
-        );
+        // SyncTrigger wiring + operational params (SENDER/forwarder/owner, DEST_CHAIN_SELECTOR, WNATIVE,
+        // delay, amounts, feeDtoO, feeOtoD) and the CREReceiver checks are asserted inside
+        // _assertSyncInfrastructure above, so they are not repeated here.
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {
@@ -276,8 +299,19 @@ contract L2UpgradeActions {
         _requireNonZeroL2(cfg.governanceExecutor);
         _requireNonZeroL2(cfg.customSender);
 
-        IAccessControl(cfg.customSender).grantRole(DEFAULT_ADMIN_ROLE, cfg.governanceExecutor);
-        IAccessControl(cfg.customSender).revokeRole(DEFAULT_ADMIN_ROLE, cfg.initialOwner);
+        IAccessControl sender = IAccessControl(cfg.customSender);
+        // Precondition: cfg.initialOwner must actually hold DEFAULT_ADMIN_ROLE before we revoke it.
+        // OZ `revokeRole` is a SILENT no-op when the account lacks the role, so a wrong cfg.initialOwner
+        // (env typo, wrong key, or silent fallback to L1.INITIAL_OWNER) would revoke nothing while the
+        // `!hasRole(initialOwner)` postcondition (in _assertMigrationSteps) passes trivially — leaving
+        // the REAL admin in place and the migration falsely declared complete. Assert the hold up-front
+        // so a mis-set initialOwner fails loudly here rather than handing over a phantom revoke.
+        _requireL2PostCondition(
+            sender.hasRole(DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner is not the current admin"
+        );
+
+        sender.grantRole(DEFAULT_ADMIN_ROLE, cfg.governanceExecutor);
+        sender.revokeRole(DEFAULT_ADMIN_ROLE, cfg.initialOwner);
         emit L2SenderAdminMigrated(cfg.customSender, cfg.initialOwner, cfg.governanceExecutor);
     }
 
@@ -286,8 +320,12 @@ contract L2UpgradeActions {
         _requireNonZeroL2(cfg.governanceExecutor);
         _requireNonZeroL2(cfg.proxyAdmin);
 
+        // read the actual on-chain owner rather than assuming cfg.initialOwner, mirroring
+        // transferSyncTriggerOwnership / transferCREReceiverOwnership — so the emitted previousOwner is
+        // truthful for off-chain provenance even if the ProxyAdmin was transferred out-of-band beforehand.
+        address previousOwner = Ownable(cfg.proxyAdmin).owner();
         Ownable(cfg.proxyAdmin).transferOwnership(cfg.governanceExecutor);
-        emit L2ProxyAdminOwnershipTransferred(cfg.proxyAdmin, cfg.initialOwner, cfg.governanceExecutor);
+        emit L2ProxyAdminOwnershipTransferred(cfg.proxyAdmin, previousOwner, cfg.governanceExecutor);
     }
 
     function setOraclePool(address customSender, address oraclePool) public {
@@ -349,6 +387,12 @@ contract L2UpgradeActions {
         // (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin handover). It reads only
         // SyncTrigger/CREReceiver state that Stage 2 never mutates, so it is safe as a precondition.
         // Also subsumes the SENDER/forwarder wiring check before SYNC_ROLE is granted.
+        //
+        // expectedAuthor is pinned to cfg.liquidityOwner here, matching Stage 1: _deployAll always
+        // constructs the CREReceiver with expectedAuthor == cfg.liquidityOwner (the LOL Safe / CRE
+        // workflow owner — ADR-0001, DOC.md §3.2). If a future caller deploys Stage 1 with a DIFFERENT
+        // expectedAuthor, this precondition reverts ("creReceiver expectedAuthor") — a loud, safe block,
+        // not a silent mismatch — so the two must be kept consistent.
         _assertSyncInfrastructure(cfg, newSyncTrigger, creReceiver, creForwarder, cfg.liquidityOwner);
 
         setOraclePool(cfg.customSender, newPool);
@@ -385,6 +429,12 @@ contract L2UpgradeActions {
             "old gelato sync revoke"
         );
         _requireL2PostCondition(sender.hasRole(DEFAULT_ADMIN_ROLE, cfg.governanceExecutor), "governance admin grant");
+        // NOTE: AccessControlUpgradeable permits unlimited simultaneous DEFAULT_ADMIN_ROLE holders and
+        // CustomSender is NOT AccessControlEnumerable, so there is no on-chain way to prove the executor
+        // is the SOLE admin. We assert only the two addresses this migration touches (executor gained it,
+        // initialOwner — verified to have held it, see migrateSenderAdmin — lost it). A pre-existing or
+        // emergency-granted third admin would survive undetected; out-of-band grants must be audited
+        // off-chain before migration. The migrateSenderAdmin precondition guarantees this revoke was real.
         _requireL2PostCondition(!sender.hasRole(DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner admin revoke");
         _requireL2PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.governanceExecutor, "proxyAdmin owner");
     }

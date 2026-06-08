@@ -49,7 +49,6 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     error InvalidTargetAddress();
     error InvalidAuthor(address received, address expected);
     error CallNotAllowed(address target, bytes4 selector);
-    error ReportTooShort(uint256 length);
     error MetadataTooShort(uint256 length);
     error NonNullaryCall(address target, uint256 length);
     error CallExecutionFailed(address target, bytes reason);
@@ -98,15 +97,16 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
 
         (address target, bytes memory data) = abi.decode(report, (address, bytes));
         if (target == address(0)) revert InvalidTargetAddress();
-        if (data.length < 4) revert ReportTooShort(data.length);
+
+        // every allow-listed call is argument-less (the production seed is the nullary
+        // SyncTrigger.triggerSync()), so the calldata must be EXACTLY the bare 4-byte selector. A single
+        // `!= 4` invariant covers both too-short (0–3) and argument-carrying (5+) calldata, so the report
+        // author can control neither the arguments nor under-specify the selector. Checked before
+        // extracting the selector, since a <4-byte slice would otherwise zero-pad into a bogus selector.
+        if (data.length != 4) revert NonNullaryCall(target, data.length);
 
         bytes4 selector = bytes4(data);
         if (!_allowedCalls[target][selector]) revert CallNotAllowed(target, selector);
-
-        // every allow-listed call is argument-less (the production seed is the nullary
-        // SyncTrigger.triggerSync()). Reject any calldata beyond the bare 4-byte selector so the
-        // report author cannot control the arguments passed to target.call(data).
-        if (data.length != 4) revert NonNullaryCall(target, data.length);
 
         (bool success, bytes memory returnData) = target.call(data);
         if (!success) revert CallExecutionFailed(target, returnData);

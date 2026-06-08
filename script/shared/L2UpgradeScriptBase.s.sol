@@ -61,6 +61,17 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return address(0);
     }
 
+    /// @dev Returns the known-correct Chainlink CRE Forwarder for this network, or address(0) to opt
+    ///      out of the check (e.g. testnet, or before Chainlink has published the forwarder for a
+    ///      network). Mirrors `_expectedGovernanceExecutor`: the only post-deploy check on the forwarder
+    ///      is tautological (CREReceiver.getForwarder() == the value just passed in), so without an anchor
+    ///      a stale/mistyped `L2_CRE_FORWARDER` is baked IMMUTABLY into CREReceiver with no guard — and
+    ///      every CRE-triggered sync is then silently rejected by the real forwarder. CRE forwarders are
+    ///      Chainlink-operated and long-lived, so a production network pins its published value here.
+    function _expectedCREForwarder() internal pure virtual returns (address) {
+        return address(0);
+    }
+
     // ── env helpers ──────────────────────────────────────────────────
 
     function _envInitialOwnerPrivateKey() internal view returns (uint256) {
@@ -99,6 +110,19 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         }
     }
 
+    error L2UpgradeWrongCREForwarder(address actual, address expected);
+
+    /// @dev Reads `L2_CRE_FORWARDER` and asserts it matches this network's pinned forwarder. No-op when
+    ///      `_expectedCREForwarder()` returns address(0) (testnet / not-yet-published opt-out). Anchoring
+    ///      here rejects a wrong-but-nonzero env value BEFORE it is baked immutably into CREReceiver.
+    function _envCREForwarder() internal view returns (address creForwarder) {
+        creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address expected = _expectedCREForwarder();
+        if (expected != address(0) && creForwarder != expected) {
+            revert L2UpgradeWrongCREForwarder(creForwarder, expected);
+        }
+    }
+
     // ── Deploy helper ────────────────────────────────────────────────
 
     function _deployAll(L2UpgradeConfig memory cfg, address creForwarder, address deployer)
@@ -125,7 +149,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address creForwarder = _envCREForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -146,7 +170,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address creForwarder = _envCREForwarder();
         // The CRE workflow owner pinned as expectedAuthor is the LOL multisig (Safe), the same
         // address that owns the CREReceiver — see ADR-0001 / DOC.md §3.2.
         address expectedAuthor = liquidityOwner;
@@ -172,7 +196,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
         // needed by executeMigrationSteps' Stage-1-completeness precondition.
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
-        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address creForwarder = _envCREForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -192,7 +216,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
         // needed by executeMigrationSteps' Stage-1-completeness precondition.
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
-        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address creForwarder = _envCREForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -233,7 +257,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address creForwarder = _envCREForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -255,7 +279,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+        address creForwarder = _envCREForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 

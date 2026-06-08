@@ -197,6 +197,13 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     }
 
     function _setDelay(uint48 delay) internal virtual {
+        // reject 0: with _delay == 0, `_getAmountToSync`'s `block.timestamp >= _lastExecution + 0` is
+        // ALWAYS true, permanently defeating the time-based rate limiter — every forwarder invocation
+        // would fire a sync the moment the pool crosses minAmount, fragmenting batches and draining the
+        // fee float at the CRE cron cadence. Deactivation uses `type(uint48).max` (the constructor
+        // default), never 0, so 0 is never a valid value — guard the owner against this self-footgun,
+        // mirroring the setForwarder(0) and setAmounts(0,...) guards.
+        if (delay == 0) revert SyncTriggerInvalidDelay();
         _delay = delay;
         emit DelaySet(delay);
     }

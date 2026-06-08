@@ -224,10 +224,12 @@ contract CREReceiverTest is Test {
     }
 
     function test_onReport_revertsOnShortCallData() public {
+        // sub-4-byte calldata is rejected by the single "must be exactly 4 bytes" invariant
+        // (NonNullaryCall), which subsumes the former separate ReportTooShort guard.
         bytes memory report = abi.encode(address(target), hex"ab");
 
         vm.prank(forwarder);
-        vm.expectRevert(abi.encodeWithSelector(CREReceiver.ReportTooShort.selector, uint256(1)));
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.NonNullaryCall.selector, address(target), uint256(1)));
         receiver.onReport(_metadata(expectedAuthor), report);
     }
 

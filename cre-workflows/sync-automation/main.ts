@@ -116,12 +116,20 @@ const onCronTrigger = (runtime: Runtime<Config>): string => {
     })
     .result();
 
-  const txHash = bytesToHex(writeResult.txHash || new Uint8Array(32));
-  runtime.log(`txHash=${txHash} status=${writeResult.txStatus}`);
+  const rawTxHash = writeResult.txHash;
+  runtime.log(
+    `txHash=${rawTxHash && rawTxHash.length > 0 ? bytesToHex(rawTxHash) : "<none>"} status=${writeResult.txStatus}`,
+  );
 
   if (writeResult.txStatus === TxStatus.SUCCESS) {
+    // Never substitute an all-zero hash: a SUCCESS with no txHash reported as 0x000…000 is a hash
+    // off-chain monitors would chase on-chain, find nothing at, and then either false-alarm on or
+    // silently drop — a blind spot for every successful-but-unmined sync. Fail loudly instead.
+    if (!rawTxHash || rawTxHash.length === 0) {
+      throw new Error(`writeReport reported SUCCESS (status=${writeResult.txStatus}) but returned no txHash`);
+    }
     runtime.log("=== Sync Workflow Completed ===");
-    return txHash;
+    return bytesToHex(rawTxHash);
   }
 
   throw new Error(`Transaction failed: status=${writeResult.txStatus}`);
