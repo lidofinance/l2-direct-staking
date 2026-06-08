@@ -5,7 +5,7 @@
 > and Ethereum L1. It reflects the repo at branch `feat/more-ops-on-lido`
 > (verified 2026-05-29).
 >
-> It is **not** a runbook (see `README.md`) and not proof the
+> It is **not** a runbook (see `RUNBOOK.md`) and not proof the
 > migration has run. It documents the *target state*: which contracts exist, who
 > owns/admins what, how value and triggers flow, and how it's verified.
 
@@ -64,7 +64,7 @@ hostile.
 
 | Component                                | Purpose                                                                                                                                                                                                                                 | Source                                                        |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = GovExec-only (README §Funding the float). | `src/SyncTrigger.sol`                                         |
+| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = GovExec-only (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
 | **`CREReceiver`** (per L2)               | Receives signed CRE reports and authorizes them three ways (forwarder + report author + `(target, selector)` allow-list), then calls `SyncTrigger.triggerSync()`. Defense-in-depth between the off-chain network and the on-chain sync. | `src/cre/CREReceiver.sol`, `src/cre/interfaces/IReceiver.sol` |
 | **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network every 5 min, polls `SyncTrigger.shouldSync()`, and emits a signed report when a sync is due.                                                                           | `cre-workflows/sync-automation/*`                             |
 | **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (`*.yaml`). Not runtime contracts; they define and verify the target state.                                                                                                 | `script/**`                                                   |
@@ -191,7 +191,7 @@ four L1 adapters, `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper`.)
 - **Production track record (the strongest signal).** The `CustomSenderReferral`
   and `LidoCustomReceiver` instances this migration re-owns are **already live on
   mainnet and hold real WETH/wstETH today** (the old pools carry non-zero balances
-  — see the balance table in `README.md`). The migration **re-wires and re-owns
+  — reported by the `just balances-l1` / `balances-<net>` recipes). The migration **re-wires and re-owns
   existing contracts; it does not redeploy them.** The one fresh deployment, the
   new `PausableImmutableOraclePool`, is the **same contract code** as the live old pools (same source and creation bytecode; only the constructor-baked immutables differ).
 - **Caveat.** No audit artifact is vendored in this repo. Confirm the upstream
@@ -561,7 +561,7 @@ distinct things** it hides:
 (A fourth quantity — the **actual CCIP fee** the Router charges — is the only one of
 these that *is* a CCIP fee. What it is denominated in — native ETH of the originating
 L2, fixed by `getFee()` at send time — when each amount moves, and the fate of each
-"excess" — refunded / sunk / burned — is in `README.md` §Fee denomination, the four
+"excess" — refunded / sunk / burned — is in `docs/fees.md` §Fee denomination, the four
 quantities, and when money moves.)
 
 | Parameter | Value | Kind | Why this value |
@@ -569,13 +569,13 @@ quantities, and when money moves.)
 | `maxFee` (OtoD) | 0.125 ETH — all 4 | **cap** (refunded) | `0.1 + 25%`. Free headroom against L1 gas-price spikes — raising a refunded cap has **zero per-sync cost**. |
 | `gasLimit` (OtoD) | 1,000,000 (OP/Arb/Base); **500,000 (Linea)** | **commitment** (charged in full) | prior `800k` / `400k`, `+ 25%`. A **real** recurring cost, paid deliberately as insurance (see asymmetry below). Linea is half because its L1 return adapter is leaner (no `depositERC20To`), so `ccipReceive` needs less L1 gas. |
 | `payInLink` (OtoD) | false — all 4 | payment rail | CCIP leg paid in native ETH, not LINK. |
-| `FeeDtoO` (return leg) | OP/Base: `l2Gas = 100k`, pay 0 · Arbitrum: retryable, ≈ 0.001 ETH · Linea: zero blob | **payment** (+ L2-gas cap) | dictated by each L2's native bridge — **the main per-chain difference**: OP/Base sequencer-subsidized; Arbitrum retryable (the excess is "refunded" on L2 to an unreachable alias — effectively **burned**, proven on-chain: README §Consequences); Linea postman (free). |
+| `FeeDtoO` (return leg) | OP/Base: `l2Gas = 100k`, pay 0 · Arbitrum: retryable, ≈ 0.001 ETH · Linea: zero blob | **payment** (+ L2-gas cap) | dictated by each L2's native bridge — **the main per-chain difference**: OP/Base sequencer-subsidized; Arbitrum retryable (the excess is "refunded" on L2 to an unreachable alias — effectively **burned**, proven on-chain: docs/fees.md §Consequences); Linea postman (free). |
 
 **Arbitrum return-leg caveat.** Arbitrum's `FeeDtoO` carries a `gasPriceBid` of `0.05
 gwei` (`L2_SYNC_ORIGIN_GAS_PRICE_BID`); if the L1→L2 retryable does not auto-redeem, it
 must be **manually redeemed within Arbitrum's ~7-day window or the ticket — and its
 wstETH — is lost**. This is the one return path that can lose funds rather than
-self-heal (mechanics in `README.md` §Sync fee parameters).
+self-heal (mechanics in `docs/fees.md`).
 
 **Two mechanism properties — true in the code, independent of any policy — drive
 every choice:**
@@ -601,7 +601,7 @@ by L1 EIPs.
 
 The quantitative basis — the Glamsterdam gas-impact estimate, the per-sync cost of
 the `gasLimit` headroom, the exact byte layouts, and each bridge's refund/failure
-behavior — is sourced in `README.md` §Sync fee parameters (the governing reference,
+behavior — is sourced in `docs/fees.md` (the governing reference,
 with the byte-for-byte pins in `script/<net>/state-mate/<net>.yaml`) and not
 re-derived here. Changing any value is a governance action: the **L2 Governance
 Executor** re-encodes via `setFeeOtoD` / `setFeeDtoO`. The encoded blobs are pinned
@@ -638,7 +638,7 @@ Keep three things separate, or "we documented it" gets mistaken for "we did it":
 
 | Thing | Where |
 |---|---|
-| The migration recipe | `script/**` Forge scripts, `README.md` |
+| The migration recipe | `script/**` Forge scripts, `RUNBOOK.md` |
 | The actual run | the broadcast Stage-1/2 transactions on each chain |
 | The resulting state | the ownership/roles in §3 (what this document describes) |
 

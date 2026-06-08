@@ -262,7 +262,7 @@ exactly this class of mistake:
 | `FeeDtoO` over-payment | `l2Gas` burn ~1:1, coupled to `FeeOtoD` | **1:1 burn to an unreachable L2 alias** (verified on-chain) | — |
 | `LIQUIDITY_OWNER` | per-lane | per-lane | distinct |
 
-Details and on-chain evidence: `README.md` (§`FeeOtoD.gasLimit`, §`FeeDtoO`, §Failure modes) and
+Details and on-chain evidence: `docs/fees.md` (§`FeeOtoD.gasLimit`, §`FeeDtoO`, §Failure modes) and
 `DOC.md §1`.
 
 ### Invariants and attention points
@@ -270,7 +270,7 @@ Details and on-chain evidence: `README.md` (§`FeeOtoD.gasLimit`, §`FeeDtoO`, �
 This section consolidates what a reviewer should **confirm**, **scrutinize**, and **be aware
 of** for the two in-scope contracts. It folds together three previously separate lists —
 formal invariants, suggested audit focus, and the residual risks the repo's own documentation
-(`DOC.md`, `README.md`, `RUNBOOK.md`, `docs/adr/0001-…`, inline NatSpec) flags. It is organised
+(`DOC.md`, `docs/fees.md`, `RUNBOOK.md`, `docs/adr/0001-…`, inline NatSpec) flags. It is organised
 by theme (A–H); **each theme follows the same outline**:
 
 - **Invariants** — checkable properties, each tagged with where it is checkable (*source* /
@@ -339,24 +339,24 @@ Not every theme carries all three sub-lists.
     FeeQuoter `maxPerMsgGasLimit` (7M on OP/Arb/Base, **3M on Linea**); above it, `getFee` reverts
     `MessageGasLimitTooHigh` inside `sync` → the lane halts until a GovExec round-trip. A uniform
     "bump all lanes for safety" passes everywhere **except Linea** — a chain-blind footgun.
-    (`README.md §Consequences > FeeOtoD.gasLimit`.)
+    (`docs/fees.md §Consequences > FeeOtoD.gasLimit`.)
 - **Residual risks**
   - **Gas-limit headroom is tight on Base/Optimism post-Glamsterdam.** Measured `ccipReceive` puts
     Base at ~75–83% of the 1M limit under the EIP-7904/8038 repricing (×1.25) — at the 80% target,
     not comfortably under; consider raising those lanes to ~1.05M. Linea's 500k is **unverified**
-    (harness can't isolate v1.5 lanes); measure out-of-band. (`README.md §Glamsterdam fee headroom`,
+    (harness can't isolate v1.5 lanes); measure out-of-band. (`docs/fees.md §Glamsterdam fee headroom`,
     `§Measured ccipReceive gas`.)
   - **Over-provisioning consequences differ per quantity.** `maxFee` excess is refunded intra-tx, but
     raising it **weakens a guard** (it is the worst-case spend a single spurious-but-authorized sync
     can burn from the float). Arbitrum `FeeDtoO` over-payment is a **per-sync 1:1 burn** to the L1
     receiver's unreachable L2 alias (verified on-chain). OP/Base `l2Gas` couples to `FeeOtoD.gasLimit`
-    ~1:1 and ~300k of slack alone crosses the OOG cliff. (`README.md §FeeOtoD.maxFee`, `§FeeDtoO
+    ~1:1 and ~300k of slack alone crosses the OOG cliff. (`docs/fees.md §FeeOtoD.maxFee`, `§FeeDtoO
     (Arbitrum)`, `§FeeDtoO.l2Gas (Optimism/Base)`.)
   - **Return-leg loss/stall paths.** Arbitrum: if the L1→L2 retryable does not auto-redeem, it must
     be **manually redeemed within ~7 days or the wstETH is lost** — the one return path that can lose
     funds. OP/Base: under-gassed `finalizeDeposit` is permissionlessly replayable. Linea: messages
     >250k gas drop the postman auto-claim. L1: under-gassed `ccipReceive` parks funds for permissionless
-    `retryFailedMessage`. (`README.md §Failure modes`.)
+    `retryFailedMessage`. (`docs/fees.md §Failure modes`.)
 
 #### E. Migration handoff & wiring
 

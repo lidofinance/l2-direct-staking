@@ -2,7 +2,7 @@
 
 Operator checklist for migrating Direct Staking (ownership, admin roles, sync infra) to Lido
 governance across **Optimism, Arbitrum, Base, Linea** + a shared **Ethereum L1** receiver.
-Rationale, fee math, full monitoring, and architecture live in [`README.md`](README.md) and [`DOC.md`](DOC.md).
+Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees.md), CRE ops in [`docs/cre.md`](docs/cre.md), monitoring in [`docs/monitoring.md`](docs/monitoring.md) — see the [doc map](README.md#documentation).
 
 > **Recipe ≠ run ≠ state.** This file is the **recipe** (a method description). Broadcasting a step
 > is the **run** (the on-chain transactions). The owner/role layout in [`DOC.md` §3](DOC.md) is the
@@ -58,7 +58,7 @@ Shared L1: Receiver `0x6F357d53d6bE3238180316BA5F8f11467e164588` · ProxyAdmin
 | ID | Admissibility predicate | Evidence that decides it (carrier + observation) | Blocks until it holds |
 |----|-------------------------|--------------------------------------------------|------------------------|
 | **G1** | Pre-live checks pass for this lane | `test-acceptance` / `forge test` exit 0 · `verify-constants-sync` prints `OK` · `preflight-check{,-l1}` print `OK` | any production tx (Stage 1) |
-| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (19 reads — incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [README §Funding the float](README.md)) · `verify-cre-workflow` → status `ACTIVE`, owner = LOL multisig (Safe). ⚠️ This confirms the **registry owner**, not that the DON embeds the Safe as report author — the author gate is only *proven* by a live `CREReceiver.CallExecuted` (see G2-author below) | `migrate-stage2` on this network |
+| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (19 reads — incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [docs/fees.md §Funding the float](docs/fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)) · `verify-cre-workflow` → status `ACTIVE`, owner = LOL multisig (Safe). ⚠️ This confirms the **registry owner**, not that the DON embeds the Safe as report author — the author gate is only *proven* by a live `CREReceiver.CallExecuted` (see G2-author below) | `migrate-stage2` on this network |
 | **G2-author** | The DON-embedded report author actually matches the pinned `expectedAuthor` (Safe) | one observed `CREReceiver.CallExecuted` on this lane from the live DON path (or, equivalently, exercised end-to-end on a **throwaway testnet workflow first** — CRE Early-Access residual (a), [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). **If reports are rejected `InvalidAuthor`, the DON is embedding a different address** (e.g. the `--unsigned` artifact uploader, not the Safe) → re-pin via `LOL setExpectedAuthor(<address the DON actually embeds>)` | trusting this lane's sync path (not a hard block on `migrate-stage2`, but resolve before relying on automated syncs) |
 | **G3** | **All 4** L2s migrated *and* validated | 4× `migrate-stage2` broadcast with no revert · 4× state-mate exit 0 | `migrate-l1` (the L1 seal) |
 | **G4** | This network *validated* (this is the **Def of "done/green"**) | `test-<net>-upgrade-state-verify` exit 0, tail `✔ Total: ≥45 checks passed` | LOL liquidity seed **and** legacy-upkeep cancel for this network |
@@ -104,7 +104,7 @@ L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1            # → paste the 3
 L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = 19 reads pass
 ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
   --sig 'runMigrateUnlocked()' --rpc-url http://127.0.0.1:8651 --broadcast --non-interactive --unlocked --sender $IO
-# validate: render template into /tmp with the deployed addresses, run state-mate --only l2 (see README §dress rehearsal)
+# validate: render template into /tmp with the deployed addresses, run state-mate --only l2 (see docs/development.md §dress rehearsal)
 pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 ```
 
@@ -113,6 +113,85 @@ pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 ---
 
 ## 2 · Live migration run
+
+### Sequence overview (all stages)
+
+The full migration as ordered transactions per signer — companion to the Stage 1 / Stage 2 / L1 / seed steps detailed below.
+
+```mermaid
+%%{init: {"sequence": {"diagramMarginX": 8, "diagramMarginY": 8, "actorMargin": 24, "width": 90, "height": 56, "boxMargin": 6, "boxTextMargin": 4, "noteMargin": 6, "messageMargin": 12}}}%%
+sequenceDiagram
+    autonumber
+    box bisque Accounts (EOA / multisig)
+    participant initialOwner as initialOwner
+    participant LidoDep as L2 Deployer
+    participant GovExec as L2 Governance Executor
+    participant LiqOwner as LOL Multisig
+    participant LidoDaoAgent as Lido DAO Agent
+    end
+    box aliceblue L2 Contracts
+    participant CS as L2CustomSender
+    participant OldPool as L2OldPool
+    participant NewPool as L2PoolNew
+    participant ST as L2SyncTrigger
+    participant L2PA as L2ProxyAdmin
+    end
+    box antiquewhite L1 Contracts
+    participant L1R as L1Receiver
+    participant L1PA as L1ProxyAdmin
+    end
+    box lavender Chainlink CRE
+    participant CRERecv as CREReceiver
+    participant CREFwd as CRE Forwarder
+    end
+
+    link CS: Optimism Explorer @ https://optimistic.etherscan.io/address/0x328de900860816d29D1367F6903a24D8ed40C997
+    link L2PA: Optimism Explorer @ https://optimistic.etherscan.io/address/0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192
+    link L1R: Ethereum Explorer @ https://etherscan.io/address/0x6F357d53d6bE3238180316BA5F8f11467e164588
+    link L1PA: Ethereum Explorer @ https://etherscan.io/address/0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD
+
+    rect rgb(236, 248, 255)
+    Note over LidoDep,CRERecv: L2 upgrade script run #1 — runDeploy (single signer: Lido Deployer)
+    LidoDep->>NewPool: deployPool(owner=LiqOwner)
+    LidoDep->>ST: deploySyncTrigger(owner=deployer)
+    LidoDep->>ST: setFeeOtoD / setFeeDtoO
+    LidoDep->>ST: setAmounts / setDelay
+    LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd, expectedAuthor=LOL multisig, allow=(ST, triggerSync))
+    LidoDep->>ST: setForwarder(CRERecv)
+    LidoDep->>ST: transferOwnership(GovExec)
+    LidoDep->>CRERecv: transferOwnership(LOL multisig)
+    end
+
+    rect rgb(244, 244, 255)
+    Note over CREFwd,CRERecv: Deploy CRE workflow OWNED BY LOL multisig — 'cre workflow deploy --unsigned', calldata executed FROM the Safe
+    Note over CRERecv: workflow owner = LOL multisig (Safe) = CREReceiver.expectedAuthor (ADR-0001)
+    end
+
+    rect rgb(243, 255, 239)
+    Note over initialOwner,L2PA: L2 upgrade script run #2 — runMigrate (single signer: initialOwner)
+    initialOwner->>CS: setOraclePool(newPool)
+    initialOwner->>CS: grantRole(SYNC_ROLE, ST)
+    initialOwner->>CS: revokeRole(SYNC_ROLE, legacy automation(s))
+    initialOwner->>CS: grantAdmin(GovExec)
+    initialOwner->>CS: revokeAdmin(initialOwner)
+    initialOwner->>L2PA: transferOwner(GovExec)
+    end
+
+    rect rgb(255, 246, 234)
+    Note over initialOwner,L1PA: L1 upgrade script run (single signer: initialOwner, once shared across all L2s)
+    initialOwner->>L1R: grantAdmin(LidoDaoAgent)
+    initialOwner->>L1R: revokeAdmin(initialOwner)
+    initialOwner->>L1PA: transferOwner(LidoDaoAgent)
+    end
+
+    Note over initialOwner: initialOwner no longer has admin rights on migrated contracts
+
+    rect rgb(234, 255, 234)
+    Note over LiqOwner,NewPool: Post-migration: LOL multisig seeds new pool
+    LiqOwner->>NewPool: provide initial wstETH liquidity
+    Note over CS,ST: fastStake accrues in new pool, CRE triggers sync
+    end
+```
 
 **Def — network order.** Migrate by ascending capital in the old pool (the comparator is **ETH-equivalent of old-pool WETH+wstETH**): **Linea → Arbitrum → Base → Optimism.** The middle three are within ~0.1 ETH (**incomparable** for risk purposes — any order among them is admissible). Re-read the comparator right before each:
 `cast call <oldPool> "balanceOf(address)(uint256)" <weth|wsteth> --rpc-url $L2_RPC_URL`.
@@ -127,7 +206,7 @@ just -E .env.<network> deploy-stage1        # deploys pool+trigger+receiver AND 
 #   The float (L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5 ETH, MigrationConstants) is sent from the
 #   Lido Deployer wallet — it must hold ≥ 0.5 ETH + deploy gas per lane. The trigger fronts
 #   maxFee+feeDtoO per sync FROM ITS OWN BALANCE; the script reverts (L2UpgradeFloatBelowFloor)
-#   if the constant doesn't cover one worst-case sync. See README §Funding the float.
+#   if the constant doesn't cover one worst-case sync. See docs/fees.md §Funding the float.
 just -E .env.<network> verify-stage1        # verify (in-description): 19 read-backs incl. trigger float + guardrails that Stage 2 has NOT run
 
 just -E .env.<network> update-cre-config    # writes deployed addrs into cre config json
@@ -191,10 +270,10 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 - **Duty — LOL multisig** SHALL transfer initial wstETH to each **new** pool (1 ERC-20 transfer/net). Until seeded, `fastStake` reverts for lack of output liquidity. **Do not seed a network before its G4.**
 - **Duty — Lido Deployer / ops** SHALL cancel the old Chainlink Automation upkeeps (and Linea's Gelato bot) **only after G4** confirms the new SyncTrigger is the sole `SYNC_ROLE` holder. Residuals to recover alongside: the cancelled upkeeps' LINK balance (withdrawable ~50 blocks after cancel) and the legacy `SyncAutomation` contracts' leftover ETH fee float (same treasury pattern as the new trigger — owner-only `sweep()`, `lib/chainlink-csr/contracts/automations/SyncAutomation.sol:237`; recovery falls to whoever owns each legacy automation).
 
-### Watch (first weeks) — full table in [`README.md` §Monitoring](README.md)
+### Watch (first weeks) — full table in [`docs/monitoring.md`](docs/monitoring.md)
 
 - **CRITICAL:** the G4 invariant table above (any drift = key compromise / unintended governance); L1 Receiver balance ~0 (`MessageFailed` → page); CCIP manual-exec queue empty; Arbitrum retryable auto-redeems (≤7-day window or funds lost).
-- **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + owner = LOL Safe; **≥1 `CREReceiver.CallExecuted` observed** (the only proof the DON-embedded author matches the pin — a green registry-owner check does NOT prove it); **CRE credit funded under the LOL Safe's CRE account** (dashboard-only, no on-chain signal — a liveness stall with healthy fees + funded float ⇒ suspect credit starvation; see [README §4](README.md#4-cre-workflow-health--funding--high)).
+- **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + owner = LOL Safe; **≥1 `CREReceiver.CallExecuted` observed** (the only proof the DON-embedded author matches the pin — a green registry-owner check does NOT prove it); **CRE credit funded under the LOL Safe's CRE account** (dashboard-only, no on-chain signal — a liveness stall with healthy fees + funded float ⇒ suspect credit starvation; see [docs/monitoring.md §4](docs/monitoring.md#4-cre-workflow-health--funding--high)).
 - **MEDIUM:** actual CCIP fee / `maxFee` < 80%; `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees().maxNativeFee` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
 
 ### Recover (CRE workflow-owner incident)
@@ -210,7 +289,7 @@ loses every other LOL lever. **Duty: contain from the independent domain first �
 re-pin" under a **new** LOL Safe (`setExpectedAuthor(newSafe)` ×4 + redeploy `--unsigned`). Neither case risks
 protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, admissible syncs). Full
 procedure + consequence tables + the rejected EOA alternative:
-[README §Workflow-owner key — lost vs compromised](README.md#workflow-owner-key--lost-vs-compromised-consequences--recovery)
+[docs/cre.md §Workflow-owner key — lost vs compromised](docs/cre.md#workflow-owner-key--lost-vs-compromised-consequences--recovery)
 and [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md).
 
 ---
