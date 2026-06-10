@@ -649,7 +649,6 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         uint256 receiverWstBefore = IERC20(L1_WSTETH).balanceOf(L1_LIDO_CUSTOM_RECEIVER);
 
         _routeCCIPMessage(
-            ccipLocalSimulatorFork,
             l2Fork,
             l1Fork,
             L2_CCIP_ROUTER,
@@ -718,7 +717,6 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         vm.deal(L1_LIDO_CUSTOM_RECEIVER, 1 ether);
 
         _routeCCIPMessage(
-            ccipLocalSimulatorFork,
             l2Fork,
             l1Fork,
             L2_CCIP_ROUTER,

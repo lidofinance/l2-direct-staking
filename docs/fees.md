@@ -8,6 +8,18 @@
 
 # Sync fee parameters (FeeOtoD / FeeDtoO)
 
+## TL;DR — for whoever pays the fees
+
+- **How much.** Net cost per sync ≈ **0.005–0.007 ETH** (actual CCIP fee + Arbitrum's ~0.001 ETH bridge budget; OP/Base/Linea return legs are free). At ≤2 syncs/day/lane that's ≤ ~0.013 ETH/day/lane (~$10–20/day across all 4 chains at current prices). The headline `maxFee` of 0.125 ETH is a revert cap, *not* a cost — the unspent excess refunds automatically in the same transaction.
+- **What you pay for.** Two legs per sync: (1) **FeeOtoD** — CCIP delivery of WETH from the L2 to Ethereum plus the committed L1 `gasLimit` for staking it through Lido (you pay for the *commitment*, unused gas is never refunded); (2) **FeeDtoO** — the native-bridge return of wstETH to the L2 (only Arbitrum charges ETH; the Arbitrum excess is burned to an unreachable alias).
+- **Who pays / how to maintain.** Each lane's **SyncTrigger holds the float** and fronts every sync; nothing refills it automatically. Funding is permissionless (just send ETH to the trigger), but withdrawing excess is governance-only (`sweep()`), so size deposits as `getMaxFees().maxNativeFee` + ~30 days runway ≈ **0.5 ETH/lane**, not "fill it up".
+- **How to check all is good.** Watch the [§5 monitoring alerts](monitoring.md#5-capacity--headroom--medium) — they fire at **80% utilization** of `gasLimit` and `maxFee`, before anything breaks. Check `cast balance <trigger>` ≥ `getMaxFees().maxNativeFee`, and re-measure gas on demand with `just measure-fee-gas`.
+- **Caveats.**
+  - Balance below `maxFee + feeDtoO` → `triggerSync` reverts with **no named error**; check the trigger balance first when diagnosing a stalled sync. Liveness only — self-heals once topped up.
+  - `gasLimit` too low → L1 message OOGs; funds park at the L1 receiver until a permissionless `retryFailedMessage` (parked, not lost). Too high → linear overpayment every sync, and above the lane cap (7M; **3M on Linea**) syncs brick until a governance fix.
+  - Arbitrum FeeDtoO overpayment is a **1:1 burn**; OP/Base `l2Gas` slack burns L1 gas ~1:1 and eats `gasLimit` headroom.
+  - Fee changes are **governance motions** (days of latency) — act from the 80% alert, not the breach, and update the constants in `script/<net>/<Net>MigrationConstants.sol` in lockstep.
+
 The sync operation moves accumulated WETH from an L2 OraclePool to Ethereum (via CCIP), stakes it through Lido, and bridges the resulting wstETH back to the L2 pool. Two encoded fee blobs govern the costs of each leg:
 
 | Fee blob | Direction | What it pays for | Set by |
@@ -43,7 +55,7 @@ by economic kind — cap / commitment / payment; this table splits the *quantiti
 the synced WETH are never touched — the user-initiated `slowStake` path fronts its own fees separately):
 
 1. **t₀ — L2, one transaction.** `triggerSync` forwards `maxFeeOtoD + feeAmountDtoO` native ETH from the
-   trigger's balance (`src/SyncTrigger.sol:142-143`). The Router quotes `getFee`; above `maxFee` the whole
+   trigger's balance (`src/SyncTrigger.sol:141-142`). The Router quotes `getFee`; above `maxFee` the whole
    tx reverts with nothing charged; otherwise **exactly the quote** is paid at `ccipSend`
    (`CCIPSenderUpgradeable.sol:81-94`). The DtoO budget is wrapped and **added to the CCIP token transfer**
    (`amount + feeAmountDtoO`, `lib/chainlink-csr/contracts/senders/CustomSender.sol:294`) — it leaves at t₀
@@ -95,14 +107,14 @@ SyncTrigger.triggerSync()
 
 `TokenHelper.refundExcessNative` is **not an operator action** — there is no manual call to make and no scheduled job to run, and it is impossible to invoke directly because it is an `internal` library function, not an external entrypoint (`lib/chainlink-csr/contracts/libraries/TokenHelper.sol:34`).
 
-**When it runs:** unconditionally, as the **last statement** of every send — `CustomSender.sync()`, `slowStake()`, and `fastStake()` (`CustomSender.sol:208`, `:137`, `:174`). It sweeps the sender's *entire* native balance to `msg.sender` **in the same transaction** as the send, after the CCIP fee has already been paid. For a sync, `msg.sender` is the SyncTrigger, so the `maxFee − actualFee` excess lands back in the trigger's float via its bare `receive()` (`src/SyncTrigger.sol:42`) **before `triggerSync()` even returns**. The float therefore depletes by the *actual* cost, never the fronted maximum (see [Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound) and [Cost framing](#cost-framing)).
+**When it runs:** unconditionally, as the **last statement** of every send — `CustomSender.sync()`, `slowStake()`, and `fastStake()` (`CustomSender.sol:208`, `:137`, `:174`). It sweeps the sender's *entire* native balance to `msg.sender` **in the same transaction** as the send, after the CCIP fee has already been paid. For a sync, `msg.sender` is the SyncTrigger, so the `maxFee − actualFee` excess lands back in the trigger's float via its bare `receive()` (`src/SyncTrigger.sol:41`) **before `triggerSync()` even returns**. The float therefore depletes by the *actual* cost, never the fronted maximum (see [Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound) and [Cost framing](#cost-framing)).
 
 **Don't confuse it with the two refunds/recoveries that *are* manual:**
 
 | Mechanism | Manual? | What it does |
 |---|---|---|
 | `TokenHelper.refundExcessNative` | **No** — internal, automatic, intra-tx | Returns `maxFee − actualFee` to the SyncTrigger after each send |
-| `SyncTrigger.sweep()` | **Yes** — owner-only (L2 GovExec), `src/SyncTrigger.sol:168` | Withdraws the trigger's accumulated float |
+| `SyncTrigger.sweep()` | **Yes** — owner-only (L2 GovExec), `src/SyncTrigger.sol:167` | Withdraws the trigger's accumulated float |
 | `LidoCustomReceiver.retryFailedMessage` | **Yes** — re-drives a stuck L1 message | Recovers an OOG'd `processMessage` (not a fee refund) |
 
 This refund covers only the CCIP-fee excess (`FeeOtoD.maxFee`). The *other* two "excesses" are spent or burned, not refunded — see [Fee denomination](#fee-denomination-the-four-quantities-and-when-money-moves) and the Arbitrum [burned-refund](#feedtoo-arbitrum-overpayment-is-refunded-to-an-address-nobody-controls) case.
@@ -179,7 +191,7 @@ The L1 work bounded by `_feeOtoD.gasLimit` (`LidoCustomReceiver.ccipReceive` →
 
 - **EIP-8038** raises `GAS_COLD_SLOAD`, `GAS_COLD_ACCOUNT_ACCESS`, and the storage-update base. The receiver path performs many cold accesses: CSR storage namespaces, AccessControl role mappings, WETH → Lido `stETH.submit` (cold reads against `BUFFERED_ETHER`, total shares, recipient shares), wstETH wrap, the bridge adapter `delegatecall`, and the per-network L1 bridge endpoint (Optimism `L1ERC20TokenBridge`, Arbitrum `L1GatewayRouter`, Base `L1StandardBridge`, Linea `L1MessageService`).
 - **EIP-7904** raises `KECCAK256` (+50%) and a few precompiles. Mild on this path (no pairings, no KZG), but every storage-slot derivation, role hash, and message envelope hash gets the +50% bump.
-- Conservative estimate of impact on `processMessage`: **+15–25%** of current actual gas usage. Per the [measured carrier below](#measured-ccipreceive-gas-independent-gaslimit-carrier), the 25% bump keeps every lane within budget (no OOG), but **Base/Optimism land *at* the 80% headroom the [§5 alert](monitoring.md#5-capacity--headroom--medium) tracks, not comfortably under it** — 1M is adequate-but-tight for those lanes.
+- Conservative estimate of impact on `processMessage`: **+15–25%** of current actual gas usage. Per the [measured carrier below](#measured-ccipreceive-gas-independent-gaslimit-carrier), the 25% bump keeps every lane within budget (no OOG), but **Optimism (~86%) and Base (~83%) land above or at the §5 80% headroom the [§5 alert](monitoring.md#5-capacity--headroom--medium) tracks** — 1M is adequate-but-tight for both OP-stack lanes.
 
 `_feeDtoO` is **not** affected by these EIPs because it budgets L2 execution (Optimism/Base `l2Gas`, Linea postman, Arbitrum `maxGas × gasPriceBid`) — each L2 follows its own gas schedule, not L1's. (Caveat: Optimism/Base `l2Gas` *does* burn L1 gas inside `ccipReceive` via the portal's resource metering, so it indirectly consumes `_feeOtoD.gasLimit` budget — see [Consequences](#consequences-of-unnecessarily-high-feeotod--feedtoo-limits).) Arbitrum's `maxSubmissionCost` is paid as L1 `msg.value` to the Inbox; the unspent part is refunded on L2 to an unreachable aliased address (effectively burned — same section).
 
@@ -215,27 +227,25 @@ RPCs: `RPC_ETHEREUM` + each `RPC_<NET>`; legacy `L1_RPC_URL` / `L2_<NET>_RPC_URL
 The test hard-asserts the post-Glamsterdam projection
 (`measured × 1.25 ≤ gasLimit`, i.e. no OOG) and logs utilization.
 
-Measured 2026-06-01 vs latest forked mainnet (≈6 WETH synced; figures move ±~10% with fork block / Lido
+Measured 2026-06-10 vs latest forked mainnet (≈6 WETH synced; figures move ±~10% with fork block / Lido
 buffer state — read as ranges, not constants):
 
 | Lane         | CCIP ramp | Measured `ccipReceive` | Utilization | Post-Glamsterdam ×1.25 | Projected utilization |
 | ------------ | --------- | ---------------------- | ----------- | ---------------------- | --------------------- |
-| **Base**     | v1.6      | ~599k–664k             | ~60–66%     | ~749k–830k             | **~75–83%**           |
+| **Base**     | v1.6      | ~664k                  | ~66%        | ~830k                  | **~83%**              |
 | **Arbitrum** | v1.6      | ~329k                  | ~33%        | ~411k                  | ~41%                  |
-| **Optimism** | v1.5      | not isolated¹          | —           | —                      | —                     |
-| **Linea**    | v1.5      | not isolated¹          | —           | —                      | —                     |
+| **Optimism** | v1.5      | ~685k                  | ~69%        | ~857k                  | **~86%**              |
+| **Linea**    | v1.5      | ~267k                  | ~53%        | ~334k                  | ~67%                  |
 
-¹ The pinned `chainlink-local` v0.2.3 simulator routes v1.5 lanes through its OffRamp machinery, so the
-harness can't isolate `ccipReceive` for Optimism/Linea (`just measure-fee-gas` prints "not isolated").
-Optimism uses the **same OP-stack `L1StandardBridge`** path as Base → expect ~Base (~60–66%); Linea's
-`L1MessageService` path is lighter.
-
-**Finding.** No lane out-of-gases (every projection < 100% of `gasLimit` — the test's hard assert). But
-**Base — and by adapter-equivalence Optimism — is the tightest lane**: post-Glamsterdam it lands ~75–83%,
-i.e. *at* the §5 80% headroom target rather than under it. Arbitrum is comfortable (~41%). To preserve the
-80% headroom for Base/Optimism under the worst-case +25% repricing, raise their `gasLimit` to ~1.05M
-(`664k × 1.25 ÷ 0.80 ≈ 1.04M`); otherwise 1M is adequate-but-tight. **Linea's 500k is unverified here**
-(v1.5 route) — measure it out-of-band before relying on it.
+**Finding.** No lane out-of-gases (every projection < 100% of `gasLimit` — the test's hard assert).
+**Optimism is the tightest lane** at ~86% post-Glamsterdam; **Base is close behind at ~83%** — both
+*at* or slightly above the §5 80% headroom target. Arbitrum is comfortable (~41%); Linea has the most
+headroom (~67% of its 500k limit). The measurement also confirms the earlier adapter-equivalence
+inference: Optimism (~685k) is slightly higher than Base (~664k) — both use the OP-stack
+`L1StandardBridge` path, and the small difference (~21k) reflects Optimism's v1.5 CCIP overhead vs
+Base's v1.6. To restore the 80% headroom for Optimism under the worst-case +25% repricing, raise its
+`gasLimit` to ~1.07M (`685k × 1.25 ÷ 0.80 ≈ 1.07M`); for Base ~1.04M (`664k × 1.25 ÷ 0.80`);
+otherwise 1M is adequate-but-tight for both OP-stack lanes.
 
 ## Consequences of unnecessarily high `FeeOtoD` / `FeeDtoO` limits
 
@@ -295,13 +305,13 @@ makes utilization a signal at all.
 
 Excess over the actual fee is refunded intra-transaction (see [Cost framing](#cost-framing)), so bloat
 costs nothing per sync. The consequences are structural instead: `triggerSync` forwards
-`maxFeeOtoD + feeAmountDtoO` of native ETH from the SyncTrigger's own balance (`src/SyncTrigger.sol:142-143`),
+`maxFeeOtoD + feeAmountDtoO` of native ETH from the SyncTrigger's own balance (`src/SyncTrigger.sol:141-142`),
 so `maxFee` sets (a) the **float** the trigger must hold to sync at all, and (b) the **worst-case spend a
 single sync can authorize**. The current 0.125 ETH is already ~25× the measured ~0.005 ETH actual fee —
 protective against spikes. Raising it "for safety" (say to 12.5 ETH) means a CCIP fee-token mispricing or
 gas-price spike gets *paid silently* instead of reverting with `CCIPSenderExceedsMaxFee`
 (`CCIPSenderUpgradeable.sol:82`) — and given the CREReceiver's nullary-call lock
-(`src/cre/CREReceiver.sol:108` — a compromised forwarder can only fire argument-less, rate-limited
+(`src/cre/CREReceiver.sol:128` — a compromised forwarder can only fire argument-less, rate-limited
 `triggerSync()` calls), the fee caps are exactly what bounds the damage of each
 spurious-but-authorized sync. `maxFee` is the only lever where
 "too high" weakens a *guard* rather than wasting ETH.
@@ -310,15 +320,15 @@ spurious-but-authorized sync. `maxFee` is the only lever where
 call carries no value, so every sync is paid from the trigger's own balance and nothing refills it
 automatically. The mechanics:
 
-- **Required balance**: ≥ `getMaxFees().maxNativeFee` (`src/SyncTrigger.sol:97-107` — currently
-  `maxFee` 0.125 ETH everywhere, + `feeAmountDtoO` ≈ 0.0016 ETH on Arbitrum). Below that, the next
+- **Required balance**: ≥ `getMaxFees().maxNativeFee` (`src/SyncTrigger.sol:96-106` — currently
+  `maxFee` 0.125 ETH everywhere, + `feeAmountDtoO` ≈ 0.001005 ETH on Arbitrum). Below that, the next
   `triggerSync` reverts at the value transfer with **no named error** — see [Failure modes](#failure-modes-and-recovery).
 - **Net drain per sync**: `actualFee + feeAmountDtoO` ≈ 0.005–0.007 ETH at measured fees — the
   `maxFee − actualFee` excess is refunded to the trigger intra-transaction (bare `receive()`,
-  `src/SyncTrigger.sol:42`), so the float depletes by the *actual* cost, not the fronted maximum.
+  `src/SyncTrigger.sol:41`), so the float depletes by the *actual* cost, not the fronted maximum.
   At ≤2 syncs/day that is ≤ ~0.013 ETH/day/lane.
 - **Funding is permissionless** (anyone can send ETH to the trigger); **recovering excess is not**
-  (`sweep()` is owner-only = L2 GovExec, `src/SyncTrigger.sol:168` — a governance round-trip). So
+  (`sweep()` is owner-only = L2 GovExec, `src/SyncTrigger.sol:167` — a governance round-trip). So
   size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
   "fill it up", and refill from the [§5 alert](monitoring.md#5-capacity--headroom--medium).
 - **Initial funding is part of `deploy-stage1` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
@@ -329,7 +339,7 @@ automatically. The mechanics:
   `test_productionDeployFundsSyncTriggerFloatForFirstSync` runs the first sync on the script-funded float
   alone — no test-side `vm.deal`.
 - If `payInLink` were ever enabled, the same holds for a **LINK** balance (the constructor
-  pre-approves LINK to the sender, `src/SyncTrigger.sol:64`); `getMaxFees().maxLinkFee` is the floor.
+  pre-approves LINK to the sender, `src/SyncTrigger.sol:63`); `getMaxFees().maxLinkFee` is the floor.
 
 ### `FeeDtoO.l2Gas` (Optimism/Base): burns L1 gas inside `ccipReceive` — coupled to `FeeOtoD.gasLimit`
 
@@ -407,7 +417,7 @@ reliability gained (a too-low value fails *loudly* on L1 and is retryable — se
 
 `FeeCodec.encodeLineaL1toL2()` is nullary (`lib/chainlink-csr/contracts/libraries/FeeCodec.sol:382`) and
 `LineaAdapterL1toL2._sendToken` reverts on `feeAmount != 0`
-(`lib/chainlink-csr/contracts/adapters/LineaAdapterL1toL2.sol:50`) — there is nothing to over-provision.
+(`lib/chainlink-csr/contracts/adapters/LineaAdapterL1toL2.sol:49-50`) — there is nothing to over-provision.
 Delivery rides Linea's sponsored postman: *"the postman fee for automatic claiming is only sponsored for
 transactions using less than 250,000 gas"*
 ([Linea message-service docs](https://docs.linea.build/network/build/send-receive-messages)).
@@ -429,7 +439,7 @@ in the table after it describes the *reactive* case where the limit was already 
 |---|---|---|---|---|
 | `FeeOtoD.gasLimit` < actual `ccipReceive` gas | `processMessage` OOGs on L1; defensive catch stores `failedHashes[messageId]` ([`CCIPDefensiveReceiverUpgradeable.sol#L200`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPDefensiveReceiverUpgradeable.sol#L200), pinned at the vendored submodule commit); synced WETH (+ Arbitrum `feeAmountDtoO`) parks at the L1 receiver; every subsequent sync joins it | Parked, not lost | **Permissionless** `retryFailedMessage` (`:131`, no role gate) — the retry runs on the caller's own tx gas, so it succeeds with a bigger gas limit; if the *whole* `ccipReceive` reverted at CCIP level instead, use [CCIP manual execution](https://docs.chain.link/ccip/concepts/manual-execution) with a gas-limit override | Raise `gasLimit` via GovExec `setFeeOtoD` (procedure below) |
 | `FeeOtoD.maxFee` < actual CCIP fee | `triggerSync` reverts `CCIPSenderExceedsMaxFee` (`CCIPSenderUpgradeable.sol:82`); syncs stall, pool WETH accumulates on L2 | No — pure liveness; **self-heals if the fee spike is transient** (CRE re-attempts each tick) | Wait out a transient spike; nothing is stuck | If the fee regime shifted: raise `maxFee` via `setFeeOtoD` **and top up the SyncTrigger float** to ≥ new `maxFee + feeAmountDtoO` (it fronts that much per sync) |
-| SyncTrigger ETH balance < `maxFee + feeAmountDtoO` | `triggerSync` reverts at the value transfer (`src/SyncTrigger.sol:143`) with **no named error** — plain EVM balance failure; syncs stall, pool WETH accumulates. Symptom-identical to the row above, so **check `cast balance <trigger>` against `getMaxFees()` first** when diagnosing a stall | No — pure liveness | **Anyone** sends ETH to the trigger (bare `receive()`, permissionless — no governance needed); self-heals on the next CRE tick | Top up to ≥ `getMaxFees().maxNativeFee` + runway ([Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)); keep deposits modest — recovering excess is `sweep()` = GovExec-only |
+| SyncTrigger ETH balance < `maxFee + feeAmountDtoO` | `triggerSync` reverts at the value transfer (`src/SyncTrigger.sol:142`) with **no named error** — plain EVM balance failure; syncs stall, pool WETH accumulates. Symptom-identical to the row above, so **check `cast balance <trigger>` against `getMaxFees()` first** when diagnosing a stall | No — pure liveness | **Anyone** sends ETH to the trigger (bare `receive()`, permissionless — no governance needed); self-heals on the next CRE tick | Top up to ≥ `getMaxFees().maxNativeFee` + runway ([Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)); keep deposits modest — recovering excess is `sweep()` = GovExec-only |
 | Arbitrum `maxSubmissionCost` < actual submission fee | L1 `outboundTransfer` reverts `InsufficientSubmissionCost` (`AbsInbox.sol:298-301`) → defensive catch → `failedHashes`, as row 1. Headroom today: breach needs L1 basefee ≳200 gwei (`0.001 ETH ÷ (1400 + 6N)` at N ≈ 350–600 bytes of retryable calldata) | Parked, not lost | `retryFailedMessage` once basefee dips — the fee bytes are frozen inside the failed message, so retry *cannot* carry a bigger budget; it only succeeds when the fee falls back under it | Raise `maxSubmissionCost` via `setFeeDtoO` for future syncs |
 | Arbitrum `gasPriceBid` < L2 basefee | Ticket created but auto-redeem fails; wstETH not minted on L2 yet | **Yes if ignored**: manual-redeem window is ~7 days, then the ticket expires and the bridged wstETH is stranded ([Failure modes](#failure-modes-and-recovery)) | Manual redeem (permissionless) via the [retryable dashboard](https://retryable-dashboard.arbitrum.io/) within 7 days — redeemer pays current L2 gas | Raise `gasPriceBid` via `setFeeDtoO` |
 | OP/Base `l2Gas` < actual `finalizeDeposit` gas | L2 relay's target call fails; the L2 messenger records it in `failedMessages` ([OP messengers spec](https://specs.optimism.io/protocol/messengers.html)) | Parked, not lost (Bedrock) | **Permissionless replay**: call `relayMessage` on the L2 messenger with the same params and more gas (no ETH value rides the wstETH deposit, so replay is a plain tx) | Raise `l2Gas` via `setFeeDtoO` — re-measure the `FeeOtoD.gasLimit` coupling afterwards (the burn grows ~1:1, [see above](#feedtool2gas-optimismbase-burns-l1-gas-inside-ccipreceive--coupled-to-feeotodgaslimit)) |
