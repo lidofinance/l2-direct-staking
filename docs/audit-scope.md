@@ -24,7 +24,7 @@ run once per each L2 and for L1 (see [Actors & privileges](#actors--privileges))
 ## Scope
 
 **Repository**: `l2-direct-staking`
-**Audit revision**: to be frozen — candidate `main @ 60d272d` (2026-06-07). Pin the exact
+**Audit revision**: to be frozen — candidate `main @ 145affb` (2026-06-10). Pin the exact
 freeze-commit hash here once it lands, and re-run the measurements in [Build & verify](#build--verify)
 against that commit (the Slither/coverage figures below are bound to it).
 **Compiler**: `solc 0.8.20`, `evm_version = paris`.
@@ -36,10 +36,12 @@ against that commit (the Slither/coverage figures below are bound to it).
 
 | File | nSLOC | Notes |
 |------|------:|-------|
-| [`src/cre/CREReceiver.sol`](../src/cre/CREReceiver.sol) | 99 | Receives DON-signed CRE reports via the Keystone forwarder; dispatches a whitelisted, argument-less call (production: `SyncTrigger.triggerSync()`). New, Lido-authored. License: MIT. |
-| [`src/SyncTrigger.sol`](../src/SyncTrigger.sol) | 131 | Decides *when* and *how much* to sync; calls `CustomSender.sync()`, funding the CCIP native fee from its own balance. Adapted from upstream `SyncAutomation` (Keeper→CRE refactor). License: Apache-2.0. |
+| [`src/cre/CREReceiver.sol`](../src/cre/CREReceiver.sol) | ~135 | Receives DON-signed CRE reports via the Keystone forwarder; dispatches a whitelisted, argument-less call (production: `SyncTrigger.triggerSync()`). New, Lido-authored. License: MIT. |
+| [`src/SyncTrigger.sol`](../src/SyncTrigger.sol) | ~135 | Decides *when* and *how much* to sync; calls `CustomSender.sync()`, funding the CCIP native fee from its own balance. Adapted from upstream `SyncAutomation` (Keeper→CRE refactor). License: Apache-2.0. |
 
-**Total in-scope ≈ 230 nSLOC** (99 + 131), 2 non-upgradeable `Ownable` contracts, **0
+**Total in-scope ≈ 270 nSLOC** (re-measured 2026-06-10 at `145affb`; the growth vs the earlier
+≈230 figure is mostly a multi-line formatting pass on `CREReceiver` plus three new owner-setter
+guards — logic delta is ~10 lines), 2 non-upgradeable `Ownable` contracts, **0
 permissionless state-mutating function entry points** (the payable `receive()` fallbacks accept
 ETH from anyone — the intended, harmless float-funding path; see [D. Fee configuration &
 liveness](#d-fee-configuration--liveness)).
@@ -77,7 +79,10 @@ forge test --match-path "test/{CREReceiverTest,SyncTriggerTest}.t.sol"
 forge test
 ```
 
-**Static analysis & coverage** (team prep, measured 2026-06-04 — re-confirm on the audit revision):
+**Static analysis & coverage** (team prep, measured 2026-06-04 — re-confirm on the audit
+revision; since then three guard branches and their tests were added — zero-recipient
+`withdrawETH`, `setDelay(0)`, `setFeeOtoD` gas-limit floor — and the full 80-test unit suite
+passes at `145affb`):
 
 - Slither 0.11.5 (`--exclude-dependencies`, filtered to `src/`) + `forge lint`: **14 results, all
   Low / Informational — 0 High, 0 Medium**, each triaged as accepted-by-design or a minor nit.
@@ -151,7 +156,7 @@ them:
 | --- | --- | --- |
 | **`SyncTrigger` owner** | Lido Deployer EOA → **Lido L2 governance executor** (per-L2 bridge executor, e.g. `OptimismBridgeExecutor`; runs proposals bridged from the L1 Lido DAO) | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD`, `setFeeDtoO`, `sweep` — `sweep` moves any ERC-20 *or* native balance (incl. the fee float) to an arbitrary recipient |
 | **`CREReceiver` owner** | Lido Deployer EOA → **LOL multisig** (Safe) | `setForwarder`, `setExpectedAuthor`, `setAllowedCall`, `withdrawETH` — `withdrawETH` moves native balance (normally ~0) to an arbitrary recipient |
-| **`CREReceiver` forwarder** (`_forwarder`) | **Chainlink CRE Keystone forwarder** (per-L2, Chainlink-operated) | sole caller of `onReport`; set via `L2_CRE_FORWARDER` at deploy, **no on-chain version/ABI assertion** |
+| **`CREReceiver` forwarder** (`_forwarder`) | **Chainlink CRE Keystone forwarder** (per-L2, Chainlink-operated) | sole caller of `onReport`; set via `L2_CRE_FORWARDER` at deploy, **no on-chain version/ABI assertion** (the deploy script can anchor the address via `_expectedCREForwarder()` — see §B; per-lane pins **not yet populated**) |
 | **`SyncTrigger` forwarder** (`_forwarder`) | the deployed **`CREReceiver`** instance | sole caller of `triggerSync` — note "forwarder" denotes a *different* contract on each in-scope contract |
 | **`expectedAuthor` pin** | **LOL multisig** (Safe) = registered CRE `WorkflowRegistry` owner = `CREReceiver` owner | not a method — the report-author identity that `onReport` checks `==` against; re-pointable only via `setExpectedAuthor` (owner-only), and bound to an *address*, not a *workflow* name/id |
 | **`SYNC_ROLE` on `CustomSender`** (upstream) | old Chainlink Automation → the new **`SyncTrigger`** | lets the `triggerSync → sync` call actually pull WETH from the pool; granted/revoked in Stage 2 |
@@ -186,16 +191,26 @@ four mainnets unless `ALLOW_UNSAFE_COMBINED_RUN=1`.
    `CREReceiver`, configure, wire, fund the float, and **transfer ownership** to the post-migration
    holders (`SyncTrigger → gov executor`, `CREReceiver → LOL multisig`). Touches **only the new
    contracts** — fully reversible by discarding them. The broadcast self-reverts
-   (`_assertSyncInfrastructure`) if any wire is wrong, so a botched Stage 1 leaves the live (old)
-   system untouched.
+   (`_assertSyncInfrastructure`) if any wire **or operational parameter** is wrong — the in-broadcast
+   assert now also reads back `DEST_CHAIN_SELECTOR`, `WNATIVE`, delay, amounts, `feeDtoO` and
+   `feeOtoD`, so a typo'd `MigrationConstants` value cannot ship green — and a botched Stage 1
+   leaves the live (old) system untouched.
 2. **Gate — `runVerifyStage1()`** (anyone, read-only). Confirms Stage 1 is complete and correct
    **and that Stage 2 has not run** (checks `CustomSender.getOraclePool()` still points at the old
-   pool and `SYNC_ROLE` is not yet granted). Run before signing Stage 2.
+   pool, `SYNC_ROLE` is not yet granted, and — a pool/trigger-**independent** tripwire — the gov
+   executor does not yet hold `DEFAULT_ADMIN_ROLE`, which catches a completed Stage 2 even against a
+   *different* pool/trigger pair from a repeated `runDeploy`). Run before signing Stage 2.
 3. **Stage 2 — `runMigrate()`** (Initial Owner). The irreversible cutover on the **pre-existing**
    sender, in order: `setOraclePool` → `grantSyncRole`(new) → `revokeSyncRole`(old Chainlink
    [+ Gelato on Linea]) → `migrateSenderAdmin` (grant gov-exec, revoke Initial Owner) →
-   `transferProxyAdminOwnership`(gov-exec). The broadcast ends with `_assertMigrationSteps`, which
-   re-reads every write/revoke and reverts if any did not land.
+   `transferProxyAdminOwnership`(gov-exec). `migrateSenderAdmin` first asserts the configured
+   `initialOwner` *actually holds* `DEFAULT_ADMIN_ROLE` — OZ `revokeRole` is a silent no-op on a
+   non-holder, so without this a mis-set `initialOwner` would produce a phantom revoke that the
+   postcondition passes trivially, leaving the real admin in place. The broadcast ends with
+   `_assertMigrationSteps`, which re-reads every write/revoke and reverts if any did not land.
+   Caveat it documents: `CustomSender` is not `AccessControlEnumerable`, so there is **no on-chain
+   proof the executor is the *sole* admin** — only the two addresses the migration touches are
+   asserted; any pre-existing third admin must be ruled out off-chain before migration.
 
 **If Stage 2 stops mid-way** (the dangerous window): the Initial Owner still holds
 `DEFAULT_ADMIN_ROLE` until the penultimate step, so most partial states are **re-runnable** —
@@ -240,7 +255,7 @@ below):
 | `script/{optimism,arbitrum,base,linea}/<Lane>MigrationConstants.sol` | Per-lane `LIDO_L2_GOVERNANCE_EXECUTOR`, `LIQUIDITY_OWNER`, `L2_SYNC_TRIGGER_INITIAL_FLOAT`, `L2_SYNC_DESTINATION_GAS_LIMIT`, sender / pool / old-automation addresses. |
 | `script/optimism/sepolia/SepoliaMigrationConstants.sol` | Testnet equivalents (opts out of the gov-executor guard; smaller float). |
 | `script/l1/L1MigrationConstants.sol` | `INITIAL_OWNER` (the external Stage-2 signer) plus the **shared** L1 receiver / `ProxyAdmin`. |
-| Deploy-time env | `L2_CRE_FORWARDER` (Chainlink-operated; not in any constants file), with `LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_SYNC_TRIGGER_INITIAL_FLOAT` echoed for the broadcast-time guards. |
+| Deploy-time env | `L2_CRE_FORWARDER` (Chainlink-operated; not in any constants file — anchored at read-time against the per-network `_expectedCREForwarder()` pin when populated, see §B), with `LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_SYNC_TRIGGER_INITIAL_FLOAT` echoed for the broadcast-time guards. |
 | `script/<net>/state-mate/<net>.yaml` | Deployed-state verification oracle; fee bytes left `null` ("set during migration"). |
 
 Cross-references: `DOC.md §1` (Networks) and `DOC.md §6.1` (the two different "initial" accounts).
@@ -257,7 +272,8 @@ exactly this class of mistake:
 | Old automation revoked in Stage 2 | Chainlink only | Chainlink only | Chainlink **+ Gelato** (`L2_OLD_GELATO_AUTOMATION`) |
 | `FeeOtoD.gasLimit` baseline (`L2_SYNC_DESTINATION_GAS_LIMIT`) | `1_000_000` | `1_000_000` | **`500_000`** (leaner Message Service adapter) |
 | FeeQuoter `maxPerMsgGasLimit` (invariant **C-1**) | 7M | 7M | **3M** |
-| Return-leg gas headroom | measurable; tight post-Glamsterdam | measurable | **unverified** (CCIP v1.5 ramp) |
+| CCIP OnRamp (ETH-destination), verified on-chain | Optimism **v1.5** / Base **v1.6** | v1.6 | **v1.5** |
+| `ccipReceive` gas headroom (measured 2026-06-10, post-Glamsterdam ×1.25) | **tight**: Optimism ~86%, Base ~83% of 1M | comfortable (~41%) | ~67% of 500k (previously unverified; v1.5 lanes now measurable) |
 | Return-leg loss / stall mode | under-gassed `finalizeDeposit`, permissionlessly replayable | retryable **must be redeemed ≤ ~7 days or the wstETH is lost** | messages > 250k gas drop the postman auto-claim |
 | `FeeDtoO` over-payment | `l2Gas` burn ~1:1, coupled to `FeeOtoD` | **1:1 burn to an unreachable L2 alias** (verified on-chain) | — |
 | `LIQUIDITY_OWNER` | per-lane | per-lane | distinct |
@@ -285,7 +301,10 @@ Not every theme carries all three sub-lists.
 #### A. The report gate — authentication & authorization on `onReport`
 
 - **Invariants**
-  - **I-3** (*source*): only nullary calls dispatch through `onReport` (`data.length == 4`).
+  - **I-3** (*source*): only nullary calls dispatch through `onReport` — a single
+    `data.length != 4` check (`NonNullaryCall`, applied *before* selector extraction) covers both
+    too-short (0–3, which would otherwise zero-pad into a bogus selector) and argument-carrying
+    (5+) calldata; it subsumes the former separate `ReportTooShort` guard (removed).
 - **Audit focus**
   - The report gate — two *who* checks (`onlyForwarder`, then report `workflowOwner ==
     _expectedAuthor`) plus two *what* checks (the decoded `(target, selector)` must be
@@ -302,13 +321,20 @@ Not every theme carries all three sub-lists.
     revert**. This was a real, since-fixed delivery bug; the id **match** lives in the in-scope
     `CREReceiver.supportsInterface`. (`DOC.md §2.6.B`.)
   - **Forwarder ABI/version not pinned on-chain.** `L2_CRE_FORWARDER` is set with no
-    `typeAndVersion` or ABI assertion; the repo vendors two incompatible Keystone forwarders. The
+    `typeAndVersion` or ABI assertion; the repo vendors two incompatible Keystone forwarders. A
+    *script-level* anchor now exists — `L2UpgradeScriptBase._envCREForwarder()` rejects an env
+    value that differs from the per-network `_expectedCREForwarder()` pin
+    (`L2UpgradeWrongCREForwarder`) before it is baked immutably into `CREReceiver` — but the
+    per-lane pins are **not yet populated** (every lane currently returns `address(0)` = opt-out),
+    so the guard is dormant until each production forwarder address is pinned. The
     deployed one must be the CCIP `"Forwarder and Router 1.0.0"` (`onReport(bytes,bytes)`), not the
     legacy `onReport(bytes32,address,bytes)` variant — confirm each lane's production forwarder is
     the ERC-165-gated one with the `workflowId(32) | workflowName(10) | workflowOwner(20)` metadata
     layout. (`RUNBOOK.md §1.c`; [Where the addresses live](#where-the-addresses-live).)
   - **DON-embedded author vs registry owner.** `verify-cre-workflow` confirms only the
-    `WorkflowRegistry.owner`; the DON-embedded `metadata.workflowOwner` is a **different surface**.
+    `WorkflowRegistry.owner` (plus, since `145affb`: non-zero `workflowId`/`expectedAuthor` inputs
+    — closing a false-green against a non-existent workflow — and a non-empty `binaryUrl`); the
+    DON-embedded `metadata.workflowOwner` is a **different surface**.
     If the DON embeds a different address (a CRE Early-Access residual), every report fails
     `InvalidAuthor` and all syncs silently stall. The only proof is a live `CREReceiver.CallExecuted`
     — exercise on a throwaway testnet workflow first. (`RUNBOOK.md` gate G2-author; `ADR-0001`.)
@@ -320,6 +346,10 @@ Not every theme carries all three sub-lists.
     the threshold is computed in `uint256`, so the max delay is simply unreachable — it cannot
     overflow/revert. Confirm the off-chain CRE `eth_call` probe relies on this clean `(false, 0)`
     rather than tolerating a revert.
+  - **I-4** (*source*): `setDelay(0)` reverts (`SyncTriggerInvalidDelay`) — `_delay == 0` would make
+    the time gate `block.timestamp >= _lastExecution + 0` always true, permanently defeating the
+    rate limiter (a sync would fire every forwarder invocation once the pool crosses `minAmount`,
+    draining the fee float at the CRE cron cadence). Deactivation uses `type(uint48).max`, never 0.
   - **R-1** (*source*): reentrancy — `onReport`'s `target.call` and the `sync → refundExcessNative →
     SyncTrigger.receive()` path are non-reentrant via `onlyForwarder` + empty `receive()`.
 
@@ -340,12 +370,20 @@ Not every theme carries all three sub-lists.
     `MessageGasLimitTooHigh` inside `sync` → the lane halts until a GovExec round-trip. A uniform
     "bump all lanes for safety" passes everywhere **except Linea** — a chain-blind footgun.
     (`docs/fees.md §Consequences > FeeOtoD.gasLimit`.)
+  - **F-3** (*source*): `setFeeOtoD` enforces, at set-time, that the encoded `gasLimit` is ≥
+    `CustomSender.MIN_PROCESS_MESSAGE_GAS()` (in addition to the exact-21-byte decode check) — a
+    decodable config below the sender's floor would otherwise make every `sync` revert
+    `CustomSenderInsufficientGas` while `shouldSync` stays true, so the CRE DON would submit a
+    reverting tx every tick.
 - **Residual risks**
-  - **Gas-limit headroom is tight on Base/Optimism post-Glamsterdam.** Measured `ccipReceive` puts
-    Base at ~75–83% of the 1M limit under the EIP-7904/8038 repricing (×1.25) — at the 80% target,
-    not comfortably under; consider raising those lanes to ~1.05M. Linea's 500k is **unverified**
-    (harness can't isolate v1.5 lanes); measure out-of-band. (`docs/fees.md §Glamsterdam fee headroom`,
-    `§Measured ccipReceive gas`.)
+  - **Gas-limit headroom is tight on Optimism/Base post-Glamsterdam.** The fork harness now
+    isolates `ccipReceive` on **all four lanes** (the v1.5 lanes — Optimism, Linea — use the same
+    direct-inject path as v1.6 since `145affb`). Measured 2026-06-10: under the EIP-7904/8038
+    repricing (×1.25), **Optimism is the tightest lane at ~86%** of its 1M limit and **Base ~83%**
+    — both at or above the 80% headroom target (to restore it: raise Optimism to ~1.07M, Base to
+    ~1.04M); Arbitrum is comfortable (~41%) and Linea's 500k — previously unverified — measures
+    **~67%** post-repricing. No lane out-of-gases. Figures move ±~10% with fork block / Lido buffer
+    state. (`docs/fees.md §Glamsterdam fee headroom`, `§Measured ccipReceive gas`.)
   - **Over-provisioning consequences differ per quantity.** `maxFee` excess is refunded intra-tx, but
     raising it **weakens a guard** (it is the worst-case spend a single spurious-but-authorized sync
     can burn from the float). Arbitrum `FeeDtoO` over-payment is a **per-sync 1:1 burn** to the L1
@@ -410,8 +448,10 @@ Not every theme carries all three sub-lists.
 #### H. Containment & recovery
 
 - **Audit focus**
-  - Owner self-harm via `withdrawETH` / `sweep` (neither guards a zero `to`/`recipient` or zero
-    `amount`).
+  - Owner self-harm via `withdrawETH` / `sweep`. `withdrawETH` now rejects a zero recipient
+    (`InvalidRecipientAddress` — a call to `address(0)` succeeds, silently burning the ETH);
+    `SyncTrigger.sweep` still guards **neither** a zero recipient nor a zero amount, and neither
+    function guards a zero `amount`.
 - **Residual risks**
   - **No pause/upgrade/recovery beyond owner setters + kill-switches.** A whole-LOL-Safe compromise
     loses every LOL-held lever at once; recovery from a bad `expectedAuthor`/forwarder binding is a
