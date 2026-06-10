@@ -42,6 +42,10 @@ contract MockCustomSender {
         lastSyncValue = msg.value;
         return keccak256(abi.encode(amount));
     }
+
+    function MIN_PROCESS_MESSAGE_GAS() external pure returns (uint32) {
+        return 75_000; // mirrors CustomSender.MIN_PROCESS_MESSAGE_GAS
+    }
 }
 
 /// @notice Minimal ERC20 mock
@@ -227,6 +231,15 @@ contract SyncTriggerTest is Test {
         bytes memory tooShort = new bytes(20);
         vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(20), uint256(21)));
         trigger.setFeeOtoD(tooShort);
+    }
+
+    function test_setFeeOtoD_revertsOnGasLimitBelowSenderFloor() public {
+        // a decodable 21-byte blob whose gasLimit is below CustomSender.MIN_PROCESS_MESSAGE_GAS
+        // would make every sync revert with CustomSenderInsufficientGas while shouldSync stays
+        // true; the setter must reject it.
+        bytes memory lowGas = FeeCodec.encodeCCIP(0.1 ether, false, 74_999);
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidParameters.selector);
+        trigger.setFeeOtoD(lowGas);
     }
 
     function test_setFeeDtoO_revertsOnTooShort() public {

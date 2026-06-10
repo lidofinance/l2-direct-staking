@@ -6,7 +6,6 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {TokenHelper} from "@csr/libraries/TokenHelper.sol";
-import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
 
@@ -222,7 +221,13 @@ contract SyncTrigger is Ownable, ISyncTrigger {
         // re-decodes feeOtoD with `FeeCodec.decodeCCIP` (length must be exactly 21), but the
         // setter previously accepted any length, so a 17–20-byte config passed here then
         // self-DoSed inside `sync`. decodeCCIP reverts unless length == 21.
-        FeeCodec.decodeCCIP(fee);
+        (,, uint32 gasLimit) = FeeCodec.decodeCCIP(fee);
+        // a decodable 21-byte config can still carry a gasLimit below the sender's floor, which
+        // makes every sync revert with CustomSenderInsufficientGas while shouldSync stays true —
+        // the CRE DON would then submit a reverting tx every tick. Enforce the floor at set-time.
+        if (gasLimit < ICustomSender(SENDER).MIN_PROCESS_MESSAGE_GAS()) {
+            revert SyncTriggerInvalidParameters();
+        }
         _feeOtoD = fee;
         emit FeeOtoDSet(fee);
     }

@@ -43,15 +43,22 @@ setup:
 # upkeep can't have fired again and any in-flight CCIP+bridge round-trip has
 # had time to settle (real CCIP latency is normally minutes-to-low-hours).
 #
-# Required env (loaded from .env.<network>): L2_RPC_URL, L2_NETWORK
+# Required env: L2_NETWORK + one of:
+#   RPC_<NET>  (shell export: RPC_OPTIMISM / RPC_ARBITRUM / RPC_BASE / RPC_LINEA)
+#   L2_RPC_URL (legacy, loaded from .env.<network>)
 #   L2_NETWORK ∈ {optimism, arbitrum, base, linea}
 #
-# Usage: just -E .env.<network> preflight-check
+# Usage: just preflight-check              (with RPC_<NET> in env)
+#        just -E .env.<network> preflight-check  (legacy .env file)
 preflight-check:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    # Resolve L2 RPC: prefer RPC_<NET> (shell env), fall back to L2_RPC_URL (legacy .env file).
+    _net_upper=$(echo "$L2_NETWORK" | tr '[:lower:]' '[:upper:]')
+    _rpc_var="RPC_${_net_upper}"
+    L2_RPC_URL="${!_rpc_var:-${L2_RPC_URL:-}}"
+    : "${L2_RPC_URL:?Set ${_rpc_var} (or legacy L2_RPC_URL) for $L2_NETWORK}"
 
     case "$L2_NETWORK" in
       optimism) EXPECTED_CHAIN_ID=10    ; SENDER=0x328de900860816d29D1367F6903a24D8ed40C997 ; POOL=0x6F357d53d6bE3238180316BA5F8f11467e164588 ; OLD_SYNC=0x3776CC14ce997827F7A87091018Daa1739dc2790 ; WETH=0x4200000000000000000000000000000000000006 ; WSTETH=0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb ;;
@@ -92,7 +99,15 @@ preflight-check:
     if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
       die "chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID for $L2_NETWORK"
     fi
-    echo "      PASS chain-id = $actual_chain_id"
+    # RPC_<NET> shares its name with the fork-test env (local anvil forks of these networks);
+    # a fork preserves the upstream chain id, so the check above cannot tell fork from live.
+    # A stale head block means a fork or badly lagging node — refuse to gate the migration on it.
+    head_ts=$(parse_cast_num "$(cast block latest --field timestamp --rpc-url "$L2_RPC_URL")")
+    head_age=$(( $(date +%s) - head_ts ))
+    if (( head_age > 600 )); then
+      die "RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live $L2_NETWORK (check \$${_rpc_var})"
+    fi
+    echo "      PASS chain-id = $actual_chain_id (head block ${head_age}s old)"
 
     echo "[2/5] CHECK CustomSender contract has bytecode at $SENDER"
     echo "      cmd: cast code $SENDER --rpc-url <rpc>"
@@ -193,15 +208,20 @@ preflight-check:
 # shared L1 LidoCustomReceiver is reachable, and that its CCIP lane wiring for
 # the given L2 network (adapter + sender) matches the expected L2 CustomSender.
 #
-# Required env (loaded from .env.<network>): L1_RPC_URL, L2_NETWORK
+# Required env: L2_NETWORK + one of:
+#   RPC_ETHEREUM  (shell export)
+#   L1_RPC_URL    (legacy, loaded from .env.<network>)
 #   L2_NETWORK ∈ {optimism, arbitrum, base, linea}
 #
-# Usage: just -E .env.<network> preflight-check-l1
+# Usage: just preflight-check-l1              (with RPC_ETHEREUM in env)
+#        just -E .env.<network> preflight-check-l1  (legacy .env file)
 preflight-check-l1:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    : "${L1_RPC_URL:?L1_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    # Resolve L1 RPC: prefer RPC_ETHEREUM (shell env), fall back to L1_RPC_URL (legacy .env file).
+    L1_RPC_URL="${RPC_ETHEREUM:-${L1_RPC_URL:-}}"
+    : "${L1_RPC_URL:?Set RPC_ETHEREUM (or legacy L1_RPC_URL)}"
 
     case "$L2_NETWORK" in
       optimism) L2_CHAIN_SELECTOR=3734403246176062136  ; EXPECTED_SENDER=0x328de900860816d29D1367F6903a24D8ed40C997 ;;
@@ -233,7 +253,15 @@ preflight-check-l1:
     if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
       die "L1 chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID"
     fi
-    echo "      PASS chain-id = $actual_chain_id"
+    # RPC_ETHEREUM shares its name with the fork-test env (local anvil mainnet fork); a fork
+    # preserves chain id 1, so the check above cannot tell fork from live. A stale head block
+    # means a fork or badly lagging node — refuse to gate the migration on it.
+    head_ts=$(cast block latest --field timestamp --rpc-url "$L1_RPC_URL"); head_ts="${head_ts%%[*}"
+    head_age=$(( $(date +%s) - head_ts ))
+    if (( head_age > 600 )); then
+      die "L1 RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live mainnet (check \$RPC_ETHEREUM)"
+    fi
+    echo "      PASS chain-id = $actual_chain_id (head block ${head_age}s old)"
 
     echo "[2/4] CHECK L1 LidoCustomReceiver has bytecode at $L1_RECEIVER"
     echo "      cmd: cast code $L1_RECEIVER --rpc-url <l1-rpc>"
@@ -1586,6 +1614,8 @@ balances-base:
 balances-linea:
     @echo "--- Linea ---"
     @just _balances-l2 CustomSender "$(yq '.deployed.l2[] | select(anchor == "l2CustomSender")' linea.yaml)" "$L2_LINEA_RPC_URL" "$(yq '.parameters[] | select(anchor == "wethL2")' linea.yaml)" "$(yq '.parameters[] | select(anchor == "wstethL2")' linea.yaml)"
+    @echo ""
+    @just _balances-l2 OraclePool "$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' linea.yaml)" "$L2_LINEA_RPC_URL" "$(yq '.parameters[] | select(anchor == "wethL2")' linea.yaml)" "$(yq '.parameters[] | select(anchor == "wstethL2")' linea.yaml)"
 
 balances:
     @just balances-l1

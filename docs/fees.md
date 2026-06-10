@@ -218,12 +218,12 @@ The test hard-asserts the post-Glamsterdam projection
 Measured 2026-06-01 vs latest forked mainnet (≈6 WETH synced; figures move ±~10% with fork block / Lido
 buffer state — read as ranges, not constants):
 
-| Lane | CCIP ramp | Measured `ccipReceive` | Utilization | Post-Glamsterdam ×1.25 | Projected utilization |
-|---|---|---|---|---|---|
-| **Base** | v1.6 | ~599k–664k | ~60–66% | ~749k–830k | **~75–83%** |
-| **Arbitrum** | v1.6 | ~329k | ~33% | ~411k | ~41% |
-| **Optimism** | v1.5 | not isolated¹ | — | — | — |
-| **Linea** | v1.5 | not isolated¹ | — | — | — |
+| Lane         | CCIP ramp | Measured `ccipReceive` | Utilization | Post-Glamsterdam ×1.25 | Projected utilization |
+| ------------ | --------- | ---------------------- | ----------- | ---------------------- | --------------------- |
+| **Base**     | v1.6      | ~599k–664k             | ~60–66%     | ~749k–830k             | **~75–83%**           |
+| **Arbitrum** | v1.6      | ~329k                  | ~33%        | ~411k                  | ~41%                  |
+| **Optimism** | v1.5      | not isolated¹          | —           | —                      | —                     |
+| **Linea**    | v1.5      | not isolated¹          | —           | —                      | —                     |
 
 ¹ The pinned `chainlink-local` v0.2.3 simulator routes v1.5 lanes through its OffRamp machinery, so the
 harness can't isolate `ccipReceive` for Optimism/Linea (`just measure-fee-gas` prints "not isolated").

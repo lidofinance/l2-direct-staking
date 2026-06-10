@@ -38,10 +38,24 @@ import {IReceiver} from "./interfaces/IReceiver.sol";
  *        its target.
  */
 contract CREReceiver is IReceiver, IERC165, Ownable {
-    event CallExecuted(address indexed target, bytes4 indexed selector, bytes returnData);
-    event ForwarderUpdated(address indexed previousForwarder, address indexed newForwarder);
-    event ExpectedAuthorUpdated(address indexed previousAuthor, address indexed newAuthor);
-    event AllowedCallUpdated(address indexed target, bytes4 indexed selector, bool allowed);
+    event CallExecuted(
+        address indexed target,
+        bytes4 indexed selector,
+        bytes returnData
+    );
+    event ForwarderUpdated(
+        address indexed previousForwarder,
+        address indexed newForwarder
+    );
+    event ExpectedAuthorUpdated(
+        address indexed previousAuthor,
+        address indexed newAuthor
+    );
+    event AllowedCallUpdated(
+        address indexed target,
+        bytes4 indexed selector,
+        bool allowed
+    );
 
     error UnauthorizedForwarder(address caller, address expected);
     error InvalidForwarderAddress();
@@ -53,10 +67,12 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     error NonNullaryCall(address target, uint256 length);
     error CallExecutionFailed(address target, bytes reason);
     error ETHTransferFailed();
+    error InvalidRecipientAddress();
 
     address private _forwarder;
     address private _expectedAuthor;
-    mapping(address target => mapping(bytes4 selector => bool)) private _allowedCalls;
+    mapping(address target => mapping(bytes4 selector => bool))
+        private _allowedCalls;
 
     modifier onlyForwarder() {
         if (msg.sender != _forwarder) {
@@ -88,14 +104,20 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     }
 
     /// @inheritdoc IReceiver
-    function onReport(bytes calldata metadata, bytes calldata report) external override onlyForwarder {
+    function onReport(
+        bytes calldata metadata,
+        bytes calldata report
+    ) external override onlyForwarder {
         // workflowName/workflowId intentionally not checked — see contract @dev.
         address workflowOwner = _extractWorkflowOwner(metadata);
         if (workflowOwner != _expectedAuthor) {
             revert InvalidAuthor(workflowOwner, _expectedAuthor);
         }
 
-        (address target, bytes memory data) = abi.decode(report, (address, bytes));
+        (address target, bytes memory data) = abi.decode(
+            report,
+            (address, bytes)
+        );
         if (target == address(0)) revert InvalidTargetAddress();
 
         // every allow-listed call is argument-less (the production seed is the nullary
@@ -106,7 +128,8 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         if (data.length != 4) revert NonNullaryCall(target, data.length);
 
         bytes4 selector = bytes4(data);
-        if (!_allowedCalls[target][selector]) revert CallNotAllowed(target, selector);
+        if (!_allowedCalls[target][selector])
+            revert CallNotAllowed(target, selector);
 
         (bool success, bytes memory returnData) = target.call(data);
         if (!success) revert CallExecutionFailed(target, returnData);
@@ -126,16 +149,22 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     ///      `ERC165Checker.supportsInterface(receiver, type(IReceiver).interfaceId)` (0x805f2132),
     ///      which first probes the ERC-165 base id (0x01ffc9a7). BOTH must return true, or the
     ///      forwarder marks the receiver invalid and never calls `onReport`.
-    function supportsInterface(bytes4 interfaceId) external pure override returns (bool) {
-        return interfaceId == type(IReceiver).interfaceId // 0x805f2132 (onReport-only IReceiver)
-            || interfaceId == type(IERC165).interfaceId; // 0x01ffc9a7 (ERC-165 base)
+    function supportsInterface(
+        bytes4 interfaceId
+    ) external pure override returns (bool) {
+        return
+            interfaceId == type(IReceiver).interfaceId || // 0x805f2132 (onReport-only IReceiver)
+            interfaceId == type(IERC165).interfaceId; // 0x01ffc9a7 (ERC-165 base)
     }
 
     function getExpectedAuthor() external view returns (address) {
         return _expectedAuthor;
     }
 
-    function isCallAllowed(address target, bytes4 selector) external view returns (bool) {
+    function isCallAllowed(
+        address target,
+        bytes4 selector
+    ) external view returns (bool) {
         return _allowedCalls[target][selector];
     }
 
@@ -153,20 +182,30 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         emit ExpectedAuthorUpdated(prev, newAuthor);
     }
 
-    function setAllowedCall(address target, bytes4 selector, bool allowed) external onlyOwner {
+    function setAllowedCall(
+        address target,
+        bytes4 selector,
+        bool allowed
+    ) external onlyOwner {
         if (target == address(0)) revert InvalidTargetAddress();
         _allowedCalls[target][selector] = allowed;
         emit AllowedCallUpdated(target, selector, allowed);
     }
 
-    function withdrawETH(address payable to, uint256 amount) external onlyOwner {
-        (bool ok,) = to.call{value: amount}("");
+    function withdrawETH(
+        address payable to,
+        uint256 amount
+    ) external onlyOwner {
+        if (to == address(0)) revert InvalidRecipientAddress();
+        (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert ETHTransferFailed();
     }
 
     /// @dev Extracts the workflow owner from packed CRE metadata.
     ///      Layout: bytes32 workflowId | bytes10 workflowName | address workflowOwner (offset 42, length 20).
-    function _extractWorkflowOwner(bytes calldata metadata) internal pure returns (address workflowOwner) {
+    function _extractWorkflowOwner(
+        bytes calldata metadata
+    ) internal pure returns (address workflowOwner) {
         // explicit length guard. The slice metadata[42:62] already reverts on a short buffer via
         // Solidity's implicit calldata bounds-check, but that is brittle if the metadata format ever
         // changes; assert the Keystone layout's minimum (32 workflowId + 10 workflowName + 20 owner)

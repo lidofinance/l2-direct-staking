@@ -1,7 +1,7 @@
 parameters:
   - &wstethL2 "0x5979D7b546E38E414F7E9822514be443A4800529"
   - &wethL2 "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
-  - &ccipRouterL2 "0x141fA0dE13418751Ddc4a1fea20b9345Bd2a517D"
+  - &ccipRouterL2 "0x141fa059441E0ca23ce184B6A78bafD2A517DdE8"
 
 deployed:
   l1:

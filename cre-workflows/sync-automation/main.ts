@@ -22,7 +22,7 @@ import {
   LATEST_BLOCK_NUMBER,
 } from "@chainlink/cre-sdk";
 import { z } from "zod";
-import { zeroAddress } from "viem";
+import { isAddress, zeroAddress } from "viem";
 import {
   encodeReportPayload,
   decodeShouldSyncResult,
@@ -31,15 +31,24 @@ import {
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
+// reject placeholders ("0xYOUR_..."), typos, and the zero address at config-validation time —
+// a bare z.string() lets them through, and they then fail only inside the DON at runtime
+// (viem throws on encode / the eth_call hits an empty account), a silent permanent no-sync.
+const evmAddress = z
+  .string()
+  .refine((a) => isAddress(a, { strict: false }) && a.toLowerCase() !== zeroAddress, {
+    message: "must be a 0x-prefixed 20-byte hex EVM address",
+  });
+
 const configSchema = z.object({
   /** CREReceiver contract address on the target chain */
-  receiverAddress: z.string(),
+  receiverAddress: evmAddress,
   /** CRE chain selector name (e.g. "ethereum-mainnet-optimism-1") */
   chainSelectorName: z.string(),
   /** Gas limit for the on-chain write transaction */
   writeGasLimit: z.string(),
   /** SyncTrigger contract address (shouldSync/triggerSync target) */
-  targetAddress: z.string(),
+  targetAddress: evmAddress,
   // Cron schedule for polling (e.g. "0 */5 * * * *" = every 5 minutes)
   schedule: z.string(),
 });

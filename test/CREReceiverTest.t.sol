@@ -392,6 +392,14 @@ contract CREReceiverTest is Test {
         receiver.withdrawETH(payable(makeAddr("recipient")), 1 ether);
     }
 
+    function test_withdrawETH_revertsOnZeroRecipient() public {
+        // a call to address(0) succeeds (no code), so without the guard the ETH would be
+        // silently burned instead of reverting.
+        vm.deal(address(receiver), 1 ether);
+        vm.expectRevert(CREReceiver.InvalidRecipientAddress.selector);
+        receiver.withdrawETH(payable(address(0)), 1 ether);
+    }
+
     function test_withdrawETH_revertsOnInsufficientBalance() public {
         vm.expectRevert(CREReceiver.ETHTransferFailed.selector);
         receiver.withdrawETH(payable(makeAddr("recipient")), 1 ether);
