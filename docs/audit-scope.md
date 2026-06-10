@@ -24,7 +24,7 @@ run once per each L2 and for L1 (see [Actors & privileges](#actors--privileges))
 ## Scope
 
 **Repository**: `l2-direct-staking`
-**Audit revision**: to be frozen — candidate `main @ 145affb` (2026-06-10). Pin the exact
+**Audit revision**: to be frozen — candidate `main @ 01b0ca12` (2026-06-10). Pin the exact
 freeze-commit hash here once it lands, and re-run the measurements in [Build & verify](#build--verify)
 against that commit (the Slither/coverage figures below are bound to it).
 **Compiler**: `solc 0.8.20`, `evm_version = paris`.
