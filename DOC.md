@@ -333,7 +333,7 @@ Per-chain accounts (the only thing that varies between L2s):
 | **Optimism** | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
 | **Arbitrum** | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
 | **Base** | `0x0E37599436974a25dDeEdF795C848d30Af46eaCF` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6` |
+| **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6` |
 | **Ethereum L1** (shared) | Lido DAO Agent `0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c` | — |
 
 > **Why the CRE workflow owner is the LOL multisig (Safe), not an EOA.** Unlike every

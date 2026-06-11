@@ -117,8 +117,8 @@ contract SepoliaCSRDeployScript is Script, ScriptHelper {
             // PriceOracle: isInverse=false (direct price), heartbeat large for testing
             priceOracle = address(new PriceOracle(mockAggregator, false, MOCK_HEARTBEAT));
 
-            // OraclePool: sender proxy will be at deployer nonce + 3
-            // (after this pool, sender impl, sender proxy)
+            // OraclePool: the sender proxy is 2 deploys ahead of this one
+            // (this pool at nonce N, sender impl at N+1, sender proxy at N+2)
             oraclePool = address(
                 new PausableImmutableOraclePool(
                     _predictContractAddress(deployer, 2), // sender proxy is 2 deploys ahead
@@ -148,6 +148,13 @@ contract SepoliaCSRDeployScript is Script, ScriptHelper {
                     deployer,
                     abi.encodeCall(CustomSender.initialize, (oraclePool, deployer))
                 )
+            );
+
+            // the pool's SENDER was nonce-predicted two deploys early; a nonce skew (e.g. an extra
+            // broadcast tx sneaking in) would mis-wire the pool silently, so pin it here.
+            require(
+                PausableImmutableOraclePool(payable(oraclePool)).SENDER() == senderProxy,
+                "OraclePool.SENDER nonce prediction mismatch"
             );
 
             senderProxyAdmin = _getProxyAdmin(senderProxy);

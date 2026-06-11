@@ -65,14 +65,24 @@ contract L1UpgradeActions {
         _requireNonZeroL1(cfg.receiverProxy);
         _requireNonZeroL1(cfg.proxyAdmin);
 
-        IAccessControl(cfg.receiverProxy).grantRole(L1.DEFAULT_ADMIN_ROLE, cfg.lidoDaoAgent);
-        IAccessControl(cfg.receiverProxy).revokeRole(L1.DEFAULT_ADMIN_ROLE, cfg.initialOwner);
+        IAccessControl recv = IAccessControl(cfg.receiverProxy);
+
+        // OZ revokeRole is a silent no-op when the account does not hold the role, and the
+        // `!hasRole(initialOwner)` postcondition below then passes trivially while the real admin
+        // stays in place. Assert the actor actually holds admin before the grant/revoke, mirroring
+        // the phantom-revoke guard in L2UpgradeActions.migrateSenderAdmin.
+        _requireL1PostCondition(
+            recv.hasRole(L1.DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner is not the current admin"
+        );
+
+        recv.grantRole(L1.DEFAULT_ADMIN_ROLE, cfg.lidoDaoAgent);
+        recv.revokeRole(L1.DEFAULT_ADMIN_ROLE, cfg.initialOwner);
         emit L1ReceiverAdminMigrated(cfg.receiverProxy, cfg.initialOwner, cfg.lidoDaoAgent);
 
+        address previousProxyAdminOwner = Ownable(cfg.proxyAdmin).owner();
         Ownable(cfg.proxyAdmin).transferOwnership(cfg.lidoDaoAgent);
-        emit L1ProxyAdminOwnershipTransferred(cfg.proxyAdmin, cfg.initialOwner, cfg.lidoDaoAgent);
+        emit L1ProxyAdminOwnershipTransferred(cfg.proxyAdmin, previousProxyAdminOwner, cfg.lidoDaoAgent);
 
-        IAccessControl recv = IAccessControl(cfg.receiverProxy);
         _requireL1PostCondition(recv.hasRole(L1.DEFAULT_ADMIN_ROLE, cfg.lidoDaoAgent), "dao agent admin grant");
         _requireL1PostCondition(!recv.hasRole(L1.DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner admin revoke");
         _requireL1PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.lidoDaoAgent, "proxyAdmin owner");

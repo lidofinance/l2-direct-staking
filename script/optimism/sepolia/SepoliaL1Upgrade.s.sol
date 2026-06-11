@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Script} from "forge-std/Script.sol";
 
 import {L1UpgradeActions} from "script/l1/L1UpgradeActions.s.sol";
+import {SepoliaMigrationConstants as C} from "script/optimism/sepolia/SepoliaMigrationConstants.sol";
 
 /**
  * @notice Sepolia testnet L1 upgrade script.
@@ -30,6 +31,8 @@ contract SepoliaL1UpgradeScript is Script, L1UpgradeActions {
     }
 
     function run() external {
+        assertL1ChainId(C.ETH_CHAIN_ID);
+
         uint256 initialOwnerPrivateKey = vm.envUint("INITIAL_OWNER_PRIVATE_KEY");
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address lidoDaoAgent = vm.envAddress("LIDO_DAO_AGENT");

@@ -16,8 +16,11 @@ contract MockCustomSender {
     address public oraclePool;
 
     bool public shouldRevertSync;
+    uint64 public lastDestChainSelector;
     uint256 public lastSyncAmount;
     uint256 public lastSyncValue;
+    bytes32 public lastFeeOtoDHash;
+    bytes32 public lastFeeDtoOHash;
 
     constructor(address wnative_, address linkToken_) {
         WNATIVE = wnative_;
@@ -36,10 +39,17 @@ contract MockCustomSender {
         shouldRevertSync = v;
     }
 
-    function sync(uint64, uint256 amount, bytes calldata, bytes calldata) external payable returns (bytes32) {
+    function sync(uint64 destChainSelector, uint256 amount, bytes calldata feeOtoD, bytes calldata feeDtoO)
+        external
+        payable
+        returns (bytes32)
+    {
         if (shouldRevertSync) revert("sync failed");
+        lastDestChainSelector = destChainSelector;
         lastSyncAmount = amount;
         lastSyncValue = msg.value;
+        lastFeeOtoDHash = keccak256(feeOtoD);
+        lastFeeDtoOHash = keccak256(feeDtoO);
         return keccak256(abi.encode(amount));
     }
 
@@ -62,7 +72,11 @@ contract MockERC20 {
         balanceOf[to] += amount;
     }
 
-    function forceApprove(address, uint256) external {}
+    function transfer(address to, uint256 amount) external returns (bool) {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
 }
 
 /**
@@ -78,6 +92,8 @@ contract SyncTriggerTest is Test {
     event ForwarderSet(address forwarder);
     event DelaySet(uint48 delay);
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
+    event FeeOtoDSet(bytes fee);
+    event FeeDtoOSet(bytes fee);
 
     SyncTrigger internal trigger;
     MockCustomSender internal sender;
@@ -105,6 +121,8 @@ contract SyncTriggerTest is Test {
         assertEq(trigger.DEST_CHAIN_SELECTOR(), DEST_CHAIN);
         assertEq(trigger.WNATIVE(), address(weth));
         assertEq(trigger.owner(), owner);
+        // the max LINK approval is load-bearing: LINK-paid CCIP fees fail without it.
+        assertEq(link.allowance(address(trigger), address(sender)), type(uint256).max, "LINK max approval");
     }
 
     function test_constructor_initializesDeactivated() public {
@@ -167,6 +185,13 @@ contract SyncTriggerTest is Test {
         trigger.setDelay(1 hours);
     }
 
+    function test_setDelay_revertsOnZero() public {
+        // delay == 0 would permanently defeat the time-based rate limiter (the threshold
+        // check is always true); deactivation uses type(uint48).max, never 0.
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidDelay.selector);
+        trigger.setDelay(0);
+    }
+
     function test_setDelay_revertsIfNotOwner() public {
         vm.prank(makeAddr("nonOwner"));
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("nonOwner")));
@@ -225,6 +250,20 @@ contract SyncTriggerTest is Test {
         assertEq(keccak256(trigger.getFeeDtoO()), keccak256(fee));
     }
 
+    function test_setFeeOtoD_emitsEvent() public {
+        bytes memory fee = _encodeFee(0.1 ether, false);
+        vm.expectEmit(false, false, false, true);
+        emit FeeOtoDSet(fee);
+        trigger.setFeeOtoD(fee);
+    }
+
+    function test_setFeeDtoO_emitsEvent() public {
+        bytes memory fee = _encodeFee(0.05 ether, false);
+        vm.expectEmit(false, false, false, true);
+        emit FeeDtoOSet(fee);
+        trigger.setFeeDtoO(fee);
+    }
+
     function test_setFeeOtoD_revertsOnWrongLength() public {
         // feeOtoD must be exactly 21 bytes (CustomSender re-decodes with FeeCodec.decodeCCIP).
         // A 20-byte buffer previously passed the setter then self-DoSed inside sync.
@@ -263,13 +302,19 @@ contract SyncTriggerTest is Test {
 
     // ─── sweep ─────────────────────────────────────────────────────────
 
-    function test_sweep_transfersTokens() public {
+    function test_sweep_transfersNative() public {
         address recipient = makeAddr("recipient");
-        deal(address(weth), address(trigger), 5 ether);
-        // MockERC20 doesn't support real transfer; test via native ETH sweep
         vm.deal(address(trigger), 3 ether);
         trigger.sweep(address(0), recipient, 3 ether);
         assertEq(recipient.balance, 3 ether);
+    }
+
+    function test_sweep_transfersERC20() public {
+        address recipient = makeAddr("recipient");
+        weth.mint(address(trigger), 5 ether);
+        trigger.sweep(address(weth), recipient, 5 ether);
+        assertEq(weth.balanceOf(recipient), 5 ether);
+        assertEq(weth.balanceOf(address(trigger)), 0);
     }
 
     function test_sweep_revertsIfNotOwner() public {
@@ -355,6 +400,24 @@ contract SyncTriggerTest is Test {
         assertEq(sender.lastSyncAmount(), 5 ether, "synced amount");
         assertEq(sender.lastSyncValue(), uint256(maxFeeOtoD) + feeDtoO, "native fee forwarded");
         assertEq(trigger.getLastExecution(), uint48(block.timestamp), "lastExecution advanced");
+        // pin the pass-through arguments: a swapped fee pair or wrong selector would
+        // otherwise survive every unit test (the mock used to discard them).
+        assertEq(sender.lastDestChainSelector(), DEST_CHAIN, "dest chain selector forwarded");
+        assertEq(sender.lastFeeOtoDHash(), keccak256(_encodeFee(maxFeeOtoD, false)), "feeOtoD forwarded");
+        assertEq(sender.lastFeeDtoOHash(), keccak256(_encodeFee(feeDtoO, false)), "feeDtoO forwarded");
+    }
+
+    function test_triggerSync_bubblesSenderRevert() public {
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        sender.setShouldRevertSync(true);
+
+        vm.prank(forwarder);
+        vm.expectRevert(bytes("sync failed"));
+        trigger.triggerSync();
+
+        // the revert rolled back the _lastExecution update — the trigger stays armed.
+        (bool needed,) = trigger.shouldSync();
+        assertTrue(needed, "still armed after failed sync");
     }
 
     function test_triggerSync_linkFees_sendsZeroValue() public {

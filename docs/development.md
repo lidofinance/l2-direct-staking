@@ -197,7 +197,7 @@ mkdir -p /tmp/linea-rehearsal && cp -R script/linea/state-mate/abi /tmp/linea-re
 sed -e "s|__L2_CUSTOM_SENDER__|0x328de900860816d29D1367F6903a24D8ed40C997|g" \
     -e "s|__L2_PROXY_ADMIN__|0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192|g" \
     -e "s|__INITIAL_OWNER__|$INITIAL_OWNER|g" -e "s|__L2_GOVERNANCE_EXECUTOR__|$L2_GOVERNANCE_EXECUTOR|g" \
-    -e "s|__L2_LIQUIDITY_OWNER__|0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6|g" -e "s|__L2_LIDO_DEPLOYER__|$DEPLOYER|g" \
+    -e "s|__L2_LIQUIDITY_OWNER__|0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6|g" -e "s|__L2_LIDO_DEPLOYER__|$DEPLOYER|g" \
     -e "s|__L2_ORACLE_POOL__|$L2_ORACLE_POOL|g" -e "s|__L2_SYNC_TRIGGER__|$L2_SYNC_TRIGGER|g" -e "s|__L2_CRE_RECEIVER__|$L2_CRE_RECEIVER|g" \
     script/linea/state-mate/linea-l2-upgrade.template.yaml > /tmp/linea-rehearsal/linea.yaml
 (cd lib/state-mate && L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 corepack yarn start /tmp/linea-rehearsal/linea.yaml --only l2)

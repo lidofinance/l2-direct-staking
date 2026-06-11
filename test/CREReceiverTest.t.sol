@@ -119,6 +119,14 @@ contract CREReceiverTest is Test {
         new CREReceiver(forwarder, expectedAuthor, address(target), PING);
     }
 
+    function test_constructor_emitsForwarderAndAuthorEvents() public {
+        vm.expectEmit(true, true, false, false);
+        emit ForwarderUpdated(address(0), forwarder);
+        vm.expectEmit(true, true, false, false);
+        emit ExpectedAuthorUpdated(address(0), expectedAuthor);
+        new CREReceiver(forwarder, expectedAuthor, address(target), PING);
+    }
+
     // ─── onReport: access control ──────────────────────────────────────
 
     function test_onReport_revertsIfNotForwarder() public {
@@ -271,8 +279,32 @@ contract CREReceiverTest is Test {
             new CREReceiverHarness(forwarder, expectedAuthor, address(target), DO_SOMETHING);
         bytes memory shortMetadata = new bytes(10);
 
-        vm.expectRevert();
+        // expect the NAMED error: a bare expectRevert would also pass on the implicit
+        // calldata-bounds panic, i.e. exactly the regression the explicit guard exists to catch.
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.MetadataTooShort.selector, uint256(10)));
         harness.extractWorkflowOwner(shortMetadata);
+    }
+
+    function test_extractWorkflowOwner_readsOwnerSlice() public {
+        CREReceiverHarness harness =
+            new CREReceiverHarness(forwarder, expectedAuthor, address(target), DO_SOMETHING);
+
+        // real Keystone metadata carries trailing fields after the owner (e.g. reportId);
+        // pin the [42:62] slice against off-by-one regressions that exact-62-byte metadata
+        // cannot detect.
+        bytes memory longMetadata =
+            abi.encodePacked(bytes32("wfId"), bytes10("wfName"), expectedAuthor, bytes2(0x1234));
+        assertEq(harness.extractWorkflowOwner(longMetadata), expectedAuthor);
+    }
+
+    function test_onReport_acceptsMetadataWithTrailingBytes() public {
+        bytes memory metadata =
+            abi.encodePacked(bytes32("wfId"), bytes10("wfName"), expectedAuthor, bytes2(0x1234));
+        bytes memory report = abi.encode(address(target), abi.encodeCall(MockTarget.ping, ()));
+
+        vm.prank(forwarder);
+        receiver.onReport(metadata, report);
+        assertEq(target.lastValue(), 1);
     }
 
     // ─── Admin: setForwarder ───────────────────────────────────────────

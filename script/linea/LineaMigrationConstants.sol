@@ -8,7 +8,7 @@ library LineaMigrationConstants {
     address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x74Be82F00CC867614803ffd7f36A2a4aF0405670;
 
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
-    address internal constant LIQUIDITY_OWNER = 0xA8EF4Db842d95DE72433a8B5b8fF40cB9C74c1B6;
+    address internal constant LIQUIDITY_OWNER = 0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6;
 
     // L1 adapter (Linea-specific)
     address internal constant L1_LINEA_ADAPTER = 0x122beD1eB48DC4679DDF2C8fc159e9c498344397;
@@ -25,6 +25,8 @@ library LineaMigrationConstants {
     address internal constant L2_LINK_TOKEN = 0xa18152629128738a5c081eb226335FEd4B9C95e9;
 
     // Old automations (to be retired during migration — revoke SYNC_ROLE)
+    // NOTE: as of June 2026 the Chainlink automation no longer holds SYNC_ROLE on Linea
+    // (only the Gelato one does); its Stage-2 revoke is a harmless no-op kept for symmetry.
     address internal constant L2_OLD_CHAINLINK_AUTOMATION = 0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace;
     address internal constant L2_OLD_GELATO_AUTOMATION = 0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe;
 

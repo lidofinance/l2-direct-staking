@@ -26,11 +26,20 @@ contract L1UpgradeScript is Script, L1UpgradeActions {
         }
     }
 
-    function _envLidoDaoAgent() internal view returns (address) {
+    error L1UpgradeWrongLidoDaoAgent(address actual, address expected);
+
+    /// @dev Reads the DAO Agent from env and asserts it matches the known-correct mainnet constant.
+    ///      The handover (receiver admin + ProxyAdmin owner) is irreversible by the Initial Owner,
+    ///      so a wrong-but-nonzero env value must be rejected before broadcast — same guard class
+    ///      as `_envGovernanceExecutor()` on the L2 side. The Sepolia variant keeps free-form env.
+    function _envLidoDaoAgent() internal view returns (address lidoDaoAgent) {
         try vm.envAddress("LIDO_DAO_AGENT") returns (address value) {
-            return value;
+            lidoDaoAgent = value;
         } catch {
-            return vm.envAddress("LIDO_NEW_OWNER");
+            lidoDaoAgent = vm.envAddress("LIDO_NEW_OWNER");
+        }
+        if (lidoDaoAgent != L1.LIDO_DAO_AGENT) {
+            revert L1UpgradeWrongLidoDaoAgent(lidoDaoAgent, L1.LIDO_DAO_AGENT);
         }
     }
 
