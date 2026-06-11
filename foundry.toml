@@ -3,8 +3,8 @@ src = "src"
 test = "test"
 script = "script"
 libs = ["lib"]
-solc = "0.8.20"
-evm_version = "paris"
+solc = "0.8.34"
+evm_version = "osaka"
 
 [rpc_endpoints]
 mainnet = "${L1_RPC_URL}"
