@@ -160,19 +160,3 @@ A separate Safe, distinct from the LOL Safe, owns the workflow. Keeps "who is th
 Rejected for *this* credential because the on-chain blast radius is near-zero and the GovExec backstop
 already provides an independent kill switch, so the marginal value of a second Safe is low. Revisit if the
 workflow ever gains broader authority.
-
-## FPF notes
-
-- **A.7 (strict distinction):** separate the **lost** (availability) and **compromised** (integrity) failure
-  kinds, and the key's three hats (workflow owner ≠ `expectedAuthor` pin ≠ Stage-1 signer). The decision
-  collapses two of those hats onto one *stable* Safe address while keeping the Stage-1 signer separate.
-- **A.6.P / A.6.Q (precision restoration):** "irreplaceable admin" is scoped to the **registry binding**, not
-  the system's trust; "recover" = **abandon-and-redeploy**, not in-place repair. Under the Safe, the common
-  case ("rotate a signer") needs *neither*.
-- **A.19 / G.5 (comparison without hidden scalarization):** the candidate set and comparator are stated
-  above; selection (LOL Safe) is justified by dominance on resilience plus low marginal value of separation,
-  not by a hidden weighted score.
-- **A.6.B / A.10 (boundary statements + referred evidence):** the recovery and verify steps are Duties on
-  named roles with a Gate/Evidence carrier (`verify-cre-workflow`, Monitoring §1/§4, state-mate); the
-  end-state invariant is asserted by `test_productionMigrationPath` and
-  `test_productionExpectedAuthorIsLolMultisig` (per network ×4).

@@ -291,16 +291,3 @@ protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, adm
 procedure + consequence tables + the rejected EOA alternative:
 [docs/cre.md §Workflow-owner key — lost vs compromised](docs/cre.md#workflow-owner-key--lost-vs-compromised-consequences--recovery)
 and [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md).
-
----
-
-## FPF conformance notes
-
-Improved per the First Principles Framework — each statement routed to its kind, evidence referred not asserted:
-
-- **A.6.B (Boundary Norm Square, L/A/D/E).** Gates = Admissibility predicates with stable IDs `G1–G4`, cited by ID not paraphrase (CC-A.6.B.4); duties name an accountable role (CC-A.6.B.3); every gate carries Evidence = carrier + observation (CC-A.6.B.5); gates are predicates, not laws (CC-A.6.B.6).
-- **A.6.Q (quality-term precision).** "safe" / "correct-by-design" / "green" / "done" no longer carry boundary force as bare adjectives; each is a **Def** backed by mechanism + evidence (CC-A.6.Q-14/15), removing the "magic scalar" anti-pattern.
-- **A.6.A (action-invitation precision).** "proceed" / "safe to proceed" were action-cues smuggling gates; they now route to explicit `Gn` predicates (CC-A.6.A-18, no invitation-as-obligation).
-- **A.10 (evidence graph referring).** Every gate/claim names its carrier; **verify** (in-description read-backs) vs **validate** (live-RPC state-mate/fork) are the `verifiedBy` / `validatedBy` anchors — kept distinct.
-- **A.7 (strict distinction).** "Recipe ≠ run ≠ state" banner (MethodDescription ≠ Work ≠ Object, CC-A7.4); each step names the **signing system** rather than letting the recipe "act" (CC-A7.1/A7.3); "documented ≠ done."
-- **A.19 / G.5 (no hidden scalarization).** Network order states its comparator (ETH-equiv in old pool) and marks the middle three **incomparable**, instead of implying a strict total order.

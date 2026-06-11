@@ -33,11 +33,4 @@ viewpoint that matches your task:
 > `docs/*.md` are the *reference* behind the recipe's values and checks — the
 > *why*.
 
-**FPF note.** The doc set is one `U.MultiViewDescribing` family (E.17.0): each
-file declares a single viewpoint (MVD-1), each claim has exactly one canonical
-home (E.11) and is **referred** to elsewhere rather than restated (A.10 /
-A.6.3.CR), and the table above is the family's CorrespondenceModel (MVD-4).
-Within RUNBOOK, gates `G1–G4` read as A.6.B admissibility predicates and the
-"recipe ≠ run ≠ state" spine is A.7 (Object ≠ Description ≠ Work).
-
 External references: [Chainlink CCIP Direct Staking quickstart](https://docs.chain.link/quickstarts/ccip-direct-staking) · [Chainlink Runtime Environment (CRE)](https://docs.chain.link/cre) ([deploying](https://docs.chain.link/cre/guides/operations/deploying-workflows) · [monitoring](https://docs.chain.link/cre/guides/operations/monitoring-workflows)) · [CRE `WorkflowRegistry`](https://etherscan.io/address/0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5) · [Direct Staking on Linea — Lido blog](https://blog.lido.fi/direct-staking-on-linea-powered-by-chainlink/)
