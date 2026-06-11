@@ -24,10 +24,10 @@ run once per each L2 and for L1 (see [Actors & privileges](#actors--privileges))
 ## Scope
 
 **Repository**: `l2-direct-staking`
-**Audit revision**: to be frozen — candidate `main @ 01b0ca12` (2026-06-10). Pin the exact
+**Audit revision**: `main @ c50b224384bf` (2026-06-11). Pin the exact
 freeze-commit hash here once it lands, and re-run the measurements in [Build & verify](#build--verify)
 against that commit (the Slither/coverage figures below are bound to it).
-**Compiler**: `solc 0.8.20`, `evm_version = paris`.
+**Compiler**: `solc 0.8.34`, `evm_version = osaka`.
 **Framework**: Foundry (`forge 1.7.1`).
 **Upgradeability**: none — non-upgradeable `Ownable`.
 
@@ -60,8 +60,8 @@ liveness](#d-fee-configuration--liveness)).
 
 ## Build & verify
 
-Prerequisites: Foundry (`forge 1.7.1`), git + submodules. Compiler `solc 0.8.20`,
-`evm_version = paris`. Licenses: `CREReceiver` MIT · `SyncTrigger` Apache-2.0.
+Prerequisites: Foundry (`forge 1.7.1`), git + submodules. Compiler `solc 0.8.34`,
+`evm_version = osaka` (bumped at `c50b224`; the in-scope contracts pin `pragma solidity 0.8.34`). Licenses: `CREReceiver` MIT · `SyncTrigger` Apache-2.0.
 
 ```bash
 git clone <repo> && cd l2-direct-staking
@@ -79,10 +79,11 @@ forge test --match-path "test/{CREReceiverTest,SyncTriggerTest}.t.sol"
 forge test
 ```
 
-**Static analysis & coverage** (team prep, measured 2026-06-04 — re-confirm on the audit
+**Static analysis & coverage** (Slither figures measured 2026-06-04 — re-confirm on the audit
 revision; since then three guard branches and their tests were added — zero-recipient
-`withdrawETH`, `setDelay(0)`, `setFeeOtoD` gas-limit floor — and the full 80-test unit suite
-passes at `145affb`):
+`withdrawETH`, `setDelay(0)`, `setFeeOtoD` gas-limit floor — and the toolchain was bumped to
+solc 0.8.34 / osaka. The full **88-test** unit suite and the 210-test full suite pass at
+`c50b224` (2026-06-11), and the coverage figures below were re-measured at that commit):
 
 - Slither 0.11.5 (`--exclude-dependencies`, filtered to `src/`) + `forge lint`: **14 results, all
   Low / Informational — 0 High, 0 Medium**, each triaged as accepted-by-design or a minor nit.
