@@ -712,9 +712,9 @@ deploy-cre-workflow:
 # Usage: just -E .env.<network> migrate-stage2
 #
 # Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL,
-#   L2_SYNC_TRIGGER, INITIAL_OWNER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER.
+#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, INITIAL_OWNER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER.
 # Optional env: L2_LIQUIDITY_OWNER (defaults to network LOL multisig).
-# (CREReceiver is verified earlier by `verify-stage1` and not needed here.)
+# (runMigrate() reads L2_CRE_RECEIVER for executeMigrationSteps' Stage-1-completeness precondition.)
 migrate-stage2:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -724,8 +724,9 @@ migrate-stage2:
     : "${L2_GOVERNANCE_EXECUTOR:?required for runMigrate()}"
     : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
     : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required by runMigrate(); populate it in .env.$L2_NETWORK from deploy-stage1 output}"
 
-    for addr in "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER"; do
+    for addr in "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"; do
       [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ && "$addr" != "0x0000000000000000000000000000000000000000" ]] \
         || { echo "Bad address: $addr (expected 0x + 40 hex chars, non-zero)" >&2; exit 1; }
     done

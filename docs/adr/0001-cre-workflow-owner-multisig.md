@@ -86,7 +86,7 @@ separate Safe over the LOL Safe is low — so we pick the LOL Safe.
   workflow updates move at governance pace. Bounded: the urgent kill switches were already Safe actions, so
   only non-urgent, infrequent code updates slow down.
 - Concentration: the LOL Safe is both "the author" and "who re-pins the author." The independent
-  **GovExec backstop** (`SyncTrigger.setForwarder(0)` / `setDelay(max)`) stays in a *different* trust domain
+  **GovExec backstop** (`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`) stays in a *different* trust domain
   and can dark-out the path without LOL quorum, so a separate dedicated Safe is not warranted here — but the
   concentration is noted.
 

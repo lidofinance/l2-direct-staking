@@ -285,7 +285,7 @@ The CRE workflow owner is the **LOL multisig (Safe)** — the same Safe that own
 and the running workflow is untouched (*lost* = low urgency, *compromised signer* = evict promptly).
 **Escalation — the whole Safe is compromised (≥ threshold):** this is the protocol-wide worst case that also
 loses every other LOL lever. **Duty: contain from the independent domain first — GovExec
-`SyncTrigger.setForwarder(0)` / `setDelay(max)`** (no LOL quorum needed), then run the one-time "redeploy +
+`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`** (no LOL quorum needed), then run the one-time "redeploy +
 re-pin" under a **new** LOL Safe (`setExpectedAuthor(newSafe)` ×4 + redeploy `--unsigned`). Neither case risks
 protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, admissible syncs). Full
 procedure + consequence tables + the rejected EOA alternative:

@@ -61,6 +61,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     error InvalidForwarderAddress();
     error InvalidExpectedAuthor();
     error InvalidTargetAddress();
+    error TargetHasNoCode(address target);
     error InvalidAuthor(address received, address expected);
     error CallNotAllowed(address target, bytes4 selector);
     error MetadataTooShort(uint256 length);
@@ -98,6 +99,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         emit ForwarderUpdated(address(0), forwarder_);
         emit ExpectedAuthorUpdated(address(0), expectedAuthor_);
         if (allowedTarget != address(0)) {
+            if (allowedTarget.code.length == 0) revert TargetHasNoCode(allowedTarget);
             _allowedCalls[allowedTarget][allowedSelector] = true;
             emit AllowedCallUpdated(allowedTarget, allowedSelector, true);
         }
@@ -188,6 +190,11 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         bool allowed
     ) external onlyOwner {
         if (target == address(0)) revert InvalidTargetAddress();
+        // A bare `.call` to a code-less address returns success=true with empty returndata, so
+        // allow-listing a target with no code would make onReport dispatch a silent no-op (the report
+        // is marked delivered, but nothing executes — sync never fires). Require code at set-time so
+        // that failure mode is impossible to configure. Removals (allowed=false) are unconstrained.
+        if (allowed && target.code.length == 0) revert TargetHasNoCode(target);
         _allowedCalls[target][selector] = allowed;
         emit AllowedCallUpdated(target, selector, allowed);
     }

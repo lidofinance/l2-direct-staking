@@ -13,10 +13,6 @@ import {LineaMigrationConstants as C} from "script/linea/LineaMigrationConstants
  *      Inheritable by tests and scripts.
  */
 contract LineaL2Defaults is L2UpgradeActions {
-    function defaultL2Config(address initialOwner, address governanceExecutor) public pure returns (L2UpgradeConfig memory cfg) {
-        return defaultL2Config(initialOwner, governanceExecutor, C.LIQUIDITY_OWNER);
-    }
-
     function defaultL2Config(address initialOwner, address governanceExecutor, address liquidityOwner)
         public
         pure

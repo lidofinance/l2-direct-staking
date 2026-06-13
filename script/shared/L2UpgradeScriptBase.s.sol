@@ -186,30 +186,22 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @notice Migrate admin roles on existing contracts to final owners. Actor: Initial Owner.
     function runMigrate() public virtual {
-        assertL2ChainId(_expectedChainId());
-
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
-        address initialOwner = vm.addr(initialOwnerPrivateKey);
-        address governanceExecutor = _envGovernanceExecutor();
-        address liquidityOwner = _envLiquidityOwnerAddress();
-        address oraclePool = vm.envAddress("L2_ORACLE_POOL");
-        address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        // needed by executeMigrationSteps' Stage-1-completeness precondition.
-        address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
-        address creForwarder = _envCREForwarder();
-
-        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-
-        vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver, creForwarder);
-        vm.stopBroadcast();
+        _runMigrateBody(vm.addr(initialOwnerPrivateKey), initialOwnerPrivateKey, true);
     }
 
     /// @notice Same as runMigrate but impersonates Initial Owner (anvil only).
     function runMigrateUnlocked() public virtual {
+        _runMigrateBody(_envInitialOwnerAddress(), 0, false);
+    }
+
+    /// @dev Shared Stage-2 body for both the production broadcast (`useKey == true`, signs with
+    ///      `initialOwnerPrivateKey`) and the anvil rehearsal (`useKey == false`, impersonates
+    ///      `initialOwner`). Keeping one body guarantees the rehearsal exercises exactly the env
+    ///      reads and preconditions the production migrate does — they cannot drift apart.
+    function _runMigrateBody(address initialOwner, uint256 initialOwnerPrivateKey, bool useKey) internal {
         assertL2ChainId(_expectedChainId());
 
-        address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
         address oraclePool = vm.envAddress("L2_ORACLE_POOL");
@@ -220,7 +212,11 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
-        vm.startBroadcast(initialOwner);
+        if (useKey) {
+            vm.startBroadcast(initialOwnerPrivateKey);
+        } else {
+            vm.startBroadcast(initialOwner);
+        }
         executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver, creForwarder);
         vm.stopBroadcast();
     }

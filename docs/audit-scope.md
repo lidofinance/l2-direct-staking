@@ -264,9 +264,12 @@ Cross-references: `DOC.md §1` (Networks) and `DOC.md §6.1` (the two different 
 ### Per-network differences
 
 The four lanes are **not** interchangeable. Linea is the consistent outlier; Arbitrum has its own
-return-leg quirk. A uniform change applied to all four is a footgun — invariants **C-1** (per-lane
-FeeQuoter cap) and **G-1** (gov-executor guard) are the broadcast-/config-time guards against
-exactly this class of mistake:
+return-leg quirk. A uniform change applied to all four is a footgun — **G-1** (gov-executor guard)
+is the broadcast-/config-time guard (code-enforced, `L2UpgradeWrongGovernanceExecutor`) against this
+class of mistake, while **C-1** (per-lane FeeQuoter cap) is a *deployed-instance/off-chain* check only:
+nothing in the contracts or scripts bounds the encoded `FeeOtoD.gasLimit` from above (`setFeeOtoD`
+enforces only the lower `MIN_PROCESS_MESSAGE_GAS` floor, F-3), so a too-high gas limit is caught at
+`sync`-time (`MessageGasLimitTooHigh`), not at config time — verify it out-of-band:
 
 | Aspect | Optimism / Base | Arbitrum | Linea |
 | --- | --- | --- | --- |
@@ -430,8 +433,10 @@ Not every theme carries all three sub-lists.
 - **Residual risks**
   - **Address reuse across lanes/roles.** Deterministic deploys make the same string mean different
     contracts per `(chain, role)` — the footgun behind the earlier wrong gov-executor mistake. Always
-    resolve via the lane's own `<Lane>MigrationConstants.sol`. The broadcast-/config-time guards
-    against this class are invariants **C-1** (FeeQuoter cap, §D) and **G-1** (gov-executor, §E).
+    resolve via the lane's own `<Lane>MigrationConstants.sol`. The code-enforced broadcast-/config-time
+    guard against this class is invariant **G-1** (gov-executor, §E); **C-1** (FeeQuoter cap, §D) is a
+    deployed-instance/off-chain check only — not enforced in the contracts or scripts (see §Per-network
+    differences).
     (`DOC.md §1`, §6.1; [Where the addresses live](#where-the-addresses-live).)
   - **Linea is the odd one out** (Gelato revoke, distinct `LIQUIDITY_OWNER`, half the `gasLimit`,
     lowest FeeQuoter cap). (See [Per-network differences](#per-network-differences).)
@@ -457,7 +462,7 @@ Not every theme carries all three sub-lists.
   - **No pause/upgrade/recovery beyond owner setters + kill-switches.** A whole-LOL-Safe compromise
     loses every LOL-held lever at once; recovery from a bad `expectedAuthor`/forwarder binding is a
     one-time "redeploy + re-pin" across all 4 L2s plus a GovExec containment backstop
-    (`SyncTrigger.setForwarder(0)` / `setDelay(max)`) from the independent domain. The
+    (`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`) from the independent domain. The
     `WorkflowRegistry` exposes **no** per-workflow ownership transfer. (`ADR-0001`; `DOC.md §3.2, §3.4`.)
 
 ## Glossary

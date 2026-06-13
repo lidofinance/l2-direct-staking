@@ -265,7 +265,7 @@ single codebase.)
 **2. The §3.4 redundancy needs two contracts.** §3.4 lists *separate* kill
 switches held by *separate* owners on the *same* path: LOL disarms the CRE side
 (`setForwarder(0x…dead)` / `setExpectedAuthor`), governance independently disarms
-the sync side (`setForwarder(0)` / `setDelay(max)`). Defense-in-depth only holds
+the sync side (`setForwarder(0x…dead)` / `setDelay(max)`). Defense-in-depth only holds
 if the layers fail — and are disarmed — independently; one merged contract is one
 owner and one switch.
 
@@ -380,7 +380,7 @@ on-chain control of the sync path through **kill switches**:
 | Pool issue | LOL multisig | `OraclePool.pause()` |
 | CRE author-key compromise | LOL multisig | `CREReceiver.setExpectedAuthor(new)` |
 | CRE infra hostile/degraded | LOL multisig | `CREReceiver.setForwarder(0x…dead)` |
-| SyncTrigger misconfigured | L2 governance executor | `SyncTrigger.setForwarder(0)` / `setDelay(max)` |
+| SyncTrigger misconfigured | L2 governance executor | `SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)` |
 
 > **CRE workflow owner = LOL multisig (Safe).** A lost or compromised Safe **signer** is handled by
 > rotating that signer inside the Safe (`addOwner` / `swapOwner` / `removeOwner`) — the workflow-owner
@@ -389,7 +389,7 @@ on-chain control of the sync path through **kill switches**:
 > the **whole Safe** is compromised (≥ threshold signers) — the same event that already loses every other
 > LOL-held lever — via the one-time "redeploy + re-pin" primitive
 > ([ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). The GovExec backstop
-> (`SyncTrigger.setForwarder(0)` / `setDelay(max)`) stays in an independent trust domain regardless.
+> (`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`) stays in an independent trust domain regardless.
 
 ---
 
