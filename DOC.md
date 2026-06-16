@@ -62,7 +62,7 @@ hostile.
 
 | Component                                | Purpose                                                                                                                                                                                                                                 | Source                                                        |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = GovExec-only (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
+| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = owner-only = LOL multisig (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
 | **`CREReceiver`** (per L2)               | Receives signed CRE reports and authorizes them three ways (forwarder + report author + `(target, selector)` allow-list), then calls `SyncTrigger.triggerSync()`. Defense-in-depth between the off-chain network and the on-chain sync. | `src/cre/CREReceiver.sol`, `src/cre/interfaces/IReceiver.sol` |
 | **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network every 5 min, polls `SyncTrigger.shouldSync()`, and emits a signed report when a sync is due.                                                                           | `cre-workflows/sync-automation/*`                             |
 | **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (the shared wiring `config/state/l2.yaml` + each lane's `.deployed.yaml`/`.inputs.yaml` siblings). Not runtime contracts; they define and verify the target state.                                                                                                 | `script/**`                                                   |
@@ -239,33 +239,36 @@ four L1 adapters, `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper`.)
 The call chain `CRE Forwarder → CREReceiver.onReport() → SyncTrigger.triggerSync()
 → CustomSender.sync()` is split into two repo-authored contracts at exactly the
 trust boundary between the **external CRE network** and the **privileged on-chain
-sync**. They *could* be written as one; keeping them separate preserves four
-properties a merged contract would lose.
+sync**. They *could* be written as one; keeping the privilege on its own
+`SyncTrigger` preserves the properties below.
 
 | Axis | `CREReceiver` | `SyncTrigger` |
 |---|---|---|
 | Role | CRE-facing **authorization gate** (3 checks) | **privilege holder + sync domain logic** |
-| On-chain power | none beyond calling its allow-listed target | holds `SYNC_ROLE` on `CustomSender` |
-| Owner | **LOL multisig** — operational, fast | **L2 governance executor** — slow, high-authority |
+| On-chain power | none beyond calling its allow-listed target | holds `SYNC_ROLE` on `CustomSender` — grant/revoke by the **L2 governance executor** |
+| Owner (config) | **LOL multisig** — operational, fast | **LOL multisig** — operational, fast |
 | Knows about | CRE ABI: `onReport`, metadata layout, author, allow-list | sync economics: amount/delay gates, fee blobs |
 | Link to the other | allow-list entry `(SyncTrigger, triggerSync)` | `forwarder` = `CREReceiver` |
 
-**1. Two owners, two trust domains.** An `Ownable` contract has exactly one
-`owner()`. The CRE-side levers (rotate the author key, point the forwarder at
-`0x…dead`) are routine operational moves owned by the **LOL multisig**; the
-`SYNC_ROLE` holder's parameters (delay, amounts, fees) are higher-stakes and owned
-by the **L2 governance executor** (§3.2). One contract would force both under one
-key — either dragging governance into routine CRE key rotation, or handing the LOL
-multisig the privileged sync parameters. (Even an `AccessControl` split *inside*
-one contract still puts both domains behind a single `DEFAULT_ADMIN_ROLE` and a
-single codebase.)
+**1. Two trust domains — now at the role layer, not the owner.** The **LOL
+multisig** owns the day-to-day config of *both* contracts (operational speed), but
+`SyncTrigger`'s **privilege** — its `SYNC_ROLE` on `CustomSender` — is granted and
+revoked only by the **L2 governance executor** (`CustomSender` `DEFAULT_ADMIN_ROLE`,
+§3.2). So arming or disarming the privileged sync path stays in a trust domain the
+LOL multisig does not control, even though LOL tunes delay/amounts/fees. (Earlier
+this independence also lived in `SyncTrigger`'s *owner* being the governance
+executor; that owner-level split was dropped to cut operational friction — the funds
+the sync path can reach are the LOL-owned pool's anyway — so the cross-domain
+backstop now rides on the `SYNC_ROLE` admin instead.)
 
-**2. The §3.4 redundancy needs two contracts.** §3.4 lists *separate* kill
-switches held by *separate* owners on the *same* path: LOL disarms the CRE side
-(`setForwarder(0x…dead)` / `setExpectedAuthor`), governance independently disarms
-the sync side (`setForwarder(0x…dead)` / `setDelay(max)`). Defense-in-depth only holds
-if the layers fail — and are disarmed — independently; one merged contract is one
-owner and one switch.
+**2. Defense-in-depth keeps the privilege on its own contract.** §3.4 lists kill
+switches on the *same* path held in *different* trust domains: the LOL multisig
+disarms the CRE side (`CREReceiver.setForwarder(0x…dead)` / `setExpectedAuthor`) and
+the sync parameters (`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`), while the
+L2 governance executor independently revokes the privilege itself
+(`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) from a domain LOL does not
+control. Keeping `SYNC_ROLE` on a dedicated `SyncTrigger` — not bolted onto the CRE
+receiver — keeps that governance revoke a clean, single, CRE-agnostic target.
 
 **3. The privilege keeps a minimal, CRE-agnostic surface.** `SYNC_ROLE` lives in
 `SyncTrigger`, whose only entry point is `triggerSync()` behind `onlyForwarder`,
@@ -315,18 +318,18 @@ first, then the contract actors, then the external (Chainlink) actor.
 | Owner / actor | Kind | What it holds in the final state | Notes |
 |---|---|---|---|
 | **Lido DAO Agent** `0x3e40…9C8c` | L1 contract/multisig | Admin of `L1Receiver`; owner of L1 `ProxyAdmin` | every action = Aragon DAO vote (days–weeks) |
-| **L2 Governance Executor** (per net) | L2 bridge-executor contract | Admin of `CustomSender`; owner of `SyncTrigger`; owner of L2 `ProxyAdmin` | driven by Lido DAO via the L1→L2 governance bridge; holds the on-chain kill switches |
-| **LOL multisig** (per net) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | provides the wstETH seed; holds the CRE pause switch; the workflow is registered under this Safe via `cre workflow deploy --unsigned` (ADR-0001) |
+| **L2 Governance Executor** (per net) | L2 bridge-executor contract | Admin of `CustomSender` (incl. `SYNC_ROLE` grant/revoke); owner of L2 `ProxyAdmin` | driven by Lido DAO via the L1→L2 governance bridge; holds the proxy-upgrade and `SYNC_ROLE` kill switches |
+| **LOL multisig** (per net) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver`; owner of `SyncTrigger`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | provides the wstETH seed; holds the CRE pause switch + the `SyncTrigger` sync levers; the workflow is registered under this Safe via `cre workflow deploy --unsigned` (ADR-0001) |
 | **Lido Deployer** (EOA, addr TBD) | off-chain key | **nothing in the final state** — Stage-1 broadcast + SyncTrigger float funding only | **no on-chain admin** and **not the CRE workflow owner**; post-migration holds zero on-chain power over Lido contracts |
 | **Initial Owner** `0xb5c3…91a8` | EOA — **external (not Lido-controlled)** | **nothing** — revoked from every migrated contract | external migration-handoff key (upstream `chainlink-csr` admin); executes Stage 2 and is renounced once it completes — **but completion across all chains depends on this external party** (§6.4) |
 | **Initial Liquidity Owner** `0x2897…b18c` | EOA | Owner of the **old** pools only | retains `sweep()` on the old pools; no control over any new infrastructure |
-| **`SyncTrigger`** (contract) | L2 contract | Holds `SYNC_ROLE` on `CustomSender` | acts only on calls from its forwarder (`CREReceiver`); config owned by L2 governance executor |
+| **`SyncTrigger`** (contract) | L2 contract | Holds `SYNC_ROLE` on `CustomSender` | acts only on calls from its forwarder (`CREReceiver`); config owned by the LOL multisig, but its `SYNC_ROLE` is grant/revocable by the L2 governance executor |
 | **`CREReceiver`** (contract) | L2 contract | Is the configured `forwarder` on `SyncTrigger` | accepts reports only from the CRE Forwarder; owned by LOL, which is also its pinned `expectedAuthor` / CRE workflow owner |
 | **CRE Forwarder / CRE network** | Chainlink (external) | The accepted forwarder address; **no on-chain role on Lido contracts** otherwise | **not controllable by Lido**; the §3.4 kill switches override it |
 
 Per-chain accounts (the only thing that varies between L2s):
 
-| Chain | Governance executor (admin / SyncTrigger owner / proxy owner) | LOL multisig (pool / CREReceiver owner) |
+| Chain | Governance executor (`CustomSender` admin / proxy owner) | LOL multisig (pool / CREReceiver / SyncTrigger owner) |
 |---|---|---|
 | **Optimism** | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
 | **Arbitrum** | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
@@ -355,7 +358,7 @@ Per-chain accounts (the only thing that varies between L2s):
 > three CRE Early-Access residuals (see ADR-0001 "Residuals"); confirm them on a throwaway
 > testnet workflow before GA.
 
-**End-of-life recovery.** Each treasury is reclaimed by the owner that holds it here: the L2 Governance Executor `sweep`s the `SyncTrigger` float, and the LOL multisig `withdrawETH`s the `CREReceiver` and reclaims the new pool's liquidity + CRE credit. Ordered, gated decommission procedure: [`RUNBOOK.md` §4](RUNBOOK.md#4--decommission--sunset-end-of-life).
+**End-of-life recovery.** Each treasury is reclaimed by the owner that holds it here — now all the LOL multisig: it `sweep`s the `SyncTrigger` float, `withdrawETH`s the `CREReceiver`, and reclaims the new pool's liquidity + CRE credit. Ordered, gated decommission procedure: [`RUNBOOK.md` §4](RUNBOOK.md#4--decommission--sunset-end-of-life).
 
 ### 3.3 Granting and revoking — both matter
 
@@ -380,7 +383,8 @@ on-chain control of the sync path through **kill switches**:
 | Pool issue | LOL multisig | `OraclePool.pause()` |
 | CRE author-key compromise | LOL multisig | `CREReceiver.setExpectedAuthor(new)` |
 | CRE infra hostile/degraded | LOL multisig | `CREReceiver.setForwarder(0x…dead)` |
-| SyncTrigger misconfigured | L2 governance executor | `SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)` |
+| SyncTrigger misconfigured | LOL multisig | `SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)` |
+| Rogue / compromised sync path (independent backstop) | L2 governance executor | `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)` |
 
 > **CRE workflow owner = LOL multisig (Safe).** A lost or compromised Safe **signer** is handled by
 > rotating that signer inside the Safe (`addOwner` / `swapOwner` / `removeOwner`) — the workflow-owner
@@ -389,7 +393,7 @@ on-chain control of the sync path through **kill switches**:
 > the **whole Safe** is compromised (≥ threshold signers) — the same event that already loses every other
 > LOL-held lever — via the one-time "redeploy + re-pin" primitive
 > ([ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). The GovExec backstop
-> (`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`) stays in an independent trust domain regardless.
+> (`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) stays in an independent trust domain regardless.
 
 ---
 
@@ -474,12 +478,12 @@ flowchart LR
     DAO -->|proxy owner| L1PA
     L1PA -->|administers| L1R
 
-    GOV -->|admin| CS
-    GOV -->|owner| ST
+    GOV -->|admin + SYNC_ROLE grant/revoke| CS
     GOV -->|proxy owner| L2PA
     L2PA -->|administers| CS
 
     LOL -->|owner| NEW
+    LOL -->|owner| ST
     LOL -->|owner| CRER
     LOL -->|workflow owner via --unsigned| WFREG
     LOL -.->|= expectedAuthor| CRER
@@ -664,8 +668,9 @@ authorization to run it.
 - **Broadcast-time guard (`L2_GOVERNANCE_EXECUTOR`)** — both Stage 1 and Stage 2
   reject the run (`L2UpgradeWrongGovernanceExecutor`) unless the env-supplied executor
   equals the per-network `LIDO_L2_GOVERNANCE_EXECUTOR` constant, so a wrong-but-nonzero
-  executor can't be baked into `SyncTrigger` ownership (Stage 1) or the admin /
-  `ProxyAdmin` handover (Stage 2). This is the **independent** check the caveat below
+  executor can't be baked into the `CustomSender` admin / `ProxyAdmin` handover (Stage 2;
+  Stage 1 no longer assigns the executor now that `SyncTrigger` goes to the LOL multisig).
+  This is the **independent** check the caveat below
   asks for — the executor is verified against a pinned constant, not against a value
   derived from itself. (Sepolia opts out: its executor is operator-supplied.)
 
@@ -676,8 +681,8 @@ expected values were derived from the same constants being verified.
 
 **Stage 1 vs Stage 2 — different actors.** Stage 1 (the deploy) is broadcast by the
 **Lido Deployer** (an in-house key): it deploys the three new contracts *already owned*
-by their final operators — the new pool and `CREReceiver` by the LOL multisig,
-`SyncTrigger` by the L2 governance executor — but it does **not** grant `SYNC_ROLE` or
+by their final operators — the new pool, `CREReceiver`, and `SyncTrigger` all by the
+LOL multisig — but it does **not** grant `SYNC_ROLE` or
 touch any admin / `ProxyAdmin` (a post-condition asserts Stage 2 hasn't run yet). The
 `SYNC_ROLE` grant and the admin + `ProxyAdmin` handoff of the *pre-existing*
 `chainlink-csr` contracts are Stage 2 — and *that* is the part the external Initial

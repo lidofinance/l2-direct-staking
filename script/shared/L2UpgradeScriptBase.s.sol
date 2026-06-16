@@ -102,10 +102,11 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @dev Reads `L2_GOVERNANCE_EXECUTOR` and asserts it matches this network's known-correct executor
     ///      The per-network constant previously lived only in tests, so a wrong-but-
-    ///      nonzero env value would have been baked into SyncTrigger ownership (Stage 1) and the
-    ///      DEFAULT_ADMIN_ROLE / ProxyAdmin handover (Stage 2) with no on-chain guardrail — the same class
-    ///      of bug as the historical wrong Base/Linea executor. No-op when `_expectedGovernanceExecutor()`
-    ///      returns address(0) (testnet opt-out).
+    ///      nonzero env value would have been baked into the DEFAULT_ADMIN_ROLE / ProxyAdmin handover
+    ///      (Stage 2) with no on-chain guardrail — the same class of bug as the historical wrong
+    ///      Base/Linea executor. (SyncTrigger ownership now goes to the LOL multisig, so Stage 1 no
+    ///      longer assigns the executor; the guard still validates it in both stages.) No-op when
+    ///      `_expectedGovernanceExecutor()` returns address(0) (testnet opt-out).
     function _envGovernanceExecutor() internal view returns (address governanceExecutor) {
         governanceExecutor = vm.envAddress("L2_GOVERNANCE_EXECUTOR");
         address expected = _expectedGovernanceExecutor();

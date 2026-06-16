@@ -236,7 +236,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
             ISyncTrigger.triggerSync.selector
         );
 
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(address(creReceiver));
         assertEq(syncTrigger.getForwarder(), address(creReceiver), "forwarder should be CREReceiver");
     }

@@ -43,7 +43,7 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
   # appended after deploy-cre-workflow:  CRE_WORKFLOW_ID
   ```
 
-| Network  | L2 Governance Executor | LOL multisig (pool/CREReceiver owner) |
+| Network  | L2 Governance Executor | LOL multisig (pool/CREReceiver/SyncTrigger owner) |
 |----------|------------------------|----------------------------------------|
 | Optimism | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
 | Arbitrum | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
@@ -163,7 +163,7 @@ sequenceDiagram
     LidoDep->>ST: setAmounts / setDelay
     LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd, expectedAuthor=LOL multisig, allow=(ST, triggerSync))
     LidoDep->>ST: setForwarder(CRERecv)
-    LidoDep->>ST: transferOwnership(GovExec)
+    LidoDep->>ST: transferOwnership(LOL multisig)
     LidoDep->>CRERecv: transferOwnership(LOL multisig)
     end
 
@@ -220,7 +220,7 @@ just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = LOL mult
 ```
 > **Owner = LOL multisig, not the deployer.** `deploy-cre-workflow` runs `--unsigned`: it prints raw `WorkflowRegistry` calldata instead of broadcasting. Before printing, it reads `CREReceiver.getExpectedAuthor()` on-chain and **aborts if it ≠ `CRE_WORKFLOW_OWNER`** — so the workflow can't be registered under an owner the author gate would reject. Execute the calldata **from the LOL Safe**, so the Safe becomes the on-chain workflow owner and matches the `CREReceiver.expectedAuthor` pin (which Stage 1 already set to the Safe). The Lido Deployer EOA only broadcasts the contract deploy above; it is **not** the workflow owner. See [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md) / [DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold).
 > **Prove the author gate on testnet first (CRE Early Access).** A green `verify-cre-workflow` confirms the *registry owner* only. Whether the DON actually stamps the Safe address into `metadata.workflowOwner` (so `expectedAuthor` matches) is residual (a) — exercise the full DON → report → `CREReceiver.CallExecuted` path on a **throwaway testnet workflow** before mainnet. If reports come back `InvalidAuthor`, the DON is embedding a different address (likely the `--unsigned` artifact uploader); the fix is `LOL setExpectedAuthor(<that address>)`. This is gate **G2-author**.
-> **Guard (both stages).** `deploy-stage1` and `migrate-stage2` assert `L2_GOVERNANCE_EXECUTOR == <per-network LIDO_L2_GOVERNANCE_EXECUTOR>` and revert (`L2UpgradeWrongGovernanceExecutor`) on mismatch — a wrong executor can't be baked into `SyncTrigger` ownership (Stage 1) or the admin/`ProxyAdmin` handover (Stage 2). Sepolia opts out (operator-supplied executor). See [`DOC.md` §6.3](DOC.md#63-how-the-final-state-is-verified).
+> **Guard (both stages).** `deploy-stage1` and `migrate-stage2` assert `L2_GOVERNANCE_EXECUTOR == <per-network LIDO_L2_GOVERNANCE_EXECUTOR>` and revert (`L2UpgradeWrongGovernanceExecutor`) on mismatch — a wrong executor can't be baked into the admin/`ProxyAdmin` handover (Stage 2; Stage 1 no longer assigns the executor — `SyncTrigger` goes to the LOL multisig). Sepolia opts out (operator-supplied executor). See [`DOC.md` §6.3](DOC.md#63-how-the-final-state-is-verified).
 
 **Evidence for G2:** `verify-stage1` → `Script ran successfully`; `verify-cre-workflow` → `ACTIVE`. CRE workflow is deployed **before** Stage 2 so the new sync path is live the moment legacy `SYNC_ROLE` is revoked (minimises the no-sync window).
 
@@ -264,7 +264,8 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 | L2 CustomSender ×4 | `hasRole(DEFAULT_ADMIN_ROLE, govExec)` / count | `true` / `1` |
 | L2 CustomSender ×4 | `hasRole(SYNC_ROLE, newSyncTrigger)` / count | `true` / `1` |
 | L2 CustomSender ×4 | `getOraclePool()` | new OraclePool |
-| L2 ProxyAdmin ×4 / SyncTrigger ×4 | `owner()` | L2 Gov Executor |
+| L2 ProxyAdmin ×4 | `owner()` | L2 Gov Executor |
+| SyncTrigger ×4 | `owner()` | LOL multisig |
 | SyncTrigger ×4 | `getForwarder()` | CREReceiver |
 | CREReceiver ×4 | `owner()` / `getForwarder()` / `getExpectedAuthor()` | LOL / CRE Forwarder / **LOL** (owner == expectedAuthor == workflow owner; ADR-0001) |
 | CREReceiver ×4 | `isCallAllowed(SyncTrigger, 0x340b2b0b)` | `true` |
@@ -306,7 +307,7 @@ The CRE workflow owner is the **LOL multisig (Safe)** — the same Safe that own
 and the running workflow is untouched (*lost* = low urgency, *compromised signer* = evict promptly).
 **Escalation — the whole Safe is compromised (≥ threshold):** this is the protocol-wide worst case that also
 loses every other LOL lever. **Duty: contain from the independent domain first — GovExec
-`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`** (no LOL quorum needed), then run the one-time "redeploy +
+`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`** (no LOL quorum needed), then run the one-time "redeploy +
 re-pin" under a **new** LOL Safe (`setExpectedAuthor(newSafe)` ×4 + redeploy `--unsigned`). Neither case risks
 protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, admissible syncs). Full
 procedure + consequence tables + the rejected EOA alternative:
@@ -321,7 +322,7 @@ Mirror image of §Finalize: that step recovers the **old** system's residuals on
 
 > **Def — a drain emits `Swept`; the balance is ground truth.** `SyncTrigger.sweep` (`src/SyncTrigger.sol:163`) emits `Swept(token, recipient, amount)` (`src/SyncTrigger.sol:177`), like every config setter, so a drain *is* observable in the log. Still treat the **balance delta** (`cast balance <trigger>` → 0) plus the recipient's credit as the authoritative **Evidence** — the event corroborates, the balance confirms.
 
-**Step 1 — stop the engine. Duty — L2 GovExec** SHALL deactivate triggering with the §Recover off-switch: `setDelay(type(uint48).max)` (the constructor "deactivated" sentinel, `src/SyncTrigger.sol:57`) and/or `setForwarder(0x…dead)` — no LOL quorum needed. **Gate S1** = triggering off. **Evidence:** read back `getDelay() == type(uint48).max` / `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
+**Step 1 — stop the engine. Duty — LOL multisig** SHALL deactivate triggering: `setDelay(type(uint48).max)` (the constructor "deactivated" sentinel, `src/SyncTrigger.sol:57`) and/or `setForwarder(0x…dead)` — LOL owns `SyncTrigger`. (Independent backstop: GovExec can revoke the trigger's `SYNC_ROLE` on `CustomSender`, no LOL quorum needed.) **Gate S1** = triggering off. **Evidence:** read back `getDelay() == type(uint48).max` / `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
 
 **Step 2 — stop the automation. Duty — LOL multisig** SHALL pause or delete the CRE workflow and stop funding its CRE credit. **Evidence:** `verify-cre-workflow` no longer reports `ACTIVE`. Levers: [docs/cre.md §CRE platform levers (workflow lifecycle)](docs/cre.md#cre-platform-levers-workflow-lifecycle).
 
@@ -329,7 +330,7 @@ Mirror image of §Finalize: that step recovers the **old** system's residuals on
 
 > **Def — the float drain itself has no in-flight dependency.** Each round-trip's return-leg (`feeDtoO`) fee is fronted at `sync()` time, baked into the value the trigger forwards (`src/SyncTrigger.sol:137-138`), so a drained float can **never** strand a return. Settle first only so the pool-liquidity recovery (Step 5) is clean and monitoring stays quiet — not because an earlier sweep would be unsafe.
 
-**Step 4 — drain the trigger. Duty — L2 GovExec** SHALL `sweep` to a Lido-controlled recipient — a **governance round-trip** (DAO vote → L1→L2 bridge → executor): `sweep(address(0), <recipient>, <balance>)` for native, `sweep(<token>, <recipient>, <amount>)` for any stray ERC-20 (e.g. WETH). Recipient is a call parameter — choose it in the governance action, do not assume a default. **Evidence:** `cast balance <trigger>` == 0 (and any swept ERC-20 balances == 0).
+**Step 4 — drain the trigger. Duty — LOL multisig** SHALL `sweep` to a Lido-controlled recipient — a **LOL Safe transaction**: `sweep(address(0), <recipient>, <balance>)` for native, `sweep(<token>, <recipient>, <amount>)` for any stray ERC-20 (e.g. WETH). Recipient is a call parameter — choose it in the Safe transaction, do not assume a default. **Evidence:** `cast balance <trigger>` == 0 (and any swept ERC-20 balances == 0).
 
 **Step 5 — drain the rest, reconcile.**
 - **Duty — LOL multisig** SHALL `CREReceiver.withdrawETH(<to>, <balance>)` (`src/cre/CREReceiver.sol:202`) **if non-zero** — normally ~0 (the forwarder call carries no value), but the bare `receive()` makes a stray balance possible.
@@ -340,8 +341,8 @@ Mirror image of §Finalize: that step recovers the **old** system's residuals on
 
 | Treasury | Where | Recover (file:line) | Signer | Note |
 |---|---|---|---|---|
-| SyncTrigger native float | per L2 | `sweep(address(0),…)` `src/SyncTrigger.sol:163` | L2 GovExec | emits `Swept`; corroborate by balance delta; tested `test/SyncTriggerTest.t.sol:310` |
-| SyncTrigger stray ERC-20 | per L2 | `sweep(token,…)` `src/SyncTrigger.sol:163` | L2 GovExec | emits `Swept`; tested `test/SyncTriggerTest.t.sol:317` |
+| SyncTrigger native float | per L2 | `sweep(address(0),…)` `src/SyncTrigger.sol:163` | LOL multisig | emits `Swept`; corroborate by balance delta; tested `test/SyncTriggerTest.t.sol:310` |
+| SyncTrigger stray ERC-20 | per L2 | `sweep(token,…)` `src/SyncTrigger.sol:163` | LOL multisig | emits `Swept`; tested `test/SyncTriggerTest.t.sol:317` |
 | CREReceiver ETH (~0) | per L2 | `withdrawETH` `src/cre/CREReceiver.sol:202` | LOL multisig | forwarder call carries no value |
 | CRE credit | LOL CRE account | dashboard (off-chain) | LOL multisig | no on-chain signal — [docs/cre.md §Funding and billing](docs/cre.md#funding-and-billing) |
 | New OraclePool liquidity | per L2 | OraclePool owner path | LOL multisig | user funds, not fee float |

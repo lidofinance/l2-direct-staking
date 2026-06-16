@@ -157,7 +157,7 @@ l2:
         SENDER: *l2CustomSender
         DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector
         WNATIVE: *l2Weth
-        owner: *l2GovernanceExecutor
+        owner: *l2LiquidityOwner # LOL multisig owns the sync levers; GovExec keeps the independent kill switch via CustomSender SYNC_ROLE admin (DOC §3.4)
         getDelay: *syncDelay
         getAmounts:
           result: [*syncMinAmount, *syncMaxAmount]

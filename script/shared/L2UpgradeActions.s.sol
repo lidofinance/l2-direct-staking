@@ -155,7 +155,7 @@ contract L2UpgradeActions {
             ISyncTrigger.triggerSync.selector
         );
         setSyncTriggerForwarder(address(st), address(cr));
-        transferSyncTriggerOwnership(address(st), cfg.governanceExecutor);
+        transferSyncTriggerOwnership(address(st), cfg.liquidityOwner);
         transferCREReceiverOwnership(address(cr), cfg.liquidityOwner);
         fundSyncTrigger(address(st), cfg);
 
@@ -209,7 +209,7 @@ contract L2UpgradeActions {
         // it is granted SYNC_ROLE (and, via the Stage-2 precondition, before any irreversible handover).
         _requireL2PostCondition(st.SENDER() == cfg.customSender, "syncTrigger SENDER");
         _requireL2PostCondition(st.getForwarder() == creReceiverAddr, "syncTrigger forwarder");
-        _requireL2PostCondition(Ownable(syncTrigger).owner() == cfg.governanceExecutor, "syncTrigger owner");
+        _requireL2PostCondition(Ownable(syncTrigger).owner() == cfg.liquidityOwner, "syncTrigger owner");
         // operational parameters — verified IN-broadcast (Stage 1) and re-checked as a Stage-2
         // precondition. A typo in a MigrationConstants value (e.g. a gas-limit of 100 instead of
         // 1_000_000, a wrong selector, or a mis-encoded fee) is written by configureSyncTrigger without

@@ -1,5 +1,5 @@
-> **View — fee economics reference.** Stakeholder: fee-tuning governance (the L2
-> Governance Executor that re-encodes `setFeeOtoD` / `setFeeDtoO`). Concern: *why
+> **View — fee economics reference.** Stakeholder: the fee-tuning owner (the LOL
+> multisig that re-encodes `setFeeOtoD` / `setFeeDtoO`). Concern: *why
 > the fee values are what they are* — the four quantities, byte layouts, the
 > Glamsterdam headroom bump, and each bridge's refund/failure behavior. This is the
 > **canonical** quantitative fee reference; [`DOC.md` §5.2](../DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way)
@@ -12,13 +12,13 @@
 
 - **How much.** Net cost per sync ≈ **0.005–0.007 ETH** (actual CCIP fee + Arbitrum's ~0.001 ETH bridge budget; OP/Base/Linea return legs are free). At ≤2 syncs/day/lane that's ≤ ~0.013 ETH/day/lane (~$10–20/day across all 4 chains at current prices). The headline `maxFee` of 0.125 ETH is a revert cap, *not* a cost — the unspent excess refunds automatically in the same transaction.
 - **What you pay for.** Two legs per sync: (1) **FeeOtoD** — CCIP delivery of WETH from the L2 to Ethereum plus the committed L1 `gasLimit` for staking it through Lido (you pay for the *commitment*, unused gas is never refunded); (2) **FeeDtoO** — the native-bridge return of wstETH to the L2 (only Arbitrum charges ETH; the Arbitrum excess is burned to an unreachable alias).
-- **Who pays / how to maintain.** Each lane's **SyncTrigger holds the float** and fronts every sync; nothing refills it automatically. Funding is permissionless (just send ETH to the trigger), but withdrawing excess is governance-only (`sweep()`), so size deposits as `getMaxFees().maxNativeFee` + ~30 days runway ≈ **0.5 ETH/lane**, not "fill it up".
+- **Who pays / how to maintain.** Each lane's **SyncTrigger holds the float** and fronts every sync; nothing refills it automatically. Funding is permissionless (just send ETH to the trigger), but withdrawing excess is owner-only (`sweep()`, the LOL multisig), so size deposits as `getMaxFees().maxNativeFee` + ~30 days runway ≈ **0.5 ETH/lane**, not "fill it up".
 - **How to check all is good.** Watch the [§5 monitoring alerts](monitoring.md#5-capacity--headroom--medium) — they fire at **80% utilization** of `gasLimit` and `maxFee`, before anything breaks. Check `cast balance <trigger>` ≥ `getMaxFees().maxNativeFee`, and re-measure gas on demand with `just measure-fee-gas`.
 - **Caveats.**
   - Balance below `maxFee + feeDtoO` → `triggerSync` reverts with **no named error**; check the trigger balance first when diagnosing a stalled sync. Liveness only — self-heals once topped up.
-  - `gasLimit` too low → L1 message OOGs; funds park at the L1 receiver until a permissionless `retryFailedMessage` (parked, not lost). Too high → linear overpayment every sync, and above the lane cap (7M; **3M on Linea**) syncs brick until a governance fix.
+  - `gasLimit` too low → L1 message OOGs; funds park at the L1 receiver until a permissionless `retryFailedMessage` (parked, not lost). Too high → linear overpayment every sync, and above the lane cap (7M; **3M on Linea**) syncs brick until an owner fix (LOL `setFeeOtoD`).
   - Arbitrum FeeDtoO overpayment is a **1:1 burn**; OP/Base `l2Gas` slack burns L1 gas ~1:1 and eats `gasLimit` headroom.
-  - Fee changes are **governance motions** (days of latency) — act from the 80% alert, not the breach, and update the constants in `script/<net>/<Net>MigrationConstants.sol` in lockstep.
+  - Fee changes are now **LOL multisig transactions** (Safe coordination, not a days-long governance round-trip) — act from the 80% alert, not the breach, and update the constants in `script/<net>/<Net>MigrationConstants.sol` in lockstep.
 
 The sync operation moves accumulated WETH from an L2 OraclePool to Ethereum (via CCIP), stakes it through Lido, and bridges the resulting wstETH back to the L2 pool. Two encoded fee blobs govern the costs of each leg:
 
@@ -114,7 +114,7 @@ SyncTrigger.triggerSync()
 | Mechanism | Manual? | What it does |
 |---|---|---|
 | `TokenHelper.refundExcessNative` | **No** — internal, automatic, intra-tx | Returns `maxFee − actualFee` to the SyncTrigger after each send |
-| `SyncTrigger.sweep()` | **Yes** — owner-only (L2 GovExec), `src/SyncTrigger.sol:163` | Withdraws the trigger's accumulated float |
+| `SyncTrigger.sweep()` | **Yes** — owner-only (LOL multisig), `src/SyncTrigger.sol:163` | Withdraws the trigger's accumulated float |
 | `LidoCustomReceiver.retryFailedMessage` | **Yes** — re-drives a stuck L1 message | Recovers an OOG'd `processMessage` (not a fee refund) |
 
 This refund covers only the CCIP-fee excess (`FeeOtoD.maxFee`). The *other* two "excesses" are spent or burned, not refunded — see [Fee denomination](#fee-denomination-the-four-quantities-and-when-money-moves) and the Arbitrum [burned-refund](#feedtoo-arbitrum-overpayment-is-refunded-to-an-address-nobody-controls) case.
@@ -214,7 +214,7 @@ Order-of-magnitude on the `gasLimit` bump: at the [measured fee slopes](#consequ
 
 - Constants live in `script/<net>/<Net>MigrationConstants.sol` (`L2_SYNC_DESTINATION_MAX_FEE`, `L2_SYNC_DESTINATION_GAS_LIMIT`).
 - New SyncTrigger deploys pick up the values via `L2UpgradeActions.configureSyncTrigger` → `setFeeOtoD`.
-- For SyncTriggers already deployed before the bump, the lever is GovExec-only `setFeeOtoD` (per [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state)); the source-of-truth bytes are the constants in `script/<net>/<Net>MigrationConstants.sol`, which `verify-stage1` keccak-compares against `SyncTrigger`'s stored blobs (`script/shared/L2UpgradeActions.s.sol`), so any future bump must update those constants in lockstep with the on-chain change.
+- For SyncTriggers already deployed before the bump, the lever is owner-only `setFeeOtoD` (the LOL multisig; per [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state)); the source-of-truth bytes are the constants in `script/<net>/<Net>MigrationConstants.sol`, which `verify-stage1` keccak-compares against `SyncTrigger`'s stored blobs (`script/shared/L2UpgradeActions.s.sol`), so any future bump must update those constants in lockstep with the on-chain change.
 - The byte-for-byte fee encodings are derived from those constants by `FeeCodec` in `lib/chainlink-csr` (`encodeCCIP` for FeeOtoD, the per-network `encode*L1toL2` for FeeDtoO) and pinned by the `verify-stage1` keccak check above. state-mate also re-checks them post-migration: the shared wiring `config/state/l2.yaml` asserts `getFeeOtoD` / `getFeeDtoO` / `getMaxFees` against the per-lane `config/state/l2-<net>.inputs.yaml` anchors, which `verify-constants-sync` cross-checks against `FeeCodec(constants)` (see [DOC.md §5.2](../DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way)). Refund mechanics, failure modes, and per-network differences are in the [Failure modes and recovery](#failure-modes-and-recovery) and [L1→L2 vs L2→L1](#l1l2-vs-l2l1--why-the-two-legs-differ) sections above.
 
 ## Measured `ccipReceive` gas (independent `gasLimit` carrier)
@@ -256,7 +256,7 @@ forked mainnet on 2026-06-02.
 
 | Lever | Cost of slack | Cliff above a threshold |
 |---|---|---|
-| `FeeOtoD.gasLimit` | linear fee overpayment on **every** sync (unused gas is never refunded) | > lane `maxPerMsgGasLimit` ⇒ `getFee` **reverts** ⇒ sync bricked until GovExec fixes it |
+| `FeeOtoD.gasLimit` | linear fee overpayment on **every** sync (unused gas is never refunded) | > lane `maxPerMsgGasLimit` ⇒ `getFee` **reverts** ⇒ sync bricked until the owner (LOL) fixes it |
 | `FeeOtoD.maxFee` | none per sync (excess refunded) — but raises the SyncTrigger float requirement and the worst-case per-sync spend it authorizes | — |
 | `FeeDtoO.l2Gas` (OP/Base) | **burns L1 gas ~1:1 inside `ccipReceive`** — eats `FeeOtoD.gasLimit` headroom | enough slack alone pushes the lane over the OOG cliff (demonstrated below) |
 | `FeeDtoO` (Arbitrum) | ~1:1 **unrecoverable** — "refunds" land at an aliased address nobody controls (proven on-chain below) | — |
@@ -289,8 +289,8 @@ threshold, not from slack.
 measured empirically: `getFee` at cap+1 reverts with `MessageGasLimitTooHigh` (`0x4c4fc93a` =
 `cast sig "MessageGasLimitTooHigh()"`; [probes below](#evidence--reproduction)). That revert fires
 inside `CustomSender._ccipSendTo` (`CCIPSenderUpgradeable.sol:81`) → **every `triggerSync` reverts → the
-lane's sync halts entirely.** Un-bricking requires a GovExec `setFeeOtoD` round-trip (days of cross-chain
-governance latency, [DOC.md §3](../DOC.md#3-access-control--ownership--the-final-state)), during which wstETH
+lane's sync halts entirely.** Un-bricking requires an owner `setFeeOtoD` call (now a LOL multisig
+transaction, not a cross-chain governance round-trip, [DOC.md §3](../DOC.md#3-access-control--ownership--the-final-state)), during which wstETH
 liquidity on that L2 erodes. Note the chain-blind footgun: "set all four lanes to 5M for safety" *passes*
 on Optimism/Arbitrum/Base and bricks **only Linea** (cap 3M vs 7M) — per-lane caps differ, so any uniform
 bump must be checked against each lane's FeeQuoter.
@@ -328,7 +328,7 @@ automatically. The mechanics:
   `src/SyncTrigger.sol:41`), so the float depletes by the *actual* cost, not the fronted maximum.
   At ≤2 syncs/day that is ≤ ~0.013 ETH/day/lane.
 - **Funding is permissionless** (anyone can send ETH to the trigger); **recovering excess is not**
-  (`sweep()` is owner-only = L2 GovExec, `src/SyncTrigger.sol:163` — a governance round-trip). So
+  (`sweep()` is owner-only = LOL multisig, `src/SyncTrigger.sol:163` — a Safe transaction). So
   size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
   "fill it up", and refill from the [§5 alert](monitoring.md#5-capacity--headroom--medium).
 - **Initial funding is part of `deploy-stage1` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
@@ -437,9 +437,9 @@ in the table after it describes the *reactive* case where the limit was already 
 
 | Limit breached | What breaks (symptom) | Funds at risk | Interim recovery | Permanent fix |
 |---|---|---|---|---|
-| `FeeOtoD.gasLimit` < actual `ccipReceive` gas | `processMessage` OOGs on L1; defensive catch stores `failedHashes[messageId]` ([`CCIPDefensiveReceiverUpgradeable.sol#L200`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPDefensiveReceiverUpgradeable.sol#L200), pinned at the vendored submodule commit); synced WETH (+ Arbitrum `feeAmountDtoO`) parks at the L1 receiver; every subsequent sync joins it | Parked, not lost | **Permissionless** `retryFailedMessage` (`:131`, no role gate) — the retry runs on the caller's own tx gas, so it succeeds with a bigger gas limit; if the *whole* `ccipReceive` reverted at CCIP level instead, use [CCIP manual execution](https://docs.chain.link/ccip/concepts/manual-execution) with a gas-limit override | Raise `gasLimit` via GovExec `setFeeOtoD` (procedure below) |
+| `FeeOtoD.gasLimit` < actual `ccipReceive` gas | `processMessage` OOGs on L1; defensive catch stores `failedHashes[messageId]` ([`CCIPDefensiveReceiverUpgradeable.sol#L200`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPDefensiveReceiverUpgradeable.sol#L200), pinned at the vendored submodule commit); synced WETH (+ Arbitrum `feeAmountDtoO`) parks at the L1 receiver; every subsequent sync joins it | Parked, not lost | **Permissionless** `retryFailedMessage` (`:131`, no role gate) — the retry runs on the caller's own tx gas, so it succeeds with a bigger gas limit; if the *whole* `ccipReceive` reverted at CCIP level instead, use [CCIP manual execution](https://docs.chain.link/ccip/concepts/manual-execution) with a gas-limit override | Raise `gasLimit` via LOL `setFeeOtoD` (procedure below) |
 | `FeeOtoD.maxFee` < actual CCIP fee | `triggerSync` reverts `CCIPSenderExceedsMaxFee` (`CCIPSenderUpgradeable.sol:82`); syncs stall, pool WETH accumulates on L2 | No — pure liveness; **self-heals if the fee spike is transient** (CRE re-attempts each tick) | Wait out a transient spike; nothing is stuck | If the fee regime shifted: raise `maxFee` via `setFeeOtoD` **and top up the SyncTrigger float** to ≥ new `maxFee + feeAmountDtoO` (it fronts that much per sync) |
-| SyncTrigger ETH balance < `maxFee + feeAmountDtoO` | `triggerSync` reverts at the value transfer (`src/SyncTrigger.sol:142`) with **no named error** — plain EVM balance failure; syncs stall, pool WETH accumulates. Symptom-identical to the row above, so **check `cast balance <trigger>` against `getMaxFees()` first** when diagnosing a stall | No — pure liveness | **Anyone** sends ETH to the trigger (bare `receive()`, permissionless — no governance needed); self-heals on the next CRE tick | Top up to ≥ `getMaxFees().maxNativeFee` + runway ([Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)); keep deposits modest — recovering excess is `sweep()` = GovExec-only |
+| SyncTrigger ETH balance < `maxFee + feeAmountDtoO` | `triggerSync` reverts at the value transfer (`src/SyncTrigger.sol:142`) with **no named error** — plain EVM balance failure; syncs stall, pool WETH accumulates. Symptom-identical to the row above, so **check `cast balance <trigger>` against `getMaxFees()` first** when diagnosing a stall | No — pure liveness | **Anyone** sends ETH to the trigger (bare `receive()`, permissionless — no governance needed); self-heals on the next CRE tick | Top up to ≥ `getMaxFees().maxNativeFee` + runway ([Funding the float](#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)); keep deposits modest — recovering excess is `sweep()` = owner-only (LOL) |
 | Arbitrum `maxSubmissionCost` < actual submission fee | L1 `outboundTransfer` reverts `InsufficientSubmissionCost` (`AbsInbox.sol:298-301`) → defensive catch → `failedHashes`, as row 1. Headroom today: breach needs L1 basefee ≳200 gwei (`0.001 ETH ÷ (1400 + 6N)` at N ≈ 350–600 bytes of retryable calldata) | Parked, not lost | `retryFailedMessage` once basefee dips — the fee bytes are frozen inside the failed message, so retry *cannot* carry a bigger budget; it only succeeds when the fee falls back under it | Raise `maxSubmissionCost` via `setFeeDtoO` for future syncs |
 | Arbitrum `gasPriceBid` < L2 basefee | Ticket created but auto-redeem fails; wstETH not minted on L2 yet | **Yes if ignored**: manual-redeem window is ~7 days, then the ticket expires and the bridged wstETH is stranded ([Failure modes](#failure-modes-and-recovery)) | Manual redeem (permissionless) via the [retryable dashboard](https://retryable-dashboard.arbitrum.io/) within 7 days — redeemer pays current L2 gas | Raise `gasPriceBid` via `setFeeDtoO` |
 | OP/Base `l2Gas` < actual `finalizeDeposit` gas | L2 relay's target call fails; the L2 messenger records it in `failedMessages` ([OP messengers spec](https://specs.optimism.io/protocol/messengers.html)) | Parked, not lost (Bedrock) | **Permissionless replay**: call `relayMessage` on the L2 messenger with the same params and more gas (no ETH value rides the wstETH deposit, so replay is a plain tx) | Raise `l2Gas` via `setFeeDtoO` — re-measure the `FeeOtoD.gasLimit` coupling afterwards (the burn grows ~1:1, [see above](#feedtool2gas-optimismbase-burns-l1-gas-inside-ccipreceive--coupled-to-feeotodgaslimit)) |
@@ -452,9 +452,9 @@ in the table after it describes the *reactive* case where the limit was already 
    the [Finding](#measured-ccipreceive-gas-independent-gaslimit-carrier)'s formula); `Router.getFee`
    quotes for `maxFee` (size ≈ 10–25× typical, keeping the spike multiplier).
 2. **Check the ceiling**: new `gasLimit` < the lane's `maxPerMsgGasLimit` (7M / 3M — per lane, not global).
-3. **Re-encode** with `FeeCodec` (`encodeCCIP` / per-network `encode*L1toL2`) and ship via GovExec
+3. **Re-encode** with `FeeCodec` (`encodeCCIP` / per-network `encode*L1toL2`) and ship via LOL
    `setFeeOtoD` / `setFeeDtoO` — owner-only levers ([DOC.md §3](../DOC.md#3-access-control--ownership--the-final-state)),
-   so this is a governance motion, not an ops action: **budget days of latency** and front-run it from the
+   so this is a LOL multisig transaction, not a full governance round-trip: **coordinate signers** and front-run it from the
    80% alert, not from the breach.
 4. **Lockstep the oracle**: update the fee constants in `script/<net>/<Net>MigrationConstants.sol` — the
    bytes `verify-stage1` keccak-checks against the on-chain blobs (per [Operational handoff](#operational-handoff)).
@@ -495,7 +495,7 @@ just measure-fee-gas   # Base carrier: 664,234 → 1,172,150 measured ccipReceiv
 
 ## Sync thresholds & cadence — why these values
 
-`SyncTrigger` gates *when* and *how much* each sync moves (identical on all four lanes). Changing the amounts/delay is a GovExec action (`setAmounts` / `setDelay`); the cron lives in the CRE workflow config.
+`SyncTrigger` gates *when* and *how much* each sync moves (identical on all four lanes). Changing the amounts/delay is an owner action (`setAmounts` / `setDelay`, the LOL multisig); the cron lives in the CRE workflow config.
 
 | Param | Value | Why this value / turn-the-dial |
 | --- | --- | --- |

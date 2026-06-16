@@ -5,8 +5,8 @@
 #   DEPLOYER_PRIVATE_KEY              = anvil acct #0  (0xf39Fd6e5…2266) — bootstrap CSR deployer
 #   INITIAL_OWNER_PRIVATE_KEY         = anvil acct #0  (0xf39Fd6e5…2266) — Stage 2 broadcaster
 #   L2_LIDO_DEPLOYER_PRIVATE_KEY      = anvil acct #2  (0x3C44CdDd…93BC) — Stage 1 deployer
-#   L2_GOVERNANCE_EXECUTOR            = anvil acct #1  (0x70997970…79C8) — final L2 admin / SyncTrigger owner
-#   L2_LIQUIDITY_OWNER                = anvil acct #1  (0x70997970…79C8) — pool / CREReceiver owner
+#   L2_GOVERNANCE_EXECUTOR            = anvil acct #1  (0x70997970…79C8) — final L2 admin (CustomSender admin / ProxyAdmin owner / SYNC_ROLE admin)
+#   L2_LIQUIDITY_OWNER                = anvil acct #1  (0x70997970…79C8) — pool / CREReceiver / SyncTrigger owner
 #
 # For a real Sepolia deploy the addresses change per run. The bootstrap SyncAutomation is NOT
 # itself checked by state-mate: post-migration `getAmountToSync()` reverts (uint48 overflow when
@@ -90,7 +90,7 @@ l2:
         SENDER: *l2CustomSender
         DEST_CHAIN_SELECTOR: *ethSepoliaCcipChainSelector
         WNATIVE: *l2Weth
-        owner: *l2GovernanceExecutor
+        owner: *l2LiquidityOwner # LOL multisig owns the sync levers; GovExec keeps the independent kill switch via CustomSender SYNC_ROLE admin (DOC §3.4)
         getDelay: *syncDelay
         getAmounts:
           result: [*syncMinAmount, *syncMaxAmount]

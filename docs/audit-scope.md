@@ -208,26 +208,28 @@ principal *during migration*), and the **gated capability** (the functions that 
 call). The deploy/handover steps that move a holder are the migration itself — and the
 highest-risk operational events in this repo (per the `DOC.md §6.4` severity table).
 
-The two in-scope contracts end up under **two different** Lido principals — do not conflate
-them:
+Both in-scope contracts end up **owned by the LOL multisig**; the high-authority levers around
+them (`SYNC_ROLE` administration, the `CustomSender` admin, the L2 `ProxyAdmin`) stay with the
+**Lido L2 governance executor** — two trust domains, do not conflate them:
 
 | Role (authority slot) | Holder: deploy → post-migration | Gated capability |
 | --- | --- | --- |
-| **`SyncTrigger` owner** | Lido Deployer EOA → **Lido L2 governance executor** (per-L2 bridge executor, e.g. `OptimismBridgeExecutor`; runs proposals bridged from the L1 Lido DAO) | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD`, `setFeeDtoO`, `sweep` — `sweep` moves any ERC-20 *or* native balance (incl. the fee float) to an arbitrary recipient |
+| **`SyncTrigger` owner** | Lido Deployer EOA → **LOL multisig** (Safe) | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD`, `setFeeDtoO`, `sweep` — `sweep` moves any ERC-20 *or* native balance (incl. the fee float) to an arbitrary recipient |
 | **`CREReceiver` owner** | Lido Deployer EOA → **LOL multisig** (Safe) | `setForwarder`, `setExpectedAuthor`, `setAllowedCall`, `withdrawETH` — `withdrawETH` moves native balance (normally ~0) to an arbitrary recipient |
 | **`CREReceiver` forwarder** (`_forwarder`) | **Chainlink CRE Keystone forwarder** (per-L2, Chainlink-operated) | sole caller of `onReport`; **pinned per network** in code (`_expectedCREForwarder()` → `<Lane>MigrationConstants.CRE_FORWARDER`, not env-supplied — see §B), but with **no on-chain version/ABI assertion** |
 | **`SyncTrigger` forwarder** (`_forwarder`) | the deployed **`CREReceiver`** instance | sole caller of `triggerSync` — note "forwarder" denotes a *different* contract on each in-scope contract |
 | **`expectedAuthor` pin** | **LOL multisig** (Safe) = registered CRE `WorkflowRegistry` owner = `CREReceiver` owner | not a method — the report-author identity that `onReport` checks `==` against; re-pointable only via `setExpectedAuthor` (owner-only), and bound to an *address*, not a *workflow* name/id |
-| **`SYNC_ROLE` on `CustomSender`** (upstream) | old Chainlink Automation → the new **`SyncTrigger`** | lets the `triggerSync → sync` call actually pull WETH from the pool; granted/revoked in Stage 2 |
+| **`SYNC_ROLE` on `CustomSender`** (upstream) | old Chainlink Automation → the new **`SyncTrigger`** | lets the `triggerSync → sync` call actually pull WETH from the pool; granted/revoked in Stage 2 — **admin = the Lido L2 governance executor** (`CustomSender` `DEFAULT_ADMIN_ROLE`), the independent sync kill switch |
 
 **End-state invariant** (asserted by tests, monitored in prod), per L2:
 `WorkflowRegistry.owner == CREReceiver.getExpectedAuthor() == CREReceiver.owner() == LOL multisig`
 (see [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)).
 
-**Two hats, cleanly split.** The **LOL multisig** holds the *liquidity / workflow* authority —
-`CREReceiver`, the L2 `OraclePool` (upstream), the CRE workflow, and the `expectedAuthor` pin.
-The **Lido L2 governance executor** holds the *protocol-governance* authority — `SyncTrigger`,
-the `CustomSender` `DEFAULT_ADMIN_ROLE`, and the L2 `ProxyAdmin`.
+**Two trust domains.** The **LOL multisig** holds the *operational* authority — it **owns both
+in-scope contracts** (`SyncTrigger` and `CREReceiver`), plus the L2 `OraclePool` (upstream), the
+CRE workflow, and the `expectedAuthor` pin. The **Lido L2 governance executor** holds the
+*protocol-governance* authority — the `CustomSender` `DEFAULT_ADMIN_ROLE` (which grants/revokes
+`SyncTrigger`'s `SYNC_ROLE`, the independent sync kill switch) and the L2 `ProxyAdmin`.
 
 These holders are put in place by a **two-stage, two-signer migration**, run once per L2: the Lido
 Deployer EOA deploys the new contracts and transfers their ownership to the principals above
@@ -248,7 +250,7 @@ four mainnets unless `ALLOW_UNSAFE_COMBINED_RUN=1`.
 
 1. **Stage 1 — `runDeploy()`** (Lido Deployer EOA). Deploy the new `OraclePool` / `SyncTrigger` /
    `CREReceiver`, configure, wire, fund the float, and **transfer ownership** to the post-migration
-   holders (`SyncTrigger → gov executor`, `CREReceiver → LOL multisig`). Touches **only the new
+   holders (`SyncTrigger → LOL multisig`, `CREReceiver → LOL multisig`). Touches **only the new
    contracts** — fully reversible by discarding them. The broadcast self-reverts
    (`_assertSyncInfrastructure`) if any wire **or operational parameter** is wrong — the in-broadcast
    assert now also reads back `DEST_CHAIN_SELECTOR`, `WNATIVE`, delay, amounts, `feeDtoO` and
@@ -286,8 +288,8 @@ script flag.
 ### Trust surface
 
 - Only the relevant **owner** can call the setters, `SyncTrigger.sweep()`, and
-  `CREReceiver.withdrawETH()` — the Lido L2 governance executor for `SyncTrigger`, the LOL
-  multisig for `CREReceiver` (see [Actors & privileges](#actors--privileges)). There is **no
+  `CREReceiver.withdrawETH()` — the **LOL multisig** owns both (`SyncTrigger`'s `SYNC_ROLE` is
+  separately grant/revocable by the Lido L2 governance executor; see [Actors & privileges](#actors--privileges)). There is **no
   pause, no upgrade, and no recovery beyond owner-only setters/sweeps**.
 - The **CRE Keystone forwarder** is an *assumed-honest trust boundary* — relied on to route
   only DON-validated reports. It is the sole caller of `onReport` (`onlyForwarder`), and is
@@ -423,13 +425,13 @@ Not every theme carries all three sub-lists.
     the per-sync fee. Depletion is monotonic (~`actualFee`/sync) with **no on-chain refill** — a
     liveness assumption, not a guarded invariant. Below `getMaxFees().maxNativeFee` the next
     `triggerSync` reverts at the value transfer **with no named error**. Funding is permissionless;
-    recovery (`sweep`) is GovExec-only.
+    recovery (`sweep`) is owner-only (LOL multisig).
   - **F-2** (*source + config*): deploy-time float floor — Stage 1 reverts (`L2UpgradeFloatBelowFloor`)
     if `L2_SYNC_TRIGGER_INITIAL_FLOAT < maxFee + feeDtoO` — the seeded float must cover one
     worst-case sync.
   - **C-1** (*deployed instance + config*): per-lane CCIP `gasLimit` (`FeeOtoD`) is ≤ that lane's
     FeeQuoter `maxPerMsgGasLimit` (7M on OP/Arb/Base, **3M on Linea**); above it, `getFee` reverts
-    `MessageGasLimitTooHigh` inside `sync` → the lane halts until a GovExec round-trip. A uniform
+    `MessageGasLimitTooHigh` inside `sync` → the lane halts until an owner `setFeeOtoD` (now a LOL multisig transaction). A uniform
     "bump all lanes for safety" passes everywhere **except Linea** — a chain-blind footgun.
     (`docs/fees.md §Consequences > FeeOtoD.gasLimit`.)
   - **F-3** (*source*): `setFeeOtoD` enforces, at set-time, that the encoded `gasLimit` is ≥
@@ -463,13 +465,13 @@ Not every theme carries all three sub-lists.
 - **Invariants**
   - **W-1** (*deployed instance, per lane*): end-state wiring + ownership — `SyncTrigger._forwarder
     == CREReceiver` and the allow-list holds `(SyncTrigger, triggerSync.selector)`; and
-    `WorkflowRegistry.owner == CREReceiver.getExpectedAuthor() == CREReceiver.owner() == LOL
-    multisig`, with `SyncTrigger.owner == gov executor`. Owner-set — confirmable only on a deployed
-    instance.
+    `WorkflowRegistry.owner == CREReceiver.getExpectedAuthor() == CREReceiver.owner() ==
+    SyncTrigger.owner == LOL multisig` (with the `CustomSender` `SYNC_ROLE` admin == gov executor).
+    Owner-set — confirmable only on a deployed instance.
   - **G-1** (*source + config*): gov-executor guard — both stages revert
     (`L2UpgradeWrongGovernanceExecutor`) unless the env-supplied executor equals the per-network
     `LIDO_L2_GOVERNANCE_EXECUTOR` constant (Sepolia opts out) — a wrong-but-nonzero executor cannot
-    be baked into `SyncTrigger` ownership or the admin / `ProxyAdmin` handover.
+    be baked into the `CustomSender` admin / `ProxyAdmin` handover (Stage 2; `SyncTrigger` now goes to the LOL multisig).
 - **Residual risks** — the highest-risk, off-chain track.
   - **External Initial Owner & non-atomic, no-forcing-function cutover.** Stage 2 is run by the
     **external, non-Lido** `INITIAL_OWNER` (upstream chainlink-csr admin) as **≥5 independent
@@ -512,15 +514,16 @@ Not every theme carries all three sub-lists.
 #### H. Containment & recovery
 
 - **Audit focus**
-  - Owner self-harm via `withdrawETH` / `sweep`. `withdrawETH` now rejects a zero recipient
-    (`InvalidRecipientAddress` — a call to `address(0)` succeeds, silently burning the ETH);
-    `SyncTrigger.sweep` still guards **neither** a zero recipient nor a zero amount, and neither
-    function guards a zero `amount`.
+  - Owner self-harm via `withdrawETH` / `sweep` is bounded by a zero-recipient guard on **both**
+    paths (`CREReceiver.withdrawETH` → `InvalidRecipientAddress`; `SyncTrigger.sweep` →
+    `SyncTriggerInvalidRecipient`): a low-level call to the code-less `address(0)` succeeds, so
+    without the guard a native transfer would silently burn the balance. A zero `amount` moves no
+    funds on either path (`sweep` short-circuits to a no-op).
 - **Residual risks**
   - **No pause/upgrade/recovery beyond owner setters + kill-switches.** A whole-LOL-Safe compromise
     loses every LOL-held lever at once; recovery from a bad `expectedAuthor`/forwarder binding is a
     one-time "redeploy + re-pin" across all 4 L2s plus a GovExec containment backstop
-    (`SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`) from the independent domain. The
+    (`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) from the independent domain. The
     `WorkflowRegistry` exposes **no** per-workflow ownership transfer. (`ADR-0001`; `DOC.md §3.2, §3.4`.)
 
 ## Glossary
@@ -539,7 +542,7 @@ Not every theme carries all three sub-lists.
 | **OtoD / DtoO** | Origin-to-Destination / Destination-to-Origin CCIP fee legs (`feeOtoD` / `feeDtoO`). |
 | **`payInLink`** | Flag in a fee buffer: pay the CCIP fee in LINK instead of native. |
 | **nullary** | A call with no arguments — calldata is exactly the 4-byte selector (`data.length == 4`). |
-| **LOL** | Liquidity Observation Lab — the Lido liquidity multisig (Safe). Post-migration it owns `CREReceiver` and the `OraclePool`, and is the CRE workflow owner pinned as `expectedAuthor`. (Distinct from the Lido L2 **governance executor**, which owns `SyncTrigger`.) |
+| **LOL** | Liquidity Observation Lab — the Lido liquidity multisig (Safe). Post-migration it owns `SyncTrigger`, `CREReceiver`, and the `OraclePool`, and is the CRE workflow owner pinned as `expectedAuthor`. (Distinct from the Lido L2 **governance executor**, which administers `SyncTrigger`'s `SYNC_ROLE` and owns the `CustomSender` admin + `ProxyAdmin`.) |
 | **WETH / wstETH** | Wrapped ether (the asset users supply on L2) / wrapped staked ETH (minted on L1, bridged back). |
 | **nSLOC** | Normalized source lines of code (comments/blank lines excluded). |
 | **state-mate** | Lido's YAML-oracle deploy-verification tool; out of scope. |

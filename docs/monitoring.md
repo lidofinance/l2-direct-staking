@@ -26,7 +26,8 @@ Any deviation = key compromise or unintended governance action.
 | L2 CustomSender (×4) | `hasRole(DEFAULT_ADMIN_ROLE, L2GovExecutor)` / `getRoleMemberCount` | `true` / `1` |
 | L2 CustomSender (×4) | `hasRole(SYNC_ROLE, newSyncTrigger)` / `getRoleMemberCount(SYNC_ROLE)` | `true` / `1` |
 | L2 CustomSender (×4) | `getOraclePool()` | new OraclePool |
-| L2 ProxyAdmin (×4) / SyncTrigger (×4) | `owner()` | L2 Gov Executor |
+| L2 ProxyAdmin (×4) | `owner()` | L2 Gov Executor |
+| SyncTrigger (×4) | `owner()` | LOL multisig |
 | SyncTrigger (×4) | `getForwarder()` | CREReceiver |
 | CREReceiver (×4) | `owner()` / `getForwarder()` / `getExpectedAuthor()` | LOL multisig / CRE Forwarder / **LOL multisig** (owner == expectedAuthor == CRE workflow owner; ADR-0001) |
 | CREReceiver (×4) | `isCallAllowed(SyncTrigger, 0x340b2b0b)` | `true` |

@@ -273,7 +273,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
             "sync trigger destination selector"
         );
         assertEq(ISyncTrigger(syncTrigger).WNATIVE(), L2_WETH, "sync trigger WNATIVE");
-        assertEq(Ownable(syncTrigger).owner(), LIDO_L2_GOVERNANCE_EXECUTOR, "sync trigger owner");
+        assertEq(Ownable(syncTrigger).owner(), lidoL2LiquidityOwner, "sync trigger owner");
 
         (uint128 minSyncAmount, uint128 maxSyncAmount) = ISyncTrigger(syncTrigger).getAmounts();
         assertEq(minSyncAmount, L2_SYNC_MIN_AMOUNT, "sync trigger min sync amount");

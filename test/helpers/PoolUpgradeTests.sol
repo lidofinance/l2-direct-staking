@@ -414,7 +414,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
 
         address forwarder = makeAddr("chainlinkForwarder");
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(forwarder);
         assertEq(syncTrigger.getForwarder(), forwarder, "forwarder should be configured");
 
@@ -461,13 +461,13 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         address forwarder = makeAddr("cycleForwarder");
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(forwarder);
 
         // Use a short delay to avoid CCIP StaleTokenPrice on double-warp;
         // delay enforcement is already tested by other tests.
         uint48 shortDelay = 60;
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setDelay(shortDelay);
 
         (uint256 maxNativeFee,) = syncTrigger.getMaxFees();
@@ -535,7 +535,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
 
         address forwarder = makeAddr("feeTestForwarder");
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(forwarder);
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
@@ -548,7 +548,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         // when it tries to forward the native CCIP fee from its own balance.
         uint256 floatBalance = address(syncTrigger).balance;
         if (floatBalance > 0) {
-            vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+            vm.prank(lidoL2LiquidityOwner);
             syncTrigger.sweep(address(0), makeAddr("floatSink"), floatBalance);
         }
         assertEq(address(syncTrigger).balance, 0, "sync trigger should have no ETH");
