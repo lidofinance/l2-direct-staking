@@ -140,7 +140,7 @@ already-EOA-owned workflow can only be moved to a Safe by running the "redeploy 
 | R1 | Lido ops provision a *new* owner (for EOA→Safe: the LOL Safe via `--unsigned`); `cre workflow deploy` a fresh workflow → new `metadata.workflowOwner`; capture `CRE_WORKFLOW_ID` | — |
 | R2 | *(gate before R3)* `verify-cre-workflow` → status `ACTIVE`, owner = new author | `VerifyCREWorkflow` 3-assert read. Do **not** re-pin to a not-yet-live author |
 | R3 | LOL multisig `setExpectedAuthor(newOwner)` on **all 4** L2 `CREReceiver`s | Monitoring §1: `getExpectedAuthor` = new on all 4 + `ExpectedAuthorUpdated` ×4 |
-| R4 | Lido ops re-baseline `.env`, the pinned-author constant, and every `state-mate/<net>.yaml` in lock-step | state-mate §1/§4 green against the new author |
+| R4 | Lido ops re-baseline `.env`, the pinned-author constant, and the `config/state/l2-<net>.inputs.yaml` siblings in lock-step | state-mate §1/§4 green against the new author |
 
 R3 needs **only the LOL multisig** — not a DAO / Aragon / GovExec motion. That is the payoff of the
 `expectedAuthor` indirection: recovery never touches value-path governance. Adopting the Safe owner from the

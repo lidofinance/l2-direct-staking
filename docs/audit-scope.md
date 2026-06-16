@@ -58,6 +58,64 @@ liveness](#d-fee-configuration--liveness)).
 | `script/**`                                        | L1/L2 migration & deploy Foundry scripts — separate operational track; they *configure* the in-scope contracts (role wiring, irreversible admin handover). Relevant as context — summarised under [Migration & operations plan](#migration--operations-plan).                              |
 | `test/**`, mocks                                   | Unit + fork suites — out of scope; see [Build & verify](#build--verify).                                                                                                                                                                                                                  |
 
+### Third-party Chainlink dependencies — source, audit status & deployed addresses
+
+All Chainlink (and Chainlink-derived) code below is **out of scope** (relied-on upstream — see
+[Supporting references](#supporting-references)); this records its provenance, audit status, and
+live addresses, since they underpin the scope rationale in §G. The takeaway: the only set that is in
+the production path *and* unaudited *and* **not** official Chainlink is **chainlink-csr** (authored
+by an individual, "Aphyla", not `smartcontractkit`). CCIP transport is official Chainlink; the
+CRE/Keystone forwarder is Chainlink-operated infra. **None ship a publicly linkable audit report.**
+Source links are pinned to the vendored submodule commits.
+
+**Source & audit**
+
+| Contract (deployed type → source)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Origin                                                                          | Audit             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------- |
+| [`CustomSenderReferral`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/senders/CustomSenderReferral.sol) — L2 sender, extends [`CustomSender`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/senders/CustomSender.sol)                                                                                                                                                                                                                                                                                                      | `Aphyla/chainlink-csr` @`62108f7` — community repo, **not** official Chainlink  | None              |
+| [`LidoCustomReceiver`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/receivers/LidoCustomReceiver.sol) — L1 receiver, extends [`CustomReceiver`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/receivers/CustomReceiver.sol)                                                                                                                                                                                                                                                                                                | ″                                                                               | None              |
+| [`PausableImmutableOraclePool`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/utils/PausableImmutableOraclePool.sol) — L2 pool, extends [`OraclePool`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/utils/OraclePool.sol)                                                                                                                                                                                                                                                                                                  | ″                                                                               | None              |
+| libraries [`FeeCodec`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/libraries/FeeCodec.sol), [`TokenHelper`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/libraries/TokenHelper.sol)                                                                                                                                                                                                                                                                                                                                      | ″                                                                               | None              |
+| CCIP bases (inherited) [`CCIPSenderUpgradeable`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPSenderUpgradeable.sol), [`CCIPTrustedSenderUpgradeable`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPTrustedSenderUpgradeable.sol), [`CCIPDefensiveReceiverUpgradeable`](https://github.com/Aphyla/chainlink-csr/blob/62108f7b6cc664e36dbc8100c4b48974d59f572e/contracts/ccip/CCIPDefensiveReceiverUpgradeable.sol)                                                                                      | ″                                                                               | None              |
+| CCIP transport [`Router`](https://github.com/smartcontractkit/ccip/blob/eb419a097bd11846ff2d82d25c447eee1f911b38/contracts/src/v0.8/ccip/Router.sol) (+ [`FeeQuoter`](https://github.com/smartcontractkit/ccip/blob/eb419a097bd11846ff2d82d25c447eee1f911b38/contracts/src/v0.8/ccip/FeeQuoter.sol), [`EVM2EVMOnRamp`](https://github.com/smartcontractkit/ccip/blob/eb419a097bd11846ff2d82d25c447eee1f911b38/contracts/src/v0.8/ccip/onRamp/EVM2EVMOnRamp.sol), [`EVM2EVMOffRamp`](https://github.com/smartcontractkit/ccip/blob/eb419a097bd11846ff2d82d25c447eee1f911b38/contracts/src/v0.8/ccip/offRamp/EVM2EVMOffRamp.sol)) | `smartcontractkit/ccip` @`eb419a0` — official Chainlink                         | No public report¹ |
+| [`KeystoneForwarder`](https://github.com/smartcontractkit/ccip/blob/eb419a097bd11846ff2d82d25c447eee1f911b38/contracts/src/v0.8/keystone/KeystoneForwarder.sol) — CRE/Keystone forwarder                                                                                                                                                                                                                                                                                                                                                                                                                                        | `smartcontractkit/ccip` @`eb419a0` — official; deployed copy Chainlink-operated | None found²       |
+| [`WorkflowRegistry`](https://github.com/smartcontractkit/chainlink/blob/develop/contracts/src/v0.8/workflow/WorkflowRegistry.sol) — CRE workflow ownership                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `smartcontractkit/chainlink` — official; not vendored/pinned here³              | None found        |
+
+¹ Official Chainlink production code; Chainlink states CCIP was audited before mainnet but does not
+  publish the reports — no linkable URL, so "audited" is vendor-asserted.
+² The repo vendors two incompatible `KeystoneForwarder` variants (the `ccip` copy above and a
+  `chainlink-brownie-contracts` copy); the production forwarder must be the CCIP
+  `"Forwarder and Router 1.0.0"` (`onReport(bytes,bytes)`) — see §B. Its per-network address is
+  Chainlink-published, **not** pinned in the repo (see below).
+³ Not vendored or pinned at a commit here (the link is the `develop` branch, BSL-1.1); referenced
+  only by the end-state ownership invariant (W-1, §E).
+
+**Deployed addresses** (mainnet; verified against the shared `config/state/l2.yaml` with
+each lane's `.inputs`/`.deployed` siblings, and `script/<lane>/<Lane>MigrationConstants.sol`). ⚠ **Address reuse:** the same hex is a *different*
+contract per chain (deterministic deploys) — e.g. `0x328de9…C997` is `CustomSenderReferral` on
+Base/OP/Linea but the L1 Optimism adapter on mainnet; `0x6F35…4588` is the L1 `LidoCustomReceiver`
+but the *old* OraclePool on the three OP-stack L2s. Always resolve via the lane's own constants file
+(§F, [Where the addresses live](#where-the-addresses-live)).
+
+| Contract | Ethereum L1 | Arbitrum | Base | Optimism | Linea |
+| --- | --- | --- | --- | --- | --- |
+| `CustomSenderReferral` (proxy) | — | `0x72229141D4B016682d3618ECe47c046f30Da4AD1` | `0x328de900860816d29D1367F6903a24D8ed40C997` | `0x328de900860816d29D1367F6903a24D8ed40C997` | `0x328de900860816d29D1367F6903a24D8ed40C997` |
+| `LidoCustomReceiver` (proxy, shared) | `0x6F357d53d6bE3238180316BA5F8f11467e164588` | — | — | — | — |
+| `PausableImmutableOraclePool` (live)⁴ | — | `0x4C7D20565687A308135a7B38eA0b26a5e292B4c4` | `0x9C74E3B8ceC764Aa6E977F81A7F7c478a440Be28` | `0x534115F4afAa64da3F6F1e79b295F1702Bc6e8e8` | `0x5067457698Fd6Fa1C6964e416b3f42713513B3dD` |
+| CCIP `Router` | `0x80226fc0Ee2b096224EeAc085Bb9a8cba1146f7D` | `0x141fa059441E0ca23ce184B6A78bafD2A517DdE8` | `0x881e3A65B4d4a04dD529061dd0071cf975F58bCD` | `0x3206695CaE29952f4b0c22a169725a865bc8Ce0f` | `0x549FEB73F2348F6cD99b9fc8c69252034897f06C` |
+| `KeystoneForwarder` (CRE) | n/a | not pinned⁵ | not pinned⁵ | not pinned⁵ | not pinned⁵ |
+
+`FeeCodec` / `TokenHelper` are internal libraries (embedded in consumers' bytecode — no standalone
+address); `WorkflowRegistry` is a Chainlink-operated singleton whose address is not pinned in the repo.
+
+⁴ New pool — `CustomSender.getOraclePool()` points here post-Stage-2. The pre-migration pool is
+  orphaned (Arbitrum `0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace`; Base/OP/Linea
+  `0x6F357d53d6bE3238180316BA5F8f11467e164588`) and kept under state-mate as `oldOraclePool`.
+⁵ Pinned per network in `<Lane>MigrationConstants.CRE_FORWARDER` (from the Chainlink production
+  forwarder directory) and cross-checked against the `l2CreForwarder` state-mate anchor by
+  `verify-constants-sync` — see §B and [Where the addresses live](#where-the-addresses-live).
+  L1 has no CRE forwarder.
+
 ## Build & verify
 
 Prerequisites: Foundry (`forge 1.7.1`), git + submodules. Compiler `solc 0.8.34`,
@@ -82,8 +140,8 @@ forge test
 **Static analysis & coverage** (Slither figures measured 2026-06-04 — re-confirm on the audit
 revision; since then three guard branches and their tests were added — zero-recipient
 `withdrawETH`, `setDelay(0)`, `setFeeOtoD` gas-limit floor — and the toolchain was bumped to
-solc 0.8.34 / osaka. The full **88-test** unit suite and the 210-test full suite pass at
-`c50b224` (2026-06-11), and the coverage figures below were re-measured at that commit):
+solc 0.8.34 / osaka. The **94-test** unit suite and the 214-test full suite pass; the
+coverage figures below were measured at `c50b224`, 2026-06-11):
 
 - Slither 0.11.5 (`--exclude-dependencies`, filtered to `src/`) + `forge lint`: **14 results, all
   Low / Informational — 0 High, 0 Medium**, each triaged as accepted-by-design or a minor nit.
@@ -157,7 +215,7 @@ them:
 | --- | --- | --- |
 | **`SyncTrigger` owner** | Lido Deployer EOA → **Lido L2 governance executor** (per-L2 bridge executor, e.g. `OptimismBridgeExecutor`; runs proposals bridged from the L1 Lido DAO) | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD`, `setFeeDtoO`, `sweep` — `sweep` moves any ERC-20 *or* native balance (incl. the fee float) to an arbitrary recipient |
 | **`CREReceiver` owner** | Lido Deployer EOA → **LOL multisig** (Safe) | `setForwarder`, `setExpectedAuthor`, `setAllowedCall`, `withdrawETH` — `withdrawETH` moves native balance (normally ~0) to an arbitrary recipient |
-| **`CREReceiver` forwarder** (`_forwarder`) | **Chainlink CRE Keystone forwarder** (per-L2, Chainlink-operated) | sole caller of `onReport`; set via `L2_CRE_FORWARDER` at deploy, **no on-chain version/ABI assertion** (the deploy script can anchor the address via `_expectedCREForwarder()` — see §B; per-lane pins **not yet populated**) |
+| **`CREReceiver` forwarder** (`_forwarder`) | **Chainlink CRE Keystone forwarder** (per-L2, Chainlink-operated) | sole caller of `onReport`; **pinned per network** in code (`_expectedCREForwarder()` → `<Lane>MigrationConstants.CRE_FORWARDER`, not env-supplied — see §B), but with **no on-chain version/ABI assertion** |
 | **`SyncTrigger` forwarder** (`_forwarder`) | the deployed **`CREReceiver`** instance | sole caller of `triggerSync` — note "forwarder" denotes a *different* contract on each in-scope contract |
 | **`expectedAuthor` pin** | **LOL multisig** (Safe) = registered CRE `WorkflowRegistry` owner = `CREReceiver` owner | not a method — the report-author identity that `onReport` checks `==` against; re-pointable only via `setExpectedAuthor` (owner-only), and bound to an *address*, not a *workflow* name/id |
 | **`SYNC_ROLE` on `CustomSender`** (upstream) | old Chainlink Automation → the new **`SyncTrigger`** | lets the `triggerSync → sync` call actually pull WETH from the pool; granted/revoked in Stage 2 |
@@ -256,8 +314,8 @@ below):
 | `script/{optimism,arbitrum,base,linea}/<Lane>MigrationConstants.sol` | Per-lane `LIDO_L2_GOVERNANCE_EXECUTOR`, `LIQUIDITY_OWNER`, `L2_SYNC_TRIGGER_INITIAL_FLOAT`, `L2_SYNC_DESTINATION_GAS_LIMIT`, sender / pool / old-automation addresses. |
 | `script/optimism/sepolia/SepoliaMigrationConstants.sol` | Testnet equivalents (opts out of the gov-executor guard; smaller float). |
 | `script/l1/L1MigrationConstants.sol` | `INITIAL_OWNER` (the external Stage-2 signer) plus the **shared** L1 receiver / `ProxyAdmin`. |
-| Deploy-time env | `L2_CRE_FORWARDER` (Chainlink-operated; not in any constants file — anchored at read-time against the per-network `_expectedCREForwarder()` pin when populated, see §B), with `LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_SYNC_TRIGGER_INITIAL_FLOAT` echoed for the broadcast-time guards. |
-| `script/<net>/state-mate/<net>.yaml` | Deployed-state verification oracle; fee bytes left `null` ("set during migration"). |
+| Deploy-time env | `LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_SYNC_TRIGGER_INITIAL_FLOAT` echoed for the broadcast-time guards. The CRE forwarder is **no longer** deploy-time env: it is pinned per lane in `<Lane>MigrationConstants.CRE_FORWARDER` (`_expectedCREForwarder()`, see §B); `L2_CRE_FORWARDER` is read only on the testnet opt-out lane. |
+| `config/state/l2.yaml` (one shared wiring for all 4 L2 lanes; + per-lane generated `.deployed.yaml` / static `.inputs.yaml` siblings) | Deployed-state verification oracle; the encoded fee blobs (`getFeeOtoD`/`getFeeDtoO`/`getMaxFees`) are now asserted against the `.inputs.yaml` anchors, themselves cross-checked vs `FeeCodec(constants)` by `verify-constants-sync`. |
 
 Cross-references: `DOC.md §1` (Networks) and `DOC.md §6.1` (the two different "initial" accounts).
 
@@ -324,17 +382,17 @@ Not every theme carries all three sub-lists.
     the receiver — reports are never delivered, WETH accumulates on L2, never staked, **with no
     revert**. This was a real, since-fixed delivery bug; the id **match** lives in the in-scope
     `CREReceiver.supportsInterface`. (`DOC.md §2.6.B`.)
-  - **Forwarder ABI/version not pinned on-chain.** `L2_CRE_FORWARDER` is set with no
-    `typeAndVersion` or ABI assertion; the repo vendors two incompatible Keystone forwarders. A
-    *script-level* anchor now exists — `L2UpgradeScriptBase._envCREForwarder()` rejects an env
-    value that differs from the per-network `_expectedCREForwarder()` pin
-    (`L2UpgradeWrongCREForwarder`) before it is baked immutably into `CREReceiver` — but the
-    per-lane pins are **not yet populated** (every lane currently returns `address(0)` = opt-out),
-    so the guard is dormant until each production forwarder address is pinned. The
-    deployed one must be the CCIP `"Forwarder and Router 1.0.0"` (`onReport(bytes,bytes)`), not the
-    legacy `onReport(bytes32,address,bytes)` variant — confirm each lane's production forwarder is
-    the ERC-165-gated one with the `workflowId(32) | workflowName(10) | workflowOwner(20)` metadata
-    layout. (`RUNBOOK.md §1.c`; [Where the addresses live](#where-the-addresses-live).)
+  - **Forwarder ABI/version not pinned on-chain.** The forwarder address is now **pinned per lane**
+    in `<Lane>MigrationConstants.CRE_FORWARDER` and used directly by `_expectedCREForwarder()` /
+    `L2UpgradeScriptBase._creForwarder()` (so it is not env-supplied; a present-but-wrong
+    `L2_CRE_FORWARDER` is rejected with `L2UpgradeWrongCREForwarder`), and cross-checked vs the
+    `l2CreForwarder` state-mate anchor by `verify-constants-sync`. That pins the *address*, but there
+    is still **no `typeAndVersion`/ABI assertion on-chain**, and the repo vendors two incompatible
+    Keystone forwarders. The deployed one must be the CCIP `"Forwarder and Router 1.0.0"`
+    (`onReport(bytes,bytes)`), not the legacy `onReport(bytes32,address,bytes)` variant — confirm each
+    lane's production forwarder is the ERC-165-gated one with the
+    `workflowId(32) | workflowName(10) | workflowOwner(20)` metadata layout. (`RUNBOOK.md §1.c`;
+    [Where the addresses live](#where-the-addresses-live).)
   - **DON-embedded author vs registry owner.** `verify-cre-workflow` confirms only the
     `WorkflowRegistry.owner` (plus, since `145affb`: non-zero `workflowId`/`expectedAuthor` inputs
     — closing a false-green against a non-existent workflow — and a non-empty `binaryUrl`); the

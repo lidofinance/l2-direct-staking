@@ -25,7 +25,8 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
 
 - **Toolchain:** `forge`/`cast`/`anvil` (Foundry), `node`+`corepack`(yarn), `bun`, `jq`, **`yq`**.
   > ⚠️ `yq` is required by `verify-constants-sync` and `balances-*` — install it (`brew install yq`) or those recipes fail.
-- **Deps:** `(cd lib/state-mate && corepack yarn install --immutable)` (state-mate) · `just setup-cre` (CRE bun deps). `forge build` pulls Solidity submodules.
+- **Deps:** `(cd lib/state-mate && corepack yarn install --immutable)` (state-mate) · `just setup-cre` (CRE bun deps). `forge build` pulls Solidity submodules. **Re-run the state-mate `yarn install` after any `lib/state-mate` submodule bump** — the verify recipes only auto-install when `node_modules` is absent, so a stale tree won't refresh on its own.
+- **Review deploy params:** `config/state/l2-<network>.inputs.yaml` is the single place to review every deploy parameter before Stage 1 — knobs in `config:` (gas, sync amounts/delay, encoded fee blobs), third-party facts in `externals:` (tokens, CCIP router/selector, governance actors). `just verify-constants-sync` proves it (and the generated `.deployed.yaml`) match the Solidity constants the deploy reads.
 - **Per-network env** — one `.env.<network>` per L2 (`L2_NETWORK` is the discriminator):
 
   ```env
@@ -35,9 +36,10 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
   L2_LIDO_DEPLOYER_PRIVATE_KEY=0x...     # Stage 1 signer
   INITIAL_OWNER_PRIVATE_KEY=0x...        # Stage 2 signer (cold key)
   L2_GOVERNANCE_EXECUTOR=0x...           # per network (table below)
-  L2_CRE_FORWARDER=0x...                 # per network, Chainlink-published
+  # CRE forwarder: pinned per network in <Lane>MigrationConstants.CRE_FORWARDER — NOT an env var
   LIDO_DAO_AGENT=0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c
   # appended after deploy-stage1:  L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER
+  #   (deploy-stage1 also (re)writes config/state/l2-<network>.deployed.yaml — commit it)
   # appended after deploy-cre-workflow:  CRE_WORKFLOW_ID
   ```
 
@@ -85,9 +87,12 @@ just -E .env.<network> preflight-check-l1     # L1 mainnet + receiver adapter/se
 
 # c (cont.) CRE forwarder version   (Evidence: prints "Forwarder and Router 1.0.0")
 #    The repo vendors TWO Keystone forwarders with INCOMPATIBLE onReport/metadata ABIs. CREReceiver
-#    assumes the CCIP onReport(bytes,bytes) + metadata[42:62] layout, so L2_CRE_FORWARDER MUST be the
-#    CCIP one. Reject the legacy "KeystoneForwarder 1.0.0" (onReport(bytes32,address,bytes)).
-cast call $L2_CRE_FORWARDER "typeAndVersion()(string)" --rpc-url $L2_RPC_URL   # expect: "Forwarder and Router 1.0.0"
+#    assumes the CCIP onReport(bytes,bytes) + metadata[42:62] layout, so the pinned forwarder MUST be
+#    the CCIP one. Reject the legacy "KeystoneForwarder 1.0.0" (onReport(bytes32,address,bytes)).
+#    The forwarder is pinned per lane in <Lane>MigrationConstants.CRE_FORWARDER (= the l2CreForwarder
+#    state-mate anchor), not env-supplied; read this lane's pinned value from the inputs file:
+FWD=$(yq '.. | select(anchor == "l2CreForwarder")' config/state/l2-$L2_NETWORK.inputs.yaml | tr -d '"')
+cast call $FWD "typeAndVersion()(string)" --rpc-url $L2_RPC_URL   # expect: "Forwarder and Router 1.0.0"
 ```
 
 **d. Dress rehearsal** — the *actual* operator recipes on an anvil fork of one L2 + L1 (validates recipe wiring end-to-end; Linea shown, substitute per net):
@@ -99,12 +104,12 @@ until cast chain-id --rpc-url http://127.0.0.1:8650 >/dev/null 2>&1 && cast chai
 DEPLOYER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266; IO=0xb5c336a5c60D3482b29d83C742C65AE8351b91a8; DAO=0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c
 for u in http://127.0.0.1:8650 http://127.0.0.1:8651; do for a in $DEPLOYER $IO $DAO; do cast rpc --rpc-url $u anvil_setBalance $a 0x3635C9ADC5DEA00000 >/dev/null; done; done
 
-export L2_NETWORK=linea L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670 L2_CRE_FORWARDER=0x000000000000000000000000000000000000dEaD
+export L2_NETWORK=linea L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670   # CRE forwarder is pinned in code
 L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1            # → paste the 3 printed exports into the shell
 L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = all read-backs pass
 ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
   --sig 'runMigrateUnlocked()' --rpc-url http://127.0.0.1:8651 --broadcast --non-interactive --unlocked --sender $IO
-# validate: render template into /tmp with the deployed addresses, run state-mate --only l2 (see docs/development.md §dress rehearsal)
+# validate: write the fork's addresses to a temp .deployed.yaml + run the shared config/state/l2.yaml --only l2 with --inputs config/state/l2-<net>.inputs.yaml --deployed <temp> (see docs/development.md §dress rehearsal)
 pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 ```
 
@@ -202,7 +207,7 @@ sequenceDiagram
 
 ```sh
 just -E .env.<network> deploy-stage1        # deploys pool+trigger+receiver AND funds the trigger's fee float; PRINTS export L2_ORACLE_POOL/SYNC_TRIGGER/CRE_RECEIVER
-#   → Duty: append those 3 lines to .env.<network>
+#   → Duty: append those 3 lines to .env.<network>; deploy-stage1 also (re)writes config/state/l2-<network>.deployed.yaml — review the diff & commit it
 #   The float (L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5 ETH, MigrationConstants) is sent from the
 #   Lido Deployer wallet — it must hold ≥ 0.5 ETH + deploy gas per lane. The trigger fronts
 #   maxFee+feeDtoO per sync FROM ITS OWN BALANCE; the script reverts (L2UpgradeFloatBelowFloor)
@@ -265,6 +270,22 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 | CREReceiver ×4 | `isCallAllowed(SyncTrigger, 0x340b2b0b)` | `true` |
 | OraclePool (new) ×4 | `owner()` | LOL multisig |
 
+> **Two assurance layers — don't over-trust a green `verify-constants-sync`.** It proves the state-mate
+> `.inputs`/`.deployed` anchors equal the Solidity `*MigrationConstants.sol` constants — but both are
+> hand-authored by the same team, so it catches *transcription drift*, **not** *shared contamination*
+> (both wrong from one bad source — the original gov-executor bug). The only **independent** oracle is
+> the live state-mate run above (config vs chain). `just verify-externals-coverage` enforces that every
+> L2 external/deployed anchor is pinned by at least the constants layer, or is allowlisted with a reason
+> — so none silently rests on same-provenance equality.
+>
+> **Deployer-renounce check (caveat).** The wiring's `hasRole(DEFAULT_ADMIN_ROLE, l2LidoDeployer)==false`
+> uses the **dev-fork** deployer (Anvil acct #0) in the committed mainnet inputs, so on mainnet it passes
+> **vacuously** (that address never held a role here) — it does not prove the real deployer renounced.
+> Note the L2 CustomSender uses *non-enumerable* AccessControl (`ozNonEnumerableAcl`), so for it
+> state-mate checks only the listed (role,address) pairs — the "complete role-member set" guarantee
+> above holds for the enumerable contracts (e.g. L1 Receiver count), not for it. To make this check real
+> on mainnet, wire the actual per-chain deployer and add an `l2LidoDeployer` row to `verify-constants-sync`.
+
 ### Finalize (each requires **G4** for that network)
 
 - **Duty — LOL multisig** SHALL transfer initial wstETH to each **new** pool (1 ERC-20 transfer/net). Until seeded, `fastStake` reverts for lack of output liquidity. **Do not seed a network before its G4.**
@@ -291,3 +312,37 @@ protocol funds (the call-lock + on-chain gates bound misuse to rate-limited, adm
 procedure + consequence tables + the rejected EOA alternative:
 [docs/cre.md §Workflow-owner key — lost vs compromised](docs/cre.md#workflow-owner-key--lost-vs-compromised-consequences--recovery)
 and [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md).
+
+---
+
+## 4 · Decommission / sunset (end-of-life)
+
+Mirror image of §Finalize: that step recovers the **old** system's residuals on the way *up* (legacy `SyncAutomation` float + cancelled-upkeep LINK); this section recovers the **new** system's treasuries on the way *down*. Same tags — **Def** / **Gate `Sn`** (sunset-local, kept distinct from migration `G1–G4`) / **Duty** (a named keyholder SHALL act) / **Evidence**. Owners are the per-chain GovExec / LOL multisig in the [Setup network table](#setup-once); they are not re-keyed here.
+
+> **Def — a drain has no event; verify by balance.** `SyncTrigger.sweep` (`src/SyncTrigger.sol:167`) emits nothing, unlike every config setter (`:195`, `:207`, `:216`, `:232`, `:241`). The **Evidence** of a drain is a **balance delta** (`cast balance <trigger>` → 0) plus the recipient's credit — never a log. Monitor the balance, not the event log.
+
+**Step 1 — stop the engine. Duty — L2 GovExec** SHALL deactivate triggering with the §Recover off-switch: `setDelay(type(uint48).max)` (the constructor "deactivated" sentinel, `src/SyncTrigger.sol:61`) and/or `setForwarder(0x…dead)` — no LOL quorum needed. **Gate S1** = triggering off. **Evidence:** read back `getDelay() == type(uint48).max` / `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
+
+**Step 2 — stop the automation. Duty — LOL multisig** SHALL pause or delete the CRE workflow and stop funding its CRE credit. **Evidence:** `verify-cre-workflow` no longer reports `ACTIVE`. Levers: [docs/cre.md §CRE platform levers (workflow lifecycle)](docs/cre.md#cre-platform-levers-workflow-lifecycle).
+
+**Step 3 — let in-flight settle → Gate S2.** **Gate S2** = no pending CCIP round-trip for the lane: the last `Sync`(L2) has its matching `MessageSucceeded`(L1) and the wstETH return has landed (same in-flight cutover as §2 **Def** / [`DOC.md` §5.1](DOC.md#51-in-flight-round-trips-are-correct-by-design)). **Evidence:** CCIP manual-exec queue empty + L1 Receiver balance ~0.
+
+> **Def — the float drain itself has no in-flight dependency.** Each round-trip's return-leg (`feeDtoO`) fee is fronted at `sync()` time, baked into the value the trigger forwards (`src/SyncTrigger.sol:141-142`), so a drained float can **never** strand a return. Settle first only so the pool-liquidity recovery (Step 5) is clean and monitoring stays quiet — not because an earlier sweep would be unsafe.
+
+**Step 4 — drain the trigger. Duty — L2 GovExec** SHALL `sweep` to a Lido-controlled recipient — a **governance round-trip** (DAO vote → L1→L2 bridge → executor): `sweep(address(0), <recipient>, <balance>)` for native, `sweep(<token>, <recipient>, <amount>)` for any stray ERC-20 (e.g. WETH). Recipient is a call parameter — choose it in the governance action, do not assume a default. **Evidence:** `cast balance <trigger>` == 0 (and any swept ERC-20 balances == 0).
+
+**Step 5 — drain the rest, reconcile.**
+- **Duty — LOL multisig** SHALL `CREReceiver.withdrawETH(<to>, <balance>)` (`src/cre/CREReceiver.sol:202`) **if non-zero** — normally ~0 (the forwarder call carries no value), but the bare `receive()` makes a stray balance possible.
+- **Duty — LOL multisig** SHALL recover the **new** `OraclePool`'s residual liquidity (LOL owns it) — WETH/wstETH user funds, outside the strict "fee-float" scope but part of "the money left".
+- **Cross-ref:** legacy residuals (old `SyncAutomation` float + cancelled-upkeep LINK) are recovered in §Finalize, not here.
+
+> **Watch — order invariant: drain BEFORE any ownership renounce/handoff.** `SyncTrigger` does not override `renounceOwnership()` (inherited OZ `Ownable`), so renouncing — or transferring ownership to a party that won't act — **permanently bricks `sweep` and strands the float**. Sweep is the last lever; relinquish it last.
+
+| Treasury | Where | Recover (file:line) | Signer | Note |
+|---|---|---|---|---|
+| SyncTrigger native float | per L2 | `sweep(address(0),…)` `src/SyncTrigger.sol:167` | L2 GovExec | no event → verify by balance delta; tested `test/SyncTriggerTest.t.sol:305` |
+| SyncTrigger stray ERC-20 | per L2 | `sweep(token,…)` `src/SyncTrigger.sol:167` | L2 GovExec | tested `test/SyncTriggerTest.t.sol:312` |
+| CREReceiver ETH (~0) | per L2 | `withdrawETH` `src/cre/CREReceiver.sol:202` | LOL multisig | forwarder call carries no value |
+| CRE credit | LOL CRE account | dashboard (off-chain) | LOL multisig | no on-chain signal — [docs/cre.md §Funding and billing](docs/cre.md#funding-and-billing) |
+| New OraclePool liquidity | per L2 | OraclePool owner path | LOL multisig | user funds, not fee float |
+| Legacy float / upkeep LINK | old contracts | `SyncAutomation.sol:237` / upkeep cancel | legacy owners | see §Finalize |

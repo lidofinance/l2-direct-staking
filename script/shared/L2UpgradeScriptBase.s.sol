@@ -2,7 +2,9 @@
 pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
+import {console2} from "forge-std/console2.sol";
 
+import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 
@@ -23,7 +25,8 @@ import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
  *   runDeploy:
  *     - L2_LIDO_DEPLOYER_PRIVATE_KEY
  *     - L2_GOVERNANCE_EXECUTOR
- *     - L2_CRE_FORWARDER (Chainlink CRE Forwarder address for this network)
+ *     - L2_CRE_FORWARDER (only on opt-out/testnet networks; production networks pin the forwarder in
+ *                         code via _expectedCREForwarder(), so it is not required there)
  *     - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
  *
  *   runMigrate:
@@ -61,13 +64,14 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return address(0);
     }
 
-    /// @dev Returns the known-correct Chainlink CRE Forwarder for this network, or address(0) to opt
-    ///      out of the check (e.g. testnet, or before Chainlink has published the forwarder for a
-    ///      network). Mirrors `_expectedGovernanceExecutor`: the only post-deploy check on the forwarder
-    ///      is tautological (CREReceiver.getForwarder() == the value just passed in), so without an anchor
-    ///      a stale/mistyped `L2_CRE_FORWARDER` is baked IMMUTABLY into CREReceiver with no guard — and
-    ///      every CRE-triggered sync is then silently rejected by the real forwarder. CRE forwarders are
-    ///      Chainlink-operated and long-lived, so a production network pins its published value here.
+    /// @dev Returns the fixed, Chainlink-published CRE Forwarder for this network, or address(0) to opt
+    ///      out (e.g. testnet, or before Chainlink has published the forwarder for a network). Mirrors
+    ///      `_expectedGovernanceExecutor`, but because the forwarder is a per-network constant (not an
+    ///      operator choice) pinning it here makes it fully non-env: `_creForwarder()` uses this value
+    ///      directly, so `L2_CRE_FORWARDER` need not be set (and a present-but-wrong value is rejected).
+    ///      Without a pin, the only post-deploy check is tautological (CREReceiver.getForwarder() == the
+    ///      value just passed in), so a stale/mistyped env forwarder would be baked IMMUTABLY into
+    ///      CREReceiver and every CRE-triggered sync silently rejected by the real forwarder.
     function _expectedCREForwarder() internal pure virtual returns (address) {
         return address(0);
     }
@@ -112,13 +116,22 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     error L2UpgradeWrongCREForwarder(address actual, address expected);
 
-    /// @dev Reads `L2_CRE_FORWARDER` and asserts it matches this network's pinned forwarder. No-op when
-    ///      `_expectedCREForwarder()` returns address(0) (testnet / not-yet-published opt-out). Anchoring
-    ///      here rejects a wrong-but-nonzero env value BEFORE it is baked immutably into CREReceiver.
-    function _envCREForwarder() internal view returns (address creForwarder) {
-        creForwarder = vm.envAddress("L2_CRE_FORWARDER");
+    /// @dev Resolves the Chainlink CRE Forwarder for this network. Production networks pin it via
+    ///      `_expectedCREForwarder()` (a fixed, Chainlink-published per-network address), so the
+    ///      forwarder is NOT operator-supplied and `L2_CRE_FORWARDER` need not be set — it defaults to
+    ///      the pin. If the env var IS set it must match the pin, else we revert: a stale/mistyped value
+    ///      must never silently override the constant that is baked immutably into CREReceiver. Opt-out
+    ///      networks (testnet / not-yet-published) return address(0) from the hook and supply the
+    ///      forwarder via `L2_CRE_FORWARDER` as before.
+    function _creForwarder() internal view returns (address creForwarder) {
         address expected = _expectedCREForwarder();
-        if (expected != address(0) && creForwarder != expected) {
+        if (expected == address(0)) {
+            // Opt-out (testnet / not-yet-published): operator supplies the forwarder via env.
+            return vm.envAddress("L2_CRE_FORWARDER");
+        }
+        // Pinned per network: default to the constant; a present-but-wrong env value is rejected.
+        creForwarder = vm.envOr("L2_CRE_FORWARDER", expected);
+        if (creForwarder != expected) {
             revert L2UpgradeWrongCREForwarder(creForwarder, expected);
         }
     }
@@ -149,7 +162,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _envCREForwarder();
+        address creForwarder = _creForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -161,7 +174,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     // ── Stage 1 verification (read-only, between Stage 1 and Stage 2) ─
 
     /// @notice Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run. Actor: anyone.
-    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER.
+    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR
+    ///      (L2_CRE_FORWARDER only on opt-out/testnet networks; production networks pin it in code).
     ///      The CREReceiver.expectedAuthor pin is the LOL multisig (= liquidity owner / CRE workflow owner),
     ///      sourced from L2_LIQUIDITY_OWNER (or the network's default LOL multisig) — not the broadcasting EOA.
     function runVerifyStage1() public view {
@@ -170,7 +184,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _envCREForwarder();
+        address creForwarder = _creForwarder();
         // The CRE workflow owner pinned as expectedAuthor is the LOL multisig (Safe), the same
         // address that owns the CREReceiver — see ADR-0001 / DOC.md §3.2.
         address expectedAuthor = liquidityOwner;
@@ -182,24 +196,58 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         verifyStage1(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
     }
 
+    // ── Config-sync helper (read-only, no chain access) ──────────────
+
+    /// @notice Prints the encoded SyncTrigger fee blobs + derived getMaxFees for this network, computed
+    ///         from the same constants the deploy uses. Consumed by `just verify-constants-sync` to assert
+    ///         the `<net>.inputs.yaml` `config:` fee anchors stay in lockstep with the Solidity source of
+    ///         truth, and used when authoring those anchors. Pure computation — needs no RPC or broadcast.
+    ///         The actor addresses do not affect any fee field, so dummy non-zero placeholders are passed.
+    /// @dev Mirrors `SyncTrigger.getMaxFees()` and `L2UpgradeActions` feeOtoD encoding exactly.
+    function runPrintFeeParams() public view {
+        L2UpgradeConfig memory cfg = _buildConfig(address(0xA11CE), address(0xB0B), address(0xC0FFEE));
+
+        bytes memory feeOtoD =
+            FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit);
+        bytes memory feeDtoO = cfg.feeDtoO;
+
+        (uint128 maxFeeOtoD, bool payInLinkOtoD) = FeeCodec.decodeFeeMemory(feeOtoD);
+        (uint128 maxFeeDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(feeDtoO);
+        uint256 maxNativeFee;
+        uint256 maxLinkFee;
+        if (payInLinkOtoD) maxLinkFee = maxFeeOtoD;
+        else maxNativeFee = maxFeeOtoD;
+        if (payInLinkDtoO) maxLinkFee += maxFeeDtoO;
+        else maxNativeFee += maxFeeDtoO;
+
+        console2.log("FEE_OTO_D=%s", vm.toString(feeOtoD));
+        console2.log("FEE_DTO_O=%s", vm.toString(feeDtoO));
+        console2.log("MAX_NATIVE_FEE=%s", vm.toString(maxNativeFee));
+        console2.log("MAX_LINK_FEE=%s", vm.toString(maxLinkFee));
+        // INITIAL_FLOAT has no stable state-mate anchor (the trigger's ETH balance drifts as it fronts
+        // per-sync fees), so verify-constants-sync does not read this line — it is printed for operator
+        // review when authoring the .inputs.yaml fee block.
+        console2.log("INITIAL_FLOAT=%s", vm.toString(uint256(cfg.syncTriggerInitialFloat)));
+    }
+
     // ── Stage 2: Initial Owner ───────────────────────────────────────
 
     /// @notice Migrate admin roles on existing contracts to final owners. Actor: Initial Owner.
     function runMigrate() public virtual {
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
-        _runMigrateBody(vm.addr(initialOwnerPrivateKey), initialOwnerPrivateKey, true);
+        _runMigrateBody(vm.addr(initialOwnerPrivateKey), initialOwnerPrivateKey);
     }
 
     /// @notice Same as runMigrate but impersonates Initial Owner (anvil only).
     function runMigrateUnlocked() public virtual {
-        _runMigrateBody(_envInitialOwnerAddress(), 0, false);
+        _runMigrateBody(_envInitialOwnerAddress(), 0);
     }
 
-    /// @dev Shared Stage-2 body for both the production broadcast (`useKey == true`, signs with
-    ///      `initialOwnerPrivateKey`) and the anvil rehearsal (`useKey == false`, impersonates
-    ///      `initialOwner`). Keeping one body guarantees the rehearsal exercises exactly the env
-    ///      reads and preconditions the production migrate does — they cannot drift apart.
-    function _runMigrateBody(address initialOwner, uint256 initialOwnerPrivateKey, bool useKey) internal {
+    /// @dev Shared Stage-2 body for both the production broadcast (a nonzero `initialOwnerPrivateKey`
+    ///      signs) and the anvil rehearsal (`initialOwnerPrivateKey == 0` impersonates `initialOwner`).
+    ///      Keeping one body guarantees the rehearsal exercises exactly the env reads and preconditions
+    ///      the production migrate does — they cannot drift apart.
+    function _runMigrateBody(address initialOwner, uint256 initialOwnerPrivateKey) internal {
         assertL2ChainId(_expectedChainId());
 
         address governanceExecutor = _envGovernanceExecutor();
@@ -208,11 +256,13 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
         // needed by executeMigrationSteps' Stage-1-completeness precondition.
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
-        address creForwarder = _envCREForwarder();
+        address creForwarder = _creForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
-        if (useKey) {
+        // A nonzero key signs the production broadcast; 0 is the anvil-rehearsal sentinel (impersonate
+        // the Initial Owner address). vm.addr(0) is never a valid signer, so the paths cannot collide.
+        if (initialOwnerPrivateKey != 0) {
             vm.startBroadcast(initialOwnerPrivateKey);
         } else {
             vm.startBroadcast(initialOwner);
@@ -253,7 +303,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = vm.addr(initialOwnerPrivateKey);
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _envCREForwarder();
+        address creForwarder = _creForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 
@@ -275,7 +325,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address initialOwner = _envInitialOwnerAddress();
         address governanceExecutor = _envGovernanceExecutor();
         address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _envCREForwarder();
+        address creForwarder = _creForwarder();
 
         L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
 

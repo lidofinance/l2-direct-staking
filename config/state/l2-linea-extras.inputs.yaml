@@ -1,0 +1,5 @@
+---
+# Sibling of l2-linea-extras.yaml. Linea's legacy Gelato keeper (LineaMigrationConstants
+# L2_OLD_GELATO_AUTOMATION) — the de-role target. Mirrored by `just verify-constants-sync`.
+externals:
+  - &l2OldGelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe"

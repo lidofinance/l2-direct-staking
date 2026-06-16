@@ -7,6 +7,12 @@ library LineaMigrationConstants {
     // L2 governance executor
     address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x74Be82F00CC867614803ffd7f36A2a4aF0405670;
 
+    // Chainlink CRE Keystone forwarder (production) — the sole caller of CREReceiver.onReport().
+    // Fixed per network and Chainlink-operated, so it is pinned here rather than supplied via env.
+    // Source: Chainlink CRE production forwarder directory. Cross-checked against the l2CreForwarder
+    // state-mate anchor by `just verify-constants-sync`.
+    address internal constant CRE_FORWARDER = 0x9eF6468C5f37b976E57d52054c693269479A784d;
+
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6;
 

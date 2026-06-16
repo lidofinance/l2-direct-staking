@@ -7,6 +7,12 @@ library ArbitrumMigrationConstants {
     // L2 governance executor (ArbitrumBridgeExecutor)
     address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29;
 
+    // Chainlink CRE Keystone forwarder (production) — the sole caller of CREReceiver.onReport().
+    // Fixed per network and Chainlink-operated, so it is pinned here rather than supplied via env.
+    // Source: Chainlink CRE production forwarder directory. Cross-checked against the l2CreForwarder
+    // state-mate anchor by `just verify-constants-sync`.
+    address internal constant CRE_FORWARDER = 0xF8344CFd5c43616a4366C34E3EEE75af79a74482;
+
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61;
 

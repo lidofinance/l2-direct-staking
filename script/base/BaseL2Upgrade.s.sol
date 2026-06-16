@@ -65,4 +65,8 @@ contract BaseL2UpgradeScript is L2UpgradeScriptBase, BaseL2Defaults {
     function _expectedGovernanceExecutor() internal pure override returns (address) {
         return C.LIDO_L2_GOVERNANCE_EXECUTOR;
     }
+
+    function _expectedCREForwarder() internal pure override returns (address) {
+        return C.CRE_FORWARDER;
+    }
 }

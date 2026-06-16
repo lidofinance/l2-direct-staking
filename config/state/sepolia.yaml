@@ -13,42 +13,15 @@
 # `_delay = uint48.max + _lastExecution`), so full ABI coverage is impractical. The role-revoke
 # (the only state assertion that matters) is covered via `customSender.hasRole(SYNC_ROLE, …)` below.
 
-parameters:
-  - &ethSepoliaCcipChainSelector 16015286601757825753
-  - &l1LidoCustomReceiverBytes32 "0x00000000000000000000000028356dacb84ee3ebdb007d1f5920b24c87e90d40"
-  - &l2CustomSender "0x30028be97938269CB2e91FC97C4b946A0D6D5CFf"
-  - &l2ProxyAdmin "0xDb3B2b7E9aab66da7B9b36f2275fD7837b2637Ed"
-  - &initialOwner "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-  - &l2GovernanceExecutor "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  - &l2LiquidityOwner "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  - &l2LidoDeployer "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
-  - &l2OraclePool "0x851ac49A57eD9348142B7Fb008b6eB55267d9Ad3"
-  - &l2SyncTrigger "0x78d3B0c61C8Fa37da4d7cD25164664b341C5BfaB"
-  - &l2BootstrapSyncAutomation "0xbc4FDc4eb8DFdf4EAd7AF3638C4885bFE5998056"
-  - &l2CreReceiver "0x1327C6e20CBfa2C713bb32ceC78653bF94A78dcA"
-  - &l2Weth "0x4200000000000000000000000000000000000006"
-  - &l2Wsteth "0x24B47cd3A74f1799b32B2de11073764Cb1bb318B"
-  - &l2LinkToken "0xE4aB69C077896252FAFBD49EFD26B5D171A32410"
-  - &l2CcipRouter "0x114A20A10b43D4115e5aeef7345a1A71d2a60C57"
-  - &l2PriceOracle "0x66C9A0b2971316079d31dda472f4eB5bF900C53b"
-  - &minProcessMessageGas 75000
-  - &syncMinAmount 10000000000000000
-  - &syncMaxAmount 1000000000000000000
-  - &syncDelay 300
+# Deploy parameters live in the sibling sepolia.inputs.yaml (config: knobs + externals: third-party
+# facts); the deterministic anvil-fork addresses live in sepolia.deployed.yaml. Both are auto-discovered
+# siblings, concatenated anchors-first, so the *aliases below resolve. As the header notes, a real
+# Sepolia deploy regenerates these per run. (Fees/getForwarder stay unchecked here — see the original
+# note above; the production fee cross-check lives in the four mainnet L2 configs.)
 
 roles:
   - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
   - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"
-
-deployed:
-  l1:
-    - "0x0000000000000000000000000000000000000001"
-  l2:
-    - *l2CustomSender
-    - *l2ProxyAdmin
-    - *l2OraclePool
-    - *l2SyncTrigger
-    - *l2CreReceiver
 
 l1:
   rpcUrl: L1_RPC_URL
@@ -95,6 +68,7 @@ l2:
       name: ProxyAdmin
       address: *l2ProxyAdmin
       checks:
+        UPGRADE_INTERFACE_VERSION: null # covered-but-skipped: shared OZ v5 ProxyAdmin ABI; only owner is asserted here
         owner: *l2GovernanceExecutor
 
     oraclePool:

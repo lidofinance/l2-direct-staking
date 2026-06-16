@@ -419,6 +419,31 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "Swept",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "AddressEmptyCode",
     "inputs": [
@@ -512,7 +537,22 @@
   },
   {
     "type": "error",
+    "name": "SyncTriggerInvalidDelay",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SyncTriggerInvalidForwarder",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SyncTriggerInvalidParameters",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SyncTriggerNativeTransferFailed",
     "inputs": []
   },
   {
@@ -523,11 +563,6 @@
   {
     "type": "error",
     "name": "SyncTriggerSyncNotNeeded",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "TokenHelperNativeTransferFailed",
     "inputs": []
   }
 ]

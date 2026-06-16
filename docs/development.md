@@ -23,7 +23,7 @@ The operator procedure is in **[`RUNBOOK.md`](../RUNBOOK.md)**. This table is on
 - Shared harness:
   - `test/helpers/UpgradeTestBase.sol`
   - `test/helpers/PoolUpgradeTests.sol`
-- Network-specific suites (17 tests each):
+- Network-specific suites (20 tests each):
   - `test/OptimismPoolUpgrade.t.sol`
   - `test/ArbitrumPoolUpgrade.t.sol`
   - `test/BasePoolUpgrade.t.sol`
@@ -50,10 +50,10 @@ Notes:
 
 ## CRE tests
 
-- `test/CREReceiverTest.t.sol` — 35 unit tests for the CREReceiver contract (no fork required; incl. the argument-less call-lock)
+- `test/CREReceiverTest.t.sol` — 40 unit tests for the CREReceiver contract (no fork required; incl. the argument-less call-lock)
 - `test/CREIntegrationTest.t.sol` — 10 fork-based integration tests per network (Optimism, Arbitrum, Base, Linea = 40 total), covering the full CRE Forwarder → CREReceiver → SyncTrigger → sync path. Includes `test_productionExpectedAuthorIsLolMultisig`, which asserts the production deploy pins `expectedAuthor` to the **LOL multisig** (== owner == CRE workflow owner, ≠ the Stage-1 deployer EOA) and that a Safe-authored report is accepted while a deployer-authored report is rejected (ADR-0001)
 - `test/helpers/CREIntegrationTests.sol` — shared CRE test logic (same pattern as `PoolUpgradeTests.sol`)
-- `cre-workflows/sync-automation/main.test.ts` — 11 TypeScript tests for workflow encoding/decoding logic
+- `cre-workflows/sync-automation/main.test.ts` — 9 TypeScript tests for workflow encoding/decoding logic
 - `test/L2GovernanceExecutorGuard.t.sol` — RPC-free guard test for the migration's `L2_GOVERNANCE_EXECUTOR` validation (mainnet rejects a wrong executor; Sepolia opts out) — see [DOC.md §6.3](../DOC.md#63-how-the-final-state-is-verified)
 
 ```sh
@@ -87,7 +87,7 @@ And one glue command that runs all phases on a dedicated nested fork:
 
 Purpose of each phase:
 - `migrate`: executes `OptimismL2UpgradeScript` against the target RPC and persists migration outputs.
-- `update-config`: regenerates `script/optimism/state-mate/optimism.yaml` from template.
+- `update-config`: regenerates the deployed-address sibling `config/state/l2-optimism.deployed.yaml` from the resolved addresses (the shared wiring `config/state/l2.yaml` and the `l2-optimism.inputs.yaml` sibling are static, hand-maintained).
 - `verify`: runs `state-mate` checks against an arbitrary RPC.
 
 Required env:
@@ -115,7 +115,7 @@ just test-optimism-upgrade-state
 Operational notes:
 - The glue command prefers `L2_STATE_MATE_UPSTREAM_RPC_URL`, then `LOCAL_L2_OPTIMISM_RPC_URL`, then `L2_OPTIMISM_RPC_URL`.
 - If `LOCAL_L2_OPTIMISM_RPC_URL` is set but no local fork is listening there, the nested Anvil fork will fail to start; either run `just rpc-start-l2-optimism` first or override `L2_STATE_MATE_UPSTREAM_RPC_URL`.
-- `test-optimism-upgrade-state-update-config` rewrites the tracked file `script/optimism/state-mate/optimism.yaml`, so expect a worktree diff after running it.
+- `test-optimism-upgrade-state-update-config` rewrites the tracked file `config/state/l2-optimism.deployed.yaml`, so expect a worktree diff after running it.
 
 ## Test layers (overview)
 
@@ -124,7 +124,7 @@ Four independent layers of pre-prod validation, increasing in realism:
 | Layer | Exercises | Recipe |
 | --- | --- | --- |
 | Forge fork tests + Chainlink Local CCIP simulator | Per-network L2/L1 migration logic + CCIP routing + CRE allow-list against mainnet forks | `just test-acceptance`, `just test-<net>-upgrade`, `just test-cre-integration` |
-| state-mate post-condition diff | ≥45 live-RPC assertions per network vs canonical `*.yaml` | `just test-<net>-upgrade-state-verify` |
+| state-mate post-condition diff | ≥45 live-RPC assertions per network vs the shared `config/state/l2.yaml` + per-lane `.inputs`/`.deployed` siblings | `just test-<net>-upgrade-state-verify` |
 | Per-network anvil-fork dress rehearsal (below) | The exact `deploy-stage1 → verify-stage1 → migrate-stage2 → state-verify` recipe sequence on an anvil fork of one L2 + L1 | manual (below) |
 | Sepolia rehearsal | Real Sepolia + Optimism Sepolia, same script shape | the `sepolia-*` recipes in the `justfile` |
 
@@ -171,7 +171,7 @@ Expected: chain-id on :8650 → `1`, on :8651 → `59144`.
 ```sh
 export L2_NETWORK=linea
 export L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670   # LineaMigrationConstants
-export L2_CRE_FORWARDER=0x000000000000000000000000000000000000dEaD          # placeholder — CRE Forwarder not exercised on a fork
+# CRE forwarder is pinned per network in code (LineaMigrationConstants.CRE_FORWARDER) — no env needed
 L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1
 # → export L2_ORACLE_POOL=…  L2_SYNC_TRIGGER=…  L2_CRE_RECEIVER=…
 ```
@@ -190,20 +190,21 @@ ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:Linea
 
 `ALLOW_UNSAFE_COMBINED_RUN=1` is required because the production guard trips on Linea's mainnet chain-id (59144) inherited by the fork; `runMigrateUnlocked()` runs only Stage 2 (Stage 1 already happened in step 2). Successful broadcast lands the seven in-transaction post-conditions (new pool wired, `SYNC_ROLE` rotated, `DEFAULT_ADMIN` rotated, ProxyAdmin owner transferred).
 
-**5. State-mate against the fork.** The tracked `linea.yaml` pins production-target addresses, so render the template into a temp dir with the freshly-deployed addresses and run state-mate directly:
+**5. State-mate against the fork.** All four lanes share one wiring file, `config/state/l2.yaml`, parametrized per lane by its `--inputs`/`--deployed` siblings. The committed `l2-linea.deployed.yaml` holds the production-target addresses; for the fork, write the freshly-deployed addresses to a throwaway `.deployed.yaml` and override the committed sibling with `--deployed` (the static `l2-linea.inputs.yaml` must be passed explicitly, since sibling auto-discovery is basename-keyed for the shared file; the `abi/` dir is auto-discovered from the shared config's directory):
 
 ```sh
-mkdir -p /tmp/linea-rehearsal && cp -R script/linea/state-mate/abi /tmp/linea-rehearsal/
-sed -e "s|__L2_CUSTOM_SENDER__|0x328de900860816d29D1367F6903a24D8ed40C997|g" \
-    -e "s|__L2_PROXY_ADMIN__|0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192|g" \
-    -e "s|__INITIAL_OWNER__|$INITIAL_OWNER|g" -e "s|__L2_GOVERNANCE_EXECUTOR__|$L2_GOVERNANCE_EXECUTOR|g" \
-    -e "s|__L2_LIQUIDITY_OWNER__|0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6|g" -e "s|__L2_LIDO_DEPLOYER__|$DEPLOYER|g" \
-    -e "s|__L2_ORACLE_POOL__|$L2_ORACLE_POOL|g" -e "s|__L2_SYNC_TRIGGER__|$L2_SYNC_TRIGGER|g" -e "s|__L2_CRE_RECEIVER__|$L2_CRE_RECEIVER|g" \
-    script/linea/state-mate/linea-l2-upgrade.template.yaml > /tmp/linea-rehearsal/linea.yaml
-(cd lib/state-mate && L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 corepack yarn start /tmp/linea-rehearsal/linea.yaml --only l2)
+mkdir -p /tmp/linea-rehearsal
+bash script/shared/write-deployed-yaml.sh /tmp/linea-rehearsal/linea.deployed.yaml \
+    0x328de900860816d29D1367F6903a24D8ed40C997 0xBf96561e4519182CFA4cebBf95494D9CA5a316f9 0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192 \
+    "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"
+ROOT="$(git rev-parse --show-toplevel)"
+(cd lib/state-mate && L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 \
+  corepack yarn start "$ROOT/config/state/l2.yaml" \
+    --inputs "$ROOT/config/state/l2-linea.inputs.yaml" \
+    --deployed /tmp/linea-rehearsal/linea.deployed.yaml --only l2)
 ```
 
-Expected tail: `✔ Total: 46 checks passed` (5 `getForwarder` / fee-blob / timestamp checks emit `⚠ skipped` because they're set after CRE workflow deploy, which the fork rehearsal does not cover).
+Expected: all L2 checks pass. Because the rehearsal runs Stage 1 (which sets `getFeeOtoD`/`getFeeDtoO` and pins `getForwarder`), those are now asserted rather than skipped; only deployment-time/runtime values (`getLastExecution`, the governance action-set counters) emit `⚠ skipped`.
 
 **6. L1 admin migration** on the L1 fork (no impersonated variant in `L1UpgradeScript`, so issue the three calls via `cast send --unlocked`):
 

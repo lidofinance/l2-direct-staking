@@ -1,0 +1,23 @@
+---
+# Single review surface for the Sepolia (OP-Sepolia) fork-test parameters (sibling of sepolia.yaml).
+# Mirrors script/optimism/sepolia/SepoliaMigrationConstants.sol. The externals here are testnet
+# deployments/predeploys; sync knobs are testnet-scaled (small amounts, 5-min delay).
+config:
+  - &minProcessMessageGas 75000        # CustomSender.MIN_PROCESS_MESSAGE_GAS
+  - &syncMinAmount 10000000000000000   # 0.01e18 SyncTrigger.getAmounts()[0]
+  - &syncMaxAmount 1000000000000000000 # 1e18    SyncTrigger.getAmounts()[1]
+  - &syncDelay 300                     # 5 min   SyncTrigger.getDelay()
+
+externals:
+  - &ethSepoliaCcipChainSelector 16015286601757825753
+  - &l1LidoCustomReceiverBytes32 "0x00000000000000000000000028356dacb84ee3ebdb007d1f5920b24c87e90d40"
+  - &initialOwner "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  - &l2GovernanceExecutor "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  - &l2LiquidityOwner "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  - &l2LidoDeployer "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+  - &l2BootstrapSyncAutomation "0xbc4FDc4eb8DFdf4EAd7AF3638C4885bFE5998056"
+  - &l2Weth "0x4200000000000000000000000000000000000006"
+  - &l2Wsteth "0x24B47cd3A74f1799b32B2de11073764Cb1bb318B"
+  - &l2LinkToken "0xE4aB69C077896252FAFBD49EFD26B5D171A32410"
+  - &l2CcipRouter "0x114A20A10b43D4115e5aeef7345a1A71d2a60C57"
+  - &l2PriceOracle "0x66C9A0b2971316079d31dda472f4eB5bF900C53b"
