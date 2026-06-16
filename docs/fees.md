@@ -114,7 +114,7 @@ SyncTrigger.triggerSync()
 | Mechanism | Manual? | What it does |
 |---|---|---|
 | `TokenHelper.refundExcessNative` | **No** — internal, automatic, intra-tx | Returns `maxFee − actualFee` to the SyncTrigger after each send |
-| `SyncTrigger.sweep()` | **Yes** — owner-only (L2 GovExec), `src/SyncTrigger.sol:167` | Withdraws the trigger's accumulated float |
+| `SyncTrigger.sweep()` | **Yes** — owner-only (L2 GovExec), `src/SyncTrigger.sol:163` | Withdraws the trigger's accumulated float |
 | `LidoCustomReceiver.retryFailedMessage` | **Yes** — re-drives a stuck L1 message | Recovers an OOG'd `processMessage` (not a fee refund) |
 
 This refund covers only the CCIP-fee excess (`FeeOtoD.maxFee`). The *other* two "excesses" are spent or burned, not refunded — see [Fee denomination](#fee-denomination-the-four-quantities-and-when-money-moves) and the Arbitrum [burned-refund](#feedtoo-arbitrum-overpayment-is-refunded-to-an-address-nobody-controls) case.
@@ -328,7 +328,7 @@ automatically. The mechanics:
   `src/SyncTrigger.sol:41`), so the float depletes by the *actual* cost, not the fronted maximum.
   At ≤2 syncs/day that is ≤ ~0.013 ETH/day/lane.
 - **Funding is permissionless** (anyone can send ETH to the trigger); **recovering excess is not**
-  (`sweep()` is owner-only = L2 GovExec, `src/SyncTrigger.sol:167` — a governance round-trip). So
+  (`sweep()` is owner-only = L2 GovExec, `src/SyncTrigger.sol:163` — a governance round-trip). So
   size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
   "fill it up", and refill from the [§5 alert](monitoring.md#5-capacity--headroom--medium).
 - **Initial funding is part of `deploy-stage1` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):

@@ -363,6 +363,32 @@ contract SyncTriggerTest is Test {
         assertEq(address(trigger).balance, 2 ether, "trigger balance untouched");
     }
 
+    function test_sweep_native_revertsOnZeroRecipient() public {
+        // a low-level call to the code-less zero address SUCCEEDS, so without the guard this
+        // would silently burn the native float. The guard turns it into a clean revert,
+        // mirroring CREReceiver.withdrawETH.
+        vm.deal(address(trigger), 1 ether);
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidRecipient.selector);
+        trigger.sweep(address(0), address(0), 1 ether);
+        assertEq(address(trigger).balance, 1 ether, "native float untouched");
+    }
+
+    function test_sweep_erc20_revertsOnZeroRecipient() public {
+        // the guard precedes the token branch, so the ERC20 path is rejected too (not all
+        // tokens revert on transfer to address(0)).
+        weth.mint(address(trigger), 5 ether);
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidRecipient.selector);
+        trigger.sweep(address(weth), address(0), 5 ether);
+        assertEq(weth.balanceOf(address(trigger)), 5 ether, "token balance untouched");
+    }
+
+    function test_sweep_revertsOnZeroRecipientEvenWhenZeroAmount() public {
+        // the recipient guard is validation-first: it runs before the amount==0 short-circuit,
+        // so address(0) is never a valid recipient regardless of amount.
+        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidRecipient.selector);
+        trigger.sweep(address(0), address(0), 0);
+    }
+
     // ─── shouldSync ────────────────────────────────────────────────────
 
     function test_shouldSync_falseWhenDeactivated() public {

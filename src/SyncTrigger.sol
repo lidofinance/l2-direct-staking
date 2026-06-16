@@ -161,6 +161,7 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     }
 
     function sweep(address token, address recipient, uint256 amount) public virtual onlyOwner {
+        if (recipient == address(0)) revert SyncTriggerInvalidRecipient();
         if (amount == 0) return;
 
         if (token == address(0)) {

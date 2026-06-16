@@ -8,6 +8,7 @@ interface ISyncTrigger {
     error SyncTriggerOnlyForwarder();
     error SyncTriggerInvalidForwarder();
     error SyncTriggerInvalidDelay();
+    error SyncTriggerInvalidRecipient();
     error SyncTriggerNativeTransferFailed();
 
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
