@@ -73,6 +73,7 @@ contract CREReceiverTest is Test {
     event ForwarderUpdated(address indexed previousForwarder, address indexed newForwarder);
     event ExpectedAuthorUpdated(address indexed previousAuthor, address indexed newAuthor);
     event AllowedCallUpdated(address indexed target, bytes4 indexed selector, bool allowed);
+    event ETHWithdrawn(address indexed to, uint256 amount);
 
     CREReceiver internal receiver;
     MockTarget internal target;
@@ -415,6 +416,14 @@ contract CREReceiverTest is Test {
         receiver.withdrawETH(recipient, 1 ether);
         assertEq(recipient.balance, 1 ether);
         assertEq(address(receiver).balance, 1 ether);
+    }
+
+    function test_withdrawETH_emitsEvent() public {
+        vm.deal(address(receiver), 2 ether);
+        address payable recipient = payable(makeAddr("recipient"));
+        vm.expectEmit(true, false, false, true);
+        emit ETHWithdrawn(recipient, 1 ether);
+        receiver.withdrawETH(recipient, 1 ether);
     }
 
     function test_withdrawETH_revertsIfNotOwner() public {

@@ -56,6 +56,10 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         bytes4 indexed selector,
         bool allowed
     );
+    event ETHWithdrawn(
+        address indexed to,
+        uint256 amount
+    );
 
     error UnauthorizedForwarder(address caller, address expected);
     error InvalidForwarderAddress();
@@ -99,9 +103,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         emit ForwarderUpdated(address(0), forwarder_);
         emit ExpectedAuthorUpdated(address(0), expectedAuthor_);
         if (allowedTarget != address(0)) {
-            if (allowedTarget.code.length == 0) revert TargetHasNoCode(allowedTarget);
-            _allowedCalls[allowedTarget][allowedSelector] = true;
-            emit AllowedCallUpdated(allowedTarget, allowedSelector, true);
+            _setAllowedCall(allowedTarget, allowedSelector, true);
         }
     }
 
@@ -189,11 +191,17 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         bytes4 selector,
         bool allowed
     ) external onlyOwner {
+        _setAllowedCall(target, selector, allowed);
+    }
+
+    /// @dev Single guarded allow-list mutator shared by the constructor seed and the owner setter, so
+    ///      the guards below cannot drift between the two entry points.
+    ///      A bare `.call` to a code-less address returns success=true with empty returndata, so
+    ///      allow-listing a target with no code would make onReport dispatch a silent no-op (the report
+    ///      is marked delivered, but nothing executes — sync never fires). Require code at set-time so
+    ///      that failure mode is impossible to configure. Removals (allowed=false) are unconstrained.
+    function _setAllowedCall(address target, bytes4 selector, bool allowed) private {
         if (target == address(0)) revert InvalidTargetAddress();
-        // A bare `.call` to a code-less address returns success=true with empty returndata, so
-        // allow-listing a target with no code would make onReport dispatch a silent no-op (the report
-        // is marked delivered, but nothing executes — sync never fires). Require code at set-time so
-        // that failure mode is impossible to configure. Removals (allowed=false) are unconstrained.
         if (allowed && target.code.length == 0) revert TargetHasNoCode(target);
         _allowedCalls[target][selector] = allowed;
         emit AllowedCallUpdated(target, selector, allowed);
@@ -206,6 +214,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         if (to == address(0)) revert InvalidRecipientAddress();
         (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert ETHTransferFailed();
+        emit ETHWithdrawn(to, amount);
     }
 
     /// @dev Extracts the workflow owner from packed CRE metadata.

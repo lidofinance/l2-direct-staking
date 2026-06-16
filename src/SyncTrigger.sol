@@ -5,7 +5,6 @@ import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
-import {TokenHelper} from "@csr/libraries/TokenHelper.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
 
@@ -41,12 +40,9 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     receive() external payable {}
 
     /**
-     * @dev Sets the immutable values for {SENDER}, {DEST_CHAIN_SELECTOR} and the initial owner.
-     *      The {WNATIVE} address is retrieved from the {SENDER} contract.
-     *      Sets the last execution timestamp to the current block timestamp and the delay to the
-     *      maximum value to prevent any unwanted execution.
-     *      Approves the maximum amount of LINK tokens to the {SENDER} contract to allow the
-     *      payment of LINK fees for CCIP messages.
+     * @dev {WNATIVE} is read from {SENDER}. The delay starts at `type(uint48).max` so syncing is
+     *      deactivated by default until the owner sets it. Grants {SENDER} an unbounded LINK
+     *      allowance to pay CCIP fees.
      */
     constructor(address sender, uint64 destChainSelector, address initialOwner) Ownable(initialOwner) {
         if (sender == address(0) || destChainSelector == 0) {
@@ -165,7 +161,16 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     }
 
     function sweep(address token, address recipient, uint256 amount) public virtual onlyOwner {
-        TokenHelper.transfer(token, recipient, amount);
+        if (amount == 0) return;
+
+        if (token == address(0)) {
+            (bool success,) = recipient.call{value: amount}("");
+            if (!success) revert SyncTriggerNativeTransferFailed();
+        } else {
+            IERC20(token).safeTransfer(recipient, amount);
+        }
+
+        emit Swept(token, recipient, amount);
     }
 
     // ──────────────── Internal ───────────────────────────────────────────
@@ -233,9 +238,8 @@ contract SyncTrigger is Ownable, ISyncTrigger {
     }
 
     function _setFeeDtoO(bytes calldata fee) internal virtual {
-        // validate at set-time with the same decoder the consumer uses. `CustomSender`
-        // re-decodes feeDtoO with `FeeCodec.decodeFee` (length must be >= 17); reject shorter
-        // buffers here rather than letting them self-DoS inside `sync`.
+        // Validate at set-time: CustomSender re-decodes feeDtoO via FeeCodec.decodeFee (len must be
+        // >= 17); reject short buffers here rather than letting them self-DoS inside sync.
         FeeCodec.decodeFee(fee);
         _feeDtoO = fee;
         emit FeeDtoOSet(fee);

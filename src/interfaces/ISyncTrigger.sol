@@ -8,12 +8,14 @@ interface ISyncTrigger {
     error SyncTriggerOnlyForwarder();
     error SyncTriggerInvalidForwarder();
     error SyncTriggerInvalidDelay();
+    error SyncTriggerNativeTransferFailed();
 
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
     event DelaySet(uint48 delay);
     event FeeDtoOSet(bytes fee);
     event FeeOtoDSet(bytes fee);
     event ForwarderSet(address forwarder);
+    event Swept(address indexed token, address indexed recipient, uint256 amount);
 
     function DEST_CHAIN_SELECTOR() external view returns (uint64);
     function SENDER() external view returns (address);

@@ -79,6 +79,10 @@ contract MockERC20 {
     }
 }
 
+/// @notice Has no receive/payable-fallback, so any native transfer to it fails — used to
+///         exercise the SyncTriggerNativeTransferFailed path in sweep.
+contract RejectEther {}
+
 /**
  * @title SyncTriggerTest
  * @notice Unit tests for SyncTrigger contract covering:
@@ -94,6 +98,7 @@ contract SyncTriggerTest is Test {
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
     event FeeOtoDSet(bytes fee);
     event FeeDtoOSet(bytes fee);
+    event Swept(address indexed token, address indexed recipient, uint256 amount);
 
     SyncTrigger internal trigger;
     MockCustomSender internal sender;
@@ -321,6 +326,41 @@ contract SyncTriggerTest is Test {
         vm.prank(makeAddr("nonOwner"));
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("nonOwner")));
         trigger.sweep(address(0), makeAddr("r"), 1);
+    }
+
+    function test_sweep_native_emitsEvent() public {
+        address recipient = makeAddr("recipient");
+        vm.deal(address(trigger), 3 ether);
+        vm.expectEmit(true, true, false, true);
+        emit Swept(address(0), recipient, 3 ether);
+        trigger.sweep(address(0), recipient, 3 ether);
+    }
+
+    function test_sweep_erc20_emitsEvent() public {
+        address recipient = makeAddr("recipient");
+        weth.mint(address(trigger), 5 ether);
+        vm.expectEmit(true, true, false, true);
+        emit Swept(address(weth), recipient, 5 ether);
+        trigger.sweep(address(weth), recipient, 5 ether);
+    }
+
+    function test_sweep_native_revertsWhenRecipientRejects() public {
+        // inlined native transfer uses a low-level call and reverts on failure (recipient with
+        // no receive/fallback), replacing the former TokenHelperNativeTransferFailed.
+        RejectEther rejecter = new RejectEther();
+        vm.deal(address(trigger), 1 ether);
+        vm.expectRevert(ISyncTrigger.SyncTriggerNativeTransferFailed.selector);
+        trigger.sweep(address(0), address(rejecter), 1 ether);
+    }
+
+    function test_sweep_zeroAmountIsNoop() public {
+        // a zero amount is a no-op: no balance moves (and no Swept event). Preserves the
+        // former TokenHelper.transfer behavior after inlining.
+        address recipient = makeAddr("recipient");
+        vm.deal(address(trigger), 2 ether);
+        trigger.sweep(address(0), recipient, 0);
+        assertEq(recipient.balance, 0, "no native moved");
+        assertEq(address(trigger).balance, 2 ether, "trigger balance untouched");
     }
 
     // ─── shouldSync ────────────────────────────────────────────────────
