@@ -100,8 +100,8 @@ l2:
         getFeeDtoO: null
         getLastExecution: null
         getMaxFees: null
-        shouldSync:
-          result: [false, 0]
+        getMaxGasLimit: null # covered-but-skipped: set during migration, but Sepolia has no maxGasLimit anchor (fees/gas unchecked here — see header); the production value cross-check lives in the four mainnet L2 configs
+        shouldSync: false # due-ness predicate (delay + pool WETH >= minAmount); false at the verified state (no WETH accumulated yet)
 
     creReceiver:
       name: CREReceiver

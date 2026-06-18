@@ -468,8 +468,10 @@ verify-constants-sync:
           "$(fee_val MAX_NATIVE_FEE)" "$(yml_anchor "$sm" maxNativeFee)"
         expect_eq "maxLinkFee → SyncTrigger.getMaxFees().maxLinkFee" \
           "$(fee_val MAX_LINK_FEE)"   "$(yml_anchor "$sm" maxLinkFee)"
+        expect_eq "maxGasLimit → SyncTrigger.getMaxGasLimit() (L2_SYNC_MAX_GAS_LIMIT)" \
+          "$(fee_val MAX_GAS_LIMIT)"  "$(yml_anchor "$sm" maxGasLimit)"
       else
-        echo "  WARN forge not found — skipping fee-blob cross-check (feeOtoD/feeDtoO/maxFees)"
+        echo "  WARN forge not found — skipping fee-blob cross-check (feeOtoD/feeDtoO/maxFees/maxGasLimit)"
       fi
 
       echo "[$net] justfile preflight-check / preflight-check-l1 case blocks"
@@ -556,7 +558,17 @@ verify-externals-coverage:
     # Anchor names cross-checked by a `yml_anchor` row in verify-constants-sync. The justfile is
     # invariant across the loop below, so scan it ONCE here (space-padded for the `case` match)
     # rather than re-grepping it per anchor per net.
-    covered=" $(grep -oE 'yml_anchor "[^"]+" [A-Za-z0-9]+' justfile | awk '{print $NF}' | sort -u | tr '\n' ' ')"
+    #
+    # Match on the (FILE, anchor) PAIR, not the bare name: an L1-file row (yml_anchor "$L1_YAML" …) must
+    # NOT be credited as covering an identically-named L2 anchor. `lidoDaoAgent`, e.g., exists in BOTH
+    # the L1 yaml (constants-checked) and each L2 lane (an on-chain echo), but only the L1 copy has a
+    # verify-constants-sync row — so the L2 anchor must fall through to the allowlist below, not silently
+    # pass on the unrelated L1 row (which would also make `lidoDaoAgent`'s allow entry dead code, and let
+    # an L1 rename flip the L2 verdict). An L2 anchor counts as covered ONLY when a row reads it from the
+    # per-lane state-mate file ("$sm", which yml_anchor expands to l2-<net>.inputs/.deployed) or from a
+    # literal config/state/l2-*.yaml path.
+    covered=" $(grep -oE 'yml_anchor "(\$sm|config/state/l2-[^"]+)" [A-Za-z0-9]+' justfile \
+                  | awk '{print $NF}' | sort -u | tr '\n' ' ')"
     echo "===================================================================="
     echo "VERIFY EXTERNALS COVERAGE  (every L2 external/deployed anchor pinned to a source-of-truth)"
     echo "===================================================================="
@@ -970,8 +982,10 @@ quote-ccip-fees:
       } < <(yq "$ANCHORS" "$f")
       otod="${otod#0x}"; dtoo="${dtoo#0x}"
       [[ ${#otod} -eq 42 ]] || { echo "  ${NAMES[$i]}: malformed feeOtoD (got ${#otod} hex chars, want 42): 0x$otod" >&2; exit 1; }
-      MAXFEE[$i]=$(( 16#${otod:0:32} ))              # encodeCCIP bytes 0..15  = maxFee
-      GASLIM[$i]=$(( 16#${otod:34:8} ))              # encodeCCIP bytes 17..20 = gasLimit
+      # maxFee is a uint128 (32 hex chars). Parse with `cast to-dec`, NOT bash `$(( 16#… ))`, which is
+      # signed 64-bit and silently wraps a maxFee >= 2^63 wei (~9.22 ETH) to a garbage/negative value.
+      MAXFEE[$i]="$(cast to-dec "0x${otod:0:32}")"   # encodeCCIP bytes 0..15  = maxFee (uint128)
+      GASLIM[$i]=$(( 16#${otod:34:8} ))              # encodeCCIP bytes 17..20 = gasLimit (uint32, 64-bit-safe)
       DATALEN[$i]=$(( 52 + ${#dtoo} / 2 ))           # recipient[20] + amount[32] + feeDtoO
       printf '  %-8s router=%s weth=%s selector=%s gasLimit=%s maxFee=%s ETH data=%sB\n' \
         "${NAMES[$i]}" "${ROUTER[$i]}" "${WETH[$i]}" "${SELECTOR[$i]}" "${GASLIM[$i]}" \
@@ -1000,11 +1014,166 @@ quote-ccip-fees:
       raw="$(cast call "${ROUTER[$i]}" "$SIG" "${SELECTOR[$i]}" "$msg" --rpc-url "$rpc_val" 2>&1)" \
         || { echo "  getFee reverted: ${raw}"; rc=1; continue; }
       fee_wei="${raw%% *}"                                 # strip any "[1.23e16]" annotation
-      bps=$(( fee_wei / (MAXFEE[$i] / 10000) ))            # utilization in bps of this lane's maxFee
-      flag=""; (( bps >= 8000 )) && flag="  ⚠ >=80% of maxFee"
+      # utilization in bps of this lane's maxFee. Compute in awk: bash `$(( ))` is signed 64-bit (wraps a
+      # maxFee/fee >= 2^63 wei) and the old `fee_wei / (MAXFEE/10000)` form divided by ZERO for a maxFee
+      # in [1,9999] wei. The ratio is tiny so awk's double precision is ample; MAXFEE/fee_wei stay exact
+      # decimal strings for the `cast from-wei` displays. A 0 maxFee (malformed) is flagged, not divided by.
+      if [[ "${MAXFEE[$i]}" == "0" ]]; then
+        bps=0; flag="  ⚠ maxFee is 0 (malformed feeOtoD)"
+      else
+        bps=$(awk -v f="$fee_wei" -v m="${MAXFEE[$i]}" 'BEGIN { printf "%d", f * 10000 / m }')
+        flag=""; (( bps >= 8000 )) && flag="  ⚠ >=80% of maxFee"
+      fi
       printf '  fee: %s ETH  (gasLimit %s, %d.%02d%% of %s ETH maxFee)%s\n' \
         "$(cast from-wei "$fee_wei")" "${GASLIM[$i]}" "$(( bps / 100 ))" "$(( bps % 100 ))" \
         "$(cast from-wei "${MAXFEE[$i]}")" "$flag"
+    done
+    exit $rc
+
+# Does the OtoD-leg fee depend on the bridged amount? Sweeps the amount through the live
+# `IRouterClient.getFee` (ground truth, version-agnostic) and reports the fee-vs-amount curve, the
+# marginal bps, and the breakeven amount where the fee would cross the 0.125 ETH `maxFee` revert bound.
+# Also shows the configured token-transfer policy where decodable (v1.5 EVM2EVMOnRamp = OP/Linea); the
+# newer FeeQuoter behind v1.6 OnRamps (Arb/Base) has a version-specific struct, so it is NOT decoded —
+# the sweep is authoritative. Only the bridged `amount` is swept (the Arbitrum DtoO +~0.001 ETH budget
+# is a fixed addend, CustomSender.sol:294). Needs RPC_<NET> (or legacy L2_<NET>_RPC_URL).
+# Does the OtoD fee scale with the bridged amount? Sweeps live getFee + reports marginal bps & the maxFee breakeven.
+quote-ccip-fee-by-amount:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    command -v yq >/dev/null 2>&1 || { echo "yq (mikefarah) is required" >&2; exit 1; }
+    SIG="getFee(uint64,(bytes,bytes,(address,uint256)[],address,bytes))(uint256)"
+    AMTS_WETH=( 0.001 0.01 0.1 1 10 100 1000 10000 100000 )   # geometric sweep of the bridged amount
+    # Same anchors / yq pass as quote-ccip-fees (feeDtoO kept only for the DATALEN computation).
+    ANCHORS='[.. | select(anchor=="l2CcipRouter")][0],
+      [.. | select(anchor=="ethMainnetCcipChainSelector")][0],
+      [.. | select(anchor=="l1LidoCustomReceiverBytes32")][0],
+      [.. | select(anchor=="l2Weth")][0],
+      [.. | select(anchor=="feeOtoD")][0],
+      [.. | select(anchor=="feeDtoO")][0]'
+
+    NETS=( optimism arbitrum base linea )
+    declare -a NAMES RPC_ENVS L2_ENVS
+    for net in "${NETS[@]}"; do
+      u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
+      NAMES+=("${u:0:1}${net:1}"); RPC_ENVS+=("RPC_$u"); L2_ENVS+=("L2_${u}_RPC_URL")
+    done
+
+    # ── Resolve every per-lane constant from config/state/l2-<net>.inputs.yaml (one yq pass each) ──
+    declare -a ROUTER SELECTOR RECEIVER WETH GASLIM MAXFEE DATALEN
+    echo "Resolved from config/state/l2-<net>.inputs.yaml:"
+    for i in "${!NETS[@]}"; do
+      f="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
+      [[ -f "$f" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $f" >&2; exit 1; }
+      { IFS= read -r ROUTER[$i]; IFS= read -r SELECTOR[$i]; IFS= read -r RECEIVER[$i]
+        IFS= read -r WETH[$i];   IFS= read -r otod;        IFS= read -r dtoo
+      } < <(yq "$ANCHORS" "$f")
+      otod="${otod#0x}"; dtoo="${dtoo#0x}"
+      [[ ${#otod} -eq 42 ]] || { echo "  ${NAMES[$i]}: malformed feeOtoD (got ${#otod} hex chars, want 42): 0x$otod" >&2; exit 1; }
+      MAXFEE[$i]="$(cast to-dec "0x${otod:0:32}")"   # encodeCCIP bytes 0..15  = maxFee (uint128)
+      GASLIM[$i]=$(( 16#${otod:34:8} ))              # encodeCCIP bytes 17..20 = gasLimit (uint32)
+      DATALEN[$i]=$(( 52 + ${#dtoo} / 2 ))           # recipient[20] + amount[32] + feeDtoO
+      printf '  %-8s router=%s weth=%s selector=%s gasLimit=%s maxFee=%s ETH\n' \
+        "${NAMES[$i]}" "${ROUTER[$i]}" "${WETH[$i]}" "${SELECTOR[$i]}" "${GASLIM[$i]}" \
+        "$(cast from-wei "${MAXFEE[$i]}")"
+    done
+    echo "  receiver (shared) = ${RECEIVER[0]}"
+    echo
+
+    rc=0
+    for i in "${!NAMES[@]}"; do
+      name="${NAMES[$i]}"; rpc_env="${RPC_ENVS[$i]}"; l2_env="${L2_ENVS[$i]}"
+      echo "──── ${name} ────"
+      rpc_val="${!rpc_env:-}"
+      [[ -n "$rpc_val" ]] || rpc_val="${!l2_env:-}"
+      if [[ -z "$rpc_val" ]]; then
+        echo "  (skipped — set ${rpc_env} or legacy ${l2_env})"; rc=1
+        continue
+      fi
+      if ! cast chain-id --rpc-url "$rpc_val" >/dev/null 2>&1; then
+        echo "  (skipped — ${rpc_env} not reachable: ${rpc_val})"; rc=1
+        continue
+      fi
+
+      # ── Part A: configured token-transfer fee policy. The struct layout is FeeQuoter-version-specific,
+      # so we ONLY decode the stable v1.5 EVM2EVMOnRamp layout (OP/Linea: 7 words, last = isEnabled).
+      # Arb/Base run a newer FeeQuoter (2.0.0) whose TokenTransferFeeConfig differs — blind-decoding it
+      # yields garbage, so we print its version and defer to the sweep (Part B = version-agnostic truth). ──
+      cfg_decibps=""   # set only when reliably decoded (v1.5); cross-checked against the sweep below
+      onramp="$(cast call "${ROUTER[$i]}" "getOnRamp(uint64)(address)" "${SELECTOR[$i]}" --rpc-url "$rpc_val" 2>&1)"
+      if [[ ! "$onramp" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+        echo "  config: (getOnRamp failed — $onramp)"; rc=1
+      else
+        ver="$(cast call "$onramp" "typeAndVersion()(string)" --rpc-url "$rpc_val" 2>&1)"
+        if [[ "$ver" == *EVM2EVMOnRamp* ]]; then
+          cfgraw="$(cast call "$onramp" "getTokenTransferFeeConfig(address)" "${WETH[$i]}" --rpc-url "$rpc_val" 2>&1)"
+          if [[ "$cfgraw" =~ ^0x[0-9a-fA-F]+$ && ${#cfgraw} -ge 450 ]]; then
+            h="${cfgraw#0x}"
+            minc="$(cast to-dec "0x${h:0:64}")"; maxc="$(cast to-dec "0x${h:64:64}")"; dbps="$(cast to-dec "0x${h:128:64}")"
+            isen="$(cast to-dec "0x${h:$(( (${#h}/64 - 1) * 64 )):64}")"; cfg_decibps="$dbps"
+            printf '  config (EVM2EVMOnRamp v1.5): deciBps=%s (%s.%s bps) min=$%s.%02d max=$%s.%02d enabled=%s\n' \
+              "$dbps" "$(( dbps / 10 ))" "$(( dbps % 10 ))" "$(( minc / 100 ))" "$(( minc % 100 ))" "$(( maxc / 100 ))" "$(( maxc % 100 ))" "$isen"
+            [[ "$maxc" == "4294967295" ]] && echo "          (max = uint32 sentinel \$42,949,672.95 → effectively UNCAPPED: premium grows ~linearly with amount)"
+          else
+            echo "  config: (v1.5 transfer-fee read failed — $cfgraw)"; rc=1
+          fi
+        else
+          dynraw="$(cast call "$onramp" "getDynamicConfig()" --rpc-url "$rpc_val" 2>&1)"
+          if [[ "$dynraw" =~ ^0x[0-9a-fA-F]{128,}$ ]]; then
+            feequoter="0x${dynraw:26:40}"   # DynamicConfig field 0 = feeQuoter (OnRamp.sol:71), left-padded word 0
+            fqver="$(cast call "$feequoter" "typeAndVersion()(string)" --rpc-url "$rpc_val" 2>&1 | tr -d '"')"
+            printf '  config: %s at %s — transfer-fee struct is version-specific, not decoded (sweep is authoritative)\n' "$fqver" "$feequoter"
+          else
+            echo "  config: (getDynamicConfig failed — $dynraw)"; rc=1
+          fi
+        fi
+      fi
+
+      # ── Part B: sweep the bridged amount through getFee (ground truth; data + gasLimit fixed, so only
+      # the token-transfer premium can move). All fee math in awk — fees reach tens of ETH (>2^63 wei). ──
+      extra="0x97a657c9$(printf '%064x' "${GASLIM[$i]}")"   # EVMExtraArgsV1 tag ++ abi.encode(gasLimit)
+      data="0x$(printf '%0*d' $(( DATALEN[$i] * 2 )) 0)"     # zero bytes of the real payload length
+      m="${MAXFEE[$i]}"; first=""; prev=""; prev_amt=""; maxseen=0; maxmd=0; breach_amt=""; breach_prev=""
+      for amt in "${AMTS_WETH[@]}"; do
+        amt_wei="$(cast to-wei "$amt" 2>/dev/null)" || { printf '    %-9s WETH  (bad amount)\n' "$amt"; continue; }
+        msg="(${RECEIVER[$i]},${data},[(${WETH[$i]},${amt_wei})],0x0000000000000000000000000000000000000000,${extra})"
+        raw="$(cast call "${ROUTER[$i]}" "$SIG" "${SELECTOR[$i]}" "$msg" --rpc-url "$rpc_val" 2>&1)" \
+          || { printf '    %-9s WETH  getFee reverted: %s\n' "$amt" "$raw"; rc=1; continue; }
+        fee_wei="${raw%% *}"                                 # strip any "[1.23e16]" annotation
+        if [[ -z "$first" ]]; then d="—"; first="$fee_wei"; else
+          d="$(awk -v a="$fee_wei" -v b="$prev" 'BEGIN{ printf "%.18f", (a-b)/1e18 }')"
+          # marginal deci-bps vs previous point: WETH is the value token, so premiumETH ≈ amountWETH × bpsFrac.
+          md="$(awk -v a="$fee_wei" -v b="$prev" -v x="$amt" -v y="$prev_amt" 'BEGIN{ dd=x-y; if(dd>0)printf "%.4f",(a-b)/1e18/dd*1e5; else print 0 }')"
+          maxmd="$(awk -v a="$md" -v b="$maxmd" 'BEGIN{ print (a>b)?a:b }')"
+        fi
+        pct="$(awk -v f="$fee_wei" -v mm="$m" 'BEGIN{ if(mm==0)print"0.00"; else printf "%.2f", f*100/mm }')"
+        flag="$(awk -v f="$fee_wei" -v mm="$m" 'BEGIN{ print (mm>0 && f>=mm)?"  ✗ exceeds maxFee":((mm>0 && f>=0.8*mm)?"  ⚠ >=80% maxFee":"") }')"
+        printf '    %-9s WETH  fee=%s ETH  Δ=%s ETH  (%s%% maxFee)%s\n' "$amt" "$(cast from-wei "$fee_wei")" "$d" "$pct" "$flag"
+        if [[ -z "$breach_amt" ]] && awk -v f="$fee_wei" -v mm="$m" 'BEGIN{ exit !(mm>0 && f>=mm) }'; then breach_amt="$amt"; breach_prev="$prev_amt"; fi
+        maxseen="$(awk -v a="$fee_wei" -v b="$maxseen" 'BEGIN{ print (a>b)?a:b }')"
+        prev="$fee_wei"; prev_amt="$amt"
+      done
+
+      if [[ -n "$first" ]]; then
+        if awk -v x="$maxmd" 'BEGIN{ exit !(x>=1) }'; then   # >=0.1 bps slope ⇒ amount-sensitive
+          verdict="$(awk -v x="$maxmd" 'BEGIN{ printf "VARIES — fee scales with the amount at ~%.2f bps in the linear band", x/10 }')"
+        else
+          verdict="FLAT — fee does NOT depend on the amount across the swept range"
+        fi
+        printf '  verdict: %s; max swept fee = %s ETH\n' "$verdict" "$(cast from-wei "$maxseen")"
+        if [[ -n "$cfg_decibps" && "$cfg_decibps" != "0" ]] && awk -v c="$cfg_decibps" -v s="$maxmd" 'BEGIN{ exit !(s<0.8*c || s>1.25*c) }'; then
+          printf '           ⚠ v1.5 config deciBps=%s disagrees with sweep-implied ~%.0f deci-bps — investigate\n' "$cfg_decibps" "$maxmd"
+        fi
+        if [[ -n "$breach_amt" ]]; then
+          be="$(awk -v mm="$m" -v md="$maxmd" 'BEGIN{ if(md>0) printf "%.0f", (mm/1e18)/(md/1e5); else print "?" }')"
+          printf '           ✗ fee reaches the %s ETH maxFee at ~%s WETH (observed between %s and %s WETH) → a sync at/above that size reverts (CCIPSenderExceedsMaxFee)\n' \
+            "$(cast from-wei "$m")" "$be" "${breach_prev:-0}" "$breach_amt"
+        else
+          printf '           ✓ no swept amount (≤ %s WETH) reaches the %s ETH maxFee\n' "${AMTS_WETH[${#AMTS_WETH[@]}-1]}" "$(cast from-wei "$m")"
+        fi
+      fi
     done
     exit $rc
 
@@ -1951,9 +2120,34 @@ sepolia-verify-stage1:
 # Stage 2: Initial Owner migrates L2 admin/role state. Wraps `executeMigrationSteps` with
 # bootstrap-automation neutralization (extras) and bootstrap-pool retirement (sweep + pause +
 # transfer). Mirrors `just migrate-stage2 <network>` on mainnet.
-# Required env: INITIAL_OWNER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR, L2_BOOTSTRAP_SYNC_AUTOMATION,
-#               L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CUSTOM_SENDER, L2_PROXY_ADMIN, L2_PRICE_ORACLE.
+# Required env: L2_OPTIMISM_SEPOLIA_RPC_URL, INITIAL_OWNER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR,
+#               L2_BOOTSTRAP_SYNC_AUTOMATION, L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER,
+#               L2_CRE_FORWARDER, L2_CUSTOM_SENDER, L2_PROXY_ADMIN, L2_PRICE_ORACLE.
 sepolia-migrate-stage2:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Mirror the mainnet migrate-stage2 guards: fail upfront with a clear just-level error rather than
+    # mid-simulation when SepoliaL2Upgrade.runMigrate -> _runMigrateBody reads any of these via
+    # vm.envAddress (L2_CRE_RECEIVER among them — SepoliaL2Upgrade.s.sol).
+    : "${L2_OPTIMISM_SEPOLIA_RPC_URL:?required; set it in .env.sepolia or export it before running}"
+    : "${INITIAL_OWNER_PRIVATE_KEY:?required for runMigrate(); export it before running}"
+    : "${L2_GOVERNANCE_EXECUTOR:?required (final L2 admin; also the default liquidity owner on Sepolia)}"
+    : "${L2_BOOTSTRAP_SYNC_AUTOMATION:?required; the bootstrap SyncAutomation to neutralize + de-role}"
+    : "${L2_ORACLE_POOL:?required; populate from sepolia-deploy-stage1 output}"
+    : "${L2_SYNC_TRIGGER:?required; populate from sepolia-deploy-stage1 output}"
+    : "${L2_CRE_RECEIVER:?required by runMigrate() (Stage-1-completeness precondition); populate from sepolia-deploy-stage1 output}"
+    : "${L2_CRE_FORWARDER:?required; the CRE forwarder Stage 1 wired into the CREReceiver}"
+    : "${L2_CUSTOM_SENDER:?required; the CSR CustomSender (SepoliaCSRDeploy output)}"
+    : "${L2_PROXY_ADMIN:?required; the CustomSender ProxyAdmin (SepoliaCSRDeploy output)}"
+    : "${L2_PRICE_ORACLE:?required; the price oracle (SepoliaCSRDeploy output)}"
+
+    for addr in "$L2_GOVERNANCE_EXECUTOR" "$L2_BOOTSTRAP_SYNC_AUTOMATION" "$L2_ORACLE_POOL" \
+                "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER" "$L2_CRE_FORWARDER" "$L2_CUSTOM_SENDER" \
+                "$L2_PROXY_ADMIN" "$L2_PRICE_ORACLE"; do
+      [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ && "$addr" != "0x0000000000000000000000000000000000000000" ]] \
+        || { echo "Bad address: $addr (expected 0x + 40 hex chars, non-zero)" >&2; exit 1; }
+    done
+
     forge script script/optimism/sepolia/SepoliaL2Upgrade.s.sol:SepoliaL2UpgradeScript \
         --sig "runMigrate()" \
         --rpc-url "$L2_OPTIMISM_SEPOLIA_RPC_URL" \

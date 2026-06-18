@@ -11,7 +11,7 @@ import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePoo
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
-import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {SyncTrigger} from "src/SyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 import {L1UpgradeActions} from "script/l1/L1UpgradeActions.s.sol";
@@ -204,7 +204,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
         vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
         (newSyncTrigger, creReceiver) =
-            deploySyncInfrastructure(cfg, LIDO_L2_GOVERNANCE_EXECUTOR, creForwarder, cfg.liquidityOwner);
+            deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
         vm.stopPrank();
 
         // Stage 2: Migrate existing contracts (as Initial Owner)
@@ -236,11 +236,11 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         address creForwarder = makeAddr("creForwarder");
         vm.startPrank(lidoDeployer);
         address creReceiverAddr;
-        // expectedAuthor (4th arg) is the LOL multisig (= cfg.liquidityOwner), NOT the deployer:
+        // expectedAuthor (3rd arg) is the LOL multisig (= cfg.liquidityOwner), NOT the deployer:
         // the CRE workflow is registered under the Safe via `cre workflow deploy --unsigned`, so
         // metadata.workflowOwner is the Safe. The deployer only broadcasts Stage 1. See ADR-0001.
         (newSyncTrigger, creReceiverAddr) =
-            deploySyncInfrastructure(cfg, lidoDeployer, creForwarder, cfg.liquidityOwner);
+            deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
         newCREReceiver = CREReceiver(payable(creReceiverAddr));
         vm.stopPrank();
 
@@ -266,27 +266,27 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
     }
 
     function _verifySyncTriggerConfig(address syncTrigger) internal {
-        assertEq(ISyncTrigger(syncTrigger).SENDER(), L2_CUSTOM_SENDER, "sync trigger SENDER");
+        assertEq(SyncTrigger(payable(syncTrigger)).SENDER(), L2_CUSTOM_SENDER, "sync trigger SENDER");
         assertEq(
-            ISyncTrigger(syncTrigger).DEST_CHAIN_SELECTOR(),
+            SyncTrigger(payable(syncTrigger)).DEST_CHAIN_SELECTOR(),
             ETH_CCIP_CHAIN_SELECTOR,
             "sync trigger destination selector"
         );
-        assertEq(ISyncTrigger(syncTrigger).WNATIVE(), L2_WETH, "sync trigger WNATIVE");
+        assertEq(SyncTrigger(payable(syncTrigger)).WNATIVE(), L2_WETH, "sync trigger WNATIVE");
         assertEq(Ownable(syncTrigger).owner(), lidoL2LiquidityOwner, "sync trigger owner");
 
-        (uint128 minSyncAmount, uint128 maxSyncAmount) = ISyncTrigger(syncTrigger).getAmounts();
+        (uint128 minSyncAmount, uint128 maxSyncAmount) = SyncTrigger(payable(syncTrigger)).getAmounts();
         assertEq(minSyncAmount, L2_SYNC_MIN_AMOUNT, "sync trigger min sync amount");
         assertEq(maxSyncAmount, L2_SYNC_MAX_AMOUNT, "sync trigger max sync amount");
-        assertEq(ISyncTrigger(syncTrigger).getDelay(), L2_SYNC_DELAY, "sync trigger delay");
+        assertEq(SyncTrigger(payable(syncTrigger)).getDelay(), L2_SYNC_DELAY, "sync trigger delay");
         (bytes memory expectedFeeOtoD, bytes memory expectedFeeDtoO) = _defaultSyncFees();
         assertEq(
-            keccak256(ISyncTrigger(syncTrigger).getFeeOtoD()),
+            keccak256(SyncTrigger(payable(syncTrigger)).getFeeOtoD()),
             keccak256(expectedFeeOtoD),
             "sync trigger fee O->D"
         );
         assertEq(
-            keccak256(ISyncTrigger(syncTrigger).getFeeDtoO()),
+            keccak256(SyncTrigger(payable(syncTrigger)).getFeeDtoO()),
             keccak256(expectedFeeDtoO),
             "sync trigger fee D->O"
         );
@@ -298,7 +298,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
 
     function _verifySyncTriggerConfig(address syncTrigger, address expectedForwarder) internal {
         _verifySyncTriggerConfig(syncTrigger);
-        assertEq(ISyncTrigger(syncTrigger).getForwarder(), expectedForwarder, "sync trigger forwarder");
+        assertEq(SyncTrigger(payable(syncTrigger)).getForwarder(), expectedForwarder, "sync trigger forwarder");
     }
 
     function _verifyOldAutomationsRevoked() internal {

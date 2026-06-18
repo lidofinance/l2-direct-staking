@@ -51,7 +51,7 @@ liveness](#d-fee-configuration--liveness)).
 | File                                               | Notes                                                                                                                                                                                                                                                                                     |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/cre/interfaces/IReceiver.sol`                 | Keystone receiver interface — `onReport`-only; **its `interfaceId` (`0x805f2132`) is load-bearing** (a one-selector mistake silently bricks delivery). The file is reference, but the id **match** is asserted in the in-scope `CREReceiver.supportsInterface` and is an audit-focus item (§B).                                                                                                                                    |
-| `src/interfaces/ISyncTrigger.sol`                  | Interface / events / errors for `SyncTrigger`.                                                                                                                                                                                                                                            |
+| `src/libraries/FeeSplit.sol`                       | Pure helper (~10 nSLOC, `internal` / inlined) splitting the OtoD/DtoO fee blobs into their max native/LINK totals. **In the production path** — exercised by the in-scope `SyncTrigger.getMaxFees()` — and shared with the deploy script's `runPrintFeeParams` so the on-chain split and the `verify-constants-sync` fee-anchor oracle cannot drift. New, Lido-authored. License: Apache-2.0.                                       |
 | `lib/chainlink-csr/**` @ `62108f7`                 | Upstream `CustomSender`, `OraclePool`, `FeeCodec`, `TokenHelper` — **out of scope** (relied-on upstream code). `SyncTrigger`'s fee/native/LINK accounting is *adapted from* (not byte-for-byte) upstream `SyncAutomation` at this commit. **Caveat — load-bearing for scope size:** upstream `SyncAutomation` is **not known to be audited** (no audit report vendored in `lib/chainlink-csr`; Chainlink's Direct-Staking reference template is published "AS IS … has not been audited"). So "adapted from audited upstream" must **not** be used to exclude this logic. Until (a) a concrete upstream audit reference and (b) an equivalence `git diff` of the shared accounting between `SyncTrigger` and `SyncAutomation` at the pinned commits are attached, treat the shared accounting as **in-scope by default**. |
 | `lib/chainlink-local/**` (vendored `ccip@eb419a0`) | CCIP routers, `KeystoneForwarder` / `IReceiver` — out of scope.                                                                                                                                                                                                                           |
 | `lib/openzeppelin-contracts{,-upgradeable}/**`     | `Ownable`, `SafeERC20`, `IERC165` — out of scope (relied-on upstream).                                                                                                                                                                                                                    |
@@ -179,8 +179,8 @@ CRE DON ──signs report──► CRE Keystone forwarder (L2, Chainlink-operat
 
 A single sync proceeds as:
 
-1. The Chainlink CRE workflow decides off-chain (an `eth_call` `shouldSync()` probe)
-   whether a sync is due and, if so, the DON signs a report.
+1. The Chainlink CRE workflow decides off-chain (`eth_call` probes of `shouldSync()`
+   and `canSync()`) whether a sync is due and executable and, if both, the DON signs a report.
 2. The Chainlink CRE Keystone forwarder validates the report and — only after the ERC-165
    delivery gate (`supportsInterface(0x805f2132)` **and** `0x01ffc9a7`) — calls
    `CREReceiver.onReport()`.
@@ -214,7 +214,7 @@ them (`SYNC_ROLE` administration, the `CustomSender` admin, the L2 `ProxyAdmin`)
 
 | Role (authority slot) | Holder: deploy → post-migration | Gated capability |
 | --- | --- | --- |
-| **`SyncTrigger` owner** | Lido Deployer EOA → **LOL multisig** (Safe) | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD`, `setFeeDtoO`, `sweep` — `sweep` moves any ERC-20 *or* native balance (incl. the fee float) to an arbitrary recipient |
+| **`SyncTrigger` owner** | **LOL multisig** (Safe) — from construction (no deployer phase) | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD`, `setFeeDtoO`, `setMaxGasLimit`, `sweep` — `sweep` moves any ERC-20 *or* native balance (incl. the fee float) to an arbitrary recipient |
 | **`CREReceiver` owner** | Lido Deployer EOA → **LOL multisig** (Safe) | `setForwarder`, `setExpectedAuthor`, `setAllowedCall`, `withdrawETH` — `withdrawETH` moves native balance (normally ~0) to an arbitrary recipient |
 | **`CREReceiver` forwarder** (`_forwarder`) | **Chainlink CRE Keystone forwarder** (per-L2, Chainlink-operated) | sole caller of `onReport`; **pinned per network** in code (`_expectedCREForwarder()` → `<Lane>MigrationConstants.CRE_FORWARDER`, not env-supplied — see §B), but with **no on-chain version/ABI assertion** |
 | **`SyncTrigger` forwarder** (`_forwarder`) | the deployed **`CREReceiver`** instance | sole caller of `triggerSync` — note "forwarder" denotes a *different* contract on each in-scope contract |
@@ -326,10 +326,13 @@ Cross-references: `DOC.md §1` (Networks) and `DOC.md §6.1` (the two different 
 The four lanes are **not** interchangeable. Linea is the consistent outlier; Arbitrum has its own
 return-leg quirk. A uniform change applied to all four is a footgun — **G-1** (gov-executor guard)
 is the broadcast-/config-time guard (code-enforced, `L2UpgradeWrongGovernanceExecutor`) against this
-class of mistake, while **C-1** (per-lane FeeQuoter cap) is a *deployed-instance/off-chain* check only:
-nothing in the contracts or scripts bounds the encoded `FeeOtoD.gasLimit` from above (`setFeeOtoD`
-enforces only the lower `MIN_PROCESS_MESSAGE_GAS` floor, F-3), so a too-high gas limit is caught at
-`sync`-time (`MessageGasLimitTooHigh`), not at config time — verify it out-of-band:
+class of mistake, and **C-1** (per-lane FeeQuoter cap) is **now also a config-time guard**: `setFeeOtoD`
+rejects `gasLimit > getMaxGasLimit()` (`SyncTriggerGasLimitAboveMax`), where the owner-set
+`getMaxGasLimit()` ceiling is seeded per lane to the FeeQuoter `maxPerMsgGasLimit` at deploy (the F-3
+`MIN_PROCESS_MESSAGE_GAS` floor is the lower bound; this adds the upper bound). The ceiling is a static
+mirror of the live cap, so a chain-blind over-bump fails loudly at config time, while the FeeQuoter stays
+the source of truth at `sync`-time (`MessageGasLimitTooHigh`) — re-seed via `setMaxGasLimit` if CCIP ever
+changes a cap, and verify the deployed value out-of-band:
 
 | Aspect | Optimism / Base | Arbitrum | Linea |
 | --- | --- | --- | --- |
@@ -437,7 +440,7 @@ Not every theme carries all three sub-lists.
   - **F-3** (*source*): `setFeeOtoD` enforces, at set-time, that the encoded `gasLimit` is ≥
     `CustomSender.MIN_PROCESS_MESSAGE_GAS()` (in addition to the exact-21-byte decode check) — a
     decodable config below the sender's floor would otherwise make every `sync` revert
-    `CustomSenderInsufficientGas` while `shouldSync` stays true, so the CRE DON would submit a
+    `CustomSenderInsufficientGas` while `shouldSync`/`canSync` stay true, so the CRE DON would submit a
     reverting tx every tick.
 - **Residual risks**
   - **Gas-limit headroom is tight on Optimism/Base post-Glamsterdam.** The fork harness now
@@ -454,11 +457,39 @@ Not every theme carries all three sub-lists.
     receiver's unreachable L2 alias (verified on-chain). OP/Base `l2Gas` couples to `FeeOtoD.gasLimit`
     ~1:1 and ~300k of slack alone crosses the OOG cliff. (`docs/fees.md §FeeOtoD.maxFee`, `§FeeDtoO
     (Arbitrum)`, `§FeeDtoO.l2Gas (Optimism/Base)`.)
+  - **`maxFee` guard adequacy is coupled to `maxAmount` on OP/Linea.** The OtoD quote scales with the
+    bridged amount on Optimism/Linea (CCIP charges 5 bps with an uncapped, uint32-sentinel ceiling;
+    Arbitrum/Base are flat ≈0 bps for WETH). So `maxFee`'s adequacy there is tied to the 100 WETH
+    `maxAmount` cap: the current setting leaves ~2.5× margin (a full 100 WETH sync quotes ~40% of
+    `maxFee`), but a `setAmounts` raise past ~250 WETH or a `setFeeOtoD` `maxFee` cut on those two lanes
+    would make a full-size sync revert `CCIPSenderExceedsMaxFee`. Measured/reproducible via
+    `just quote-ccip-fee-by-amount`. (`docs/otod-fee-amount-sensitivity.md`.)
   - **Return-leg loss/stall paths.** Arbitrum: if the L1→L2 retryable does not auto-redeem, it must
     be **manually redeemed within ~7 days or the wstETH is lost** — the one return path that can lose
     funds. OP/Base: under-gassed `finalizeDeposit` is permissionlessly replayable. Linea: messages
     >250k gas drop the postman auto-claim. L1: under-gassed `ccipReceive` parks funds for permissionless
     `retryFailedMessage`. (`docs/fees.md §Failure modes`.)
+  - **F-4 — `feeDtoO` serialization boundary (deliberately off-chain; *not* an on-chain invariant).**
+    `setFeeDtoO` validates only the generic 17-byte prefix (`FeeCodec.decodeFee`: `len>=17` + the
+    `payInLink` bit), **not** the lane-specific shape the L1 adapter enforces (Arbitrum 29B with
+    `feeAmount != 0`; Optimism/Base 21B with `feeAmount == 0`; Linea 17B; all `payInLink == false`).
+    This is the lone fee-blob asymmetry: `feeOtoD` is uniform (CCIP 21-byte) and fully guarded (**F-3**
+    floor + **C-1** ceiling + exact-21), whereas a lane-mismatched `feeDtoO` (wrong length,
+    `payInLink == true`, or nonzero `feeAmount` on OP/Base/Linea) passes set-time **and** L2 (`CustomSender`
+    also decodes it only with the generic `decodeFee`), crosses to L1, and reverts inside the adapter →
+    defensive catch parks it in `failedHashes`; `retryFailedMessage` re-runs the same frozen bytes
+    (deterministic re-revert), so only `recoverTokens` (L1 `DEFAULT_ADMIN_ROLE`) frees the stranded WETH.
+    Reused every cycle, it restrands a fresh batch (≤`maxAmount`) per `delay` with **no L2 signal**. Left
+    unguarded on-chain **by design**: the format is immutable-per-lane (pinned in `chainlink-csr@62108f7`
+    + the immutable L1 adapter, changeable only via a coordinated L1-governance `setAdapter`), so an
+    on-chain check would couple the L2 trigger to a format it cannot re-bind; the failure is owner-gated
+    (`onlyOwner` = LOL multisig) and L1-recoverable, not a loss; and the encoded bytes are already pinned
+    off-chain at deploy (`verify-stage1` keccak vs the migration constants; live state-mate `getFeeDtoO`).
+    Residual exposure is a **manual post-deploy `setFeeDtoO` retune** (expected for Arbitrum gas params).
+    Precedent: the predecessor SyncAutomation on Arbitrum was set to a 21-byte CCIP `feeDtoO` (a
+    "configuration anomaly", `script/arbitrum/ArbitrumMigrationConstants.sol:45-53`) that would revert
+    `decodeArbitrumL1toL2` (expects 29). (`docs/fees.md §FeeDtoO encoding`, `§Plan: when reality outgrows
+    a limit`.)
 
 #### E. Migration handoff & wiring
 

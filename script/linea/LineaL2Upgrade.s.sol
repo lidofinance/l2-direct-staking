@@ -32,6 +32,7 @@ contract LineaL2Defaults is L2UpgradeActions {
             destinationMaxFee: C.L2_SYNC_DESTINATION_MAX_FEE,
             destinationPayInLink: C.L2_SYNC_DESTINATION_PAY_IN_LINK,
             destinationGasLimit: C.L2_SYNC_DESTINATION_GAS_LIMIT,
+            maxGasLimit: C.L2_SYNC_MAX_GAS_LIMIT,
             feeDtoO: FeeCodec.encodeLineaL1toL2(),
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,

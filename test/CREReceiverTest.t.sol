@@ -128,6 +128,16 @@ contract CREReceiverTest is Test {
         new CREReceiver(forwarder, expectedAuthor, address(target), PING);
     }
 
+    function test_constructor_revertsOnCodelessAllowedTarget() public {
+        // the constructor seed routes through _setAllowedCall, which rejects a code-less target: a bare
+        // `.call` to an address with no code returns success=true with empty returndata, so allow-listing
+        // one would make onReport a silent no-op (report marked delivered, CallExecuted emitted, sync
+        // never fires). makeAddr returns an EOA-style address with no code.
+        address noCode = makeAddr("noCodeTarget");
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.TargetHasNoCode.selector, noCode));
+        new CREReceiver(forwarder, expectedAuthor, noCode, PING);
+    }
+
     // ─── onReport: access control ──────────────────────────────────────
 
     function test_onReport_revertsIfNotForwarder() public {
@@ -380,6 +390,22 @@ contract CREReceiverTest is Test {
         vm.prank(makeAddr("nonOwner"));
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("nonOwner")));
         receiver.setAllowedCall(address(target), DO_SOMETHING, true);
+    }
+
+    function test_setAllowedCall_revertsOnCodelessTarget() public {
+        // same guard as the constructor seed (shared _setAllowedCall): ENABLING a call to a code-less
+        // target is rejected so the silent no-op dispatch can never be configured.
+        address noCode = makeAddr("noCodeTarget");
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.TargetHasNoCode.selector, noCode));
+        receiver.setAllowedCall(noCode, DO_SOMETHING, true);
+    }
+
+    function test_setAllowedCall_allowsRemovingCodelessTarget() public {
+        // removals (allowed=false) are unconstrained — only enabling requires code, so a target that
+        // later loses its code can still be de-listed.
+        address noCode = makeAddr("noCodeTarget");
+        receiver.setAllowedCall(noCode, DO_SOMETHING, false); // must NOT revert
+        assertFalse(receiver.isCallAllowed(noCode, DO_SOMETHING));
     }
 
     // ─── ERC165 ────────────────────────────────────────────────────────

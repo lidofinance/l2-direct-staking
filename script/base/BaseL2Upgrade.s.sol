@@ -32,6 +32,7 @@ contract BaseL2Defaults is L2UpgradeActions {
             destinationMaxFee: C.L2_SYNC_DESTINATION_MAX_FEE,
             destinationPayInLink: C.L2_SYNC_DESTINATION_PAY_IN_LINK,
             destinationGasLimit: C.L2_SYNC_DESTINATION_GAS_LIMIT,
+            maxGasLimit: C.L2_SYNC_MAX_GAS_LIMIT,
             feeDtoO: FeeCodec.encodeBaseL1toL2(C.L2_SYNC_ORIGIN_L2_GAS),
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,

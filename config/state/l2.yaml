@@ -168,8 +168,8 @@ l2:
         getLastExecution: null # deployment timestamp
         getMaxFees:
           result: [*maxNativeFee, *maxLinkFee] # derived from the fee blobs
-        shouldSync:
-          result: [false, 0]
+        getMaxGasLimit: *maxGasLimit # FeeOtoD gasLimit ceiling = lane FeeQuoter maxPerMsgGasLimit; set during migration (rejects an over-cap bump at set-time, audit-scope C-1)
+        shouldSync: false # due-ness predicate (delay + pool WETH >= minAmount); false at the verified state — no WETH accumulated yet (amount mirrored by getAmountToSync: 0 above). Executability is the separate canSync(), not asserted here: it reads the fee float, which drifts per-sync (see <net>.inputs.yaml), so no stable equality holds
 
     creReceiver:
       name: CREReceiver

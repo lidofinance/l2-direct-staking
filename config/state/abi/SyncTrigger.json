@@ -16,6 +16,48 @@
         "name": "initialOwner",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "p",
+        "type": "tuple",
+        "internalType": "struct SyncTrigger.InitParams",
+        "components": [
+          {
+            "name": "forwarder",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "delay",
+            "type": "uint48",
+            "internalType": "uint48"
+          },
+          {
+            "name": "minAmount",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "maxAmount",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "feeOtoD",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "feeDtoO",
+            "type": "bytes",
+            "internalType": "bytes"
+          },
+          {
+            "name": "maxGasLimit",
+            "type": "uint32",
+            "internalType": "uint32"
+          }
+        ]
       }
     ],
     "stateMutability": "nonpayable"
@@ -59,6 +101,19 @@
         "name": "",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "canSync",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -179,6 +234,19 @@
   },
   {
     "type": "function",
+    "name": "getMaxGasLimit",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "owner",
     "inputs": [],
     "outputs": [
@@ -269,18 +337,26 @@
   },
   {
     "type": "function",
+    "name": "setMaxGasLimit",
+    "inputs": [
+      {
+        "name": "maxGasLimit",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "shouldSync",
     "inputs": [],
     "outputs": [
       {
-        "name": "syncNeeded",
+        "name": "",
         "type": "bool",
         "internalType": "bool"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -401,6 +477,19 @@
   },
   {
     "type": "event",
+    "name": "MaxGasLimitSet",
+    "inputs": [
+      {
+        "name": "maxGasLimit",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "OwnershipTransferred",
     "inputs": [
       {
@@ -425,13 +514,13 @@
       {
         "name": "token",
         "type": "address",
-        "indexed": false,
+        "indexed": true,
         "internalType": "address"
       },
       {
         "name": "recipient",
         "type": "address",
-        "indexed": false,
+        "indexed": true,
         "internalType": "address"
       },
       {
@@ -521,6 +610,38 @@
   },
   {
     "type": "error",
+    "name": "SyncTriggerGasLimitAboveMax",
+    "inputs": [
+      {
+        "name": "gasLimit",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "maxGasLimit",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SyncTriggerInsufficientFloat",
+    "inputs": [
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "available",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SyncTriggerInvalidAmounts",
     "inputs": [
       {
@@ -548,6 +669,11 @@
   {
     "type": "error",
     "name": "SyncTriggerInvalidParameters",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SyncTriggerInvalidRecipient",
     "inputs": []
   },
   {

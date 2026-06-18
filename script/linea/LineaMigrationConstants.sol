@@ -41,6 +41,10 @@ library LineaMigrationConstants {
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 500_000;
+    // FeeOtoD gasLimit ceiling = Linea's FeeQuoter maxPerMsgGasLimit (the lowest of the four lanes;
+    // docs/fees.md §lane caps, verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this,
+    // so a chain-blind uniform over-bump fails at config time instead of bricking sync (audit-scope C-1).
+    uint32 internal constant L2_SYNC_MAX_GAS_LIMIT = 3_000_000;
     // Linea FeeDtoO uses FeeCodec.encodeLineaL1toL2() which takes no parameters
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;

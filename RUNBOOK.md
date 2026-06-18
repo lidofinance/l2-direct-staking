@@ -158,12 +158,9 @@ sequenceDiagram
     rect rgb(236, 248, 255)
     Note over LidoDep,CRERecv: L2 upgrade script run #1 — runDeploy (single signer: Lido Deployer)
     LidoDep->>NewPool: deployPool(owner=LiqOwner)
-    LidoDep->>ST: deploySyncTrigger(owner=deployer)
-    LidoDep->>ST: setFeeOtoD / setFeeDtoO
-    LidoDep->>ST: setAmounts / setDelay
-    LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd, expectedAuthor=LOL multisig, allow=(ST, triggerSync))
-    LidoDep->>ST: setForwarder(CRERecv)
-    LidoDep->>ST: transferOwnership(LOL multisig)
+    LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd, expectedAuthor=LOL multisig, allow=none yet)
+    LidoDep->>ST: deploySyncTrigger(forwarder=CRERecv, owner=LOL multisig, +fees/amounts/delay/maxGasLimit) — born configured
+    LidoDep->>CRERecv: setAllowedCall(ST, triggerSync)
     LidoDep->>CRERecv: transferOwnership(LOL multisig)
     end
 
@@ -296,7 +293,7 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 
 - **CRITICAL:** the G4 invariant table above (any drift = key compromise / unintended governance); L1 Receiver balance ~0 (`MessageFailed` → page); CCIP manual-exec queue empty; Arbitrum retryable auto-redeems (≤7-day window or funds lost).
 - **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + owner = LOL Safe; **≥1 `CREReceiver.CallExecuted` observed** (the only proof the DON-embedded author matches the pin — a green registry-owner check does NOT prove it); **CRE credit funded under the LOL Safe's CRE account** (dashboard-only, no on-chain signal — a liveness stall with healthy fees + funded float ⇒ suspect credit starvation; see [docs/monitoring.md §4](docs/monitoring.md#4-cre-workflow-health--funding--high)).
-- **MEDIUM:** actual CCIP fee / `maxFee` < 80%; `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees().maxNativeFee` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
+- **MEDIUM:** actual CCIP fee / `maxFee` < 80% (on **OP/Linea** this also tracks **sync size** — 5 bps, uncapped; the 100 WETH cap holds it to ~40%, [fee amount-sensitivity](docs/otod-fee-amount-sensitivity.md)); `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees().maxNativeFee` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
 
 ### Recover (CRE workflow-owner incident)
 
@@ -320,15 +317,15 @@ and [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md).
 
 Mirror image of §Finalize: that step recovers the **old** system's residuals on the way *up* (legacy `SyncAutomation` float + cancelled-upkeep LINK); this section recovers the **new** system's treasuries on the way *down*. Same tags — **Def** / **Gate `Sn`** (sunset-local, kept distinct from migration `G1–G4`) / **Duty** (a named keyholder SHALL act) / **Evidence**. Owners are the per-chain GovExec / LOL multisig in the [Setup network table](#setup-once); they are not re-keyed here.
 
-> **Def — a drain emits `Swept`; the balance is ground truth.** `SyncTrigger.sweep` (`src/SyncTrigger.sol:163`) emits `Swept(token, recipient, amount)` (`src/SyncTrigger.sol:177`), like every config setter, so a drain *is* observable in the log. Still treat the **balance delta** (`cast balance <trigger>` → 0) plus the recipient's credit as the authoritative **Evidence** — the event corroborates, the balance confirms.
+> **Def — a drain emits `Swept`; the balance is ground truth.** `SyncTrigger.sweep` (`src/SyncTrigger.sol:288`) emits `Swept(token, recipient, amount)` (`src/SyncTrigger.sol:299`), like every config setter, so a drain *is* observable in the log. Still treat the **balance delta** (`cast balance <trigger>` → 0) plus the recipient's credit as the authoritative **Evidence** — the event corroborates, the balance confirms.
 
-**Step 1 — stop the engine. Duty — LOL multisig** SHALL deactivate triggering: `setDelay(type(uint48).max)` (the constructor "deactivated" sentinel, `src/SyncTrigger.sol:57`) and/or `setForwarder(0x…dead)` — LOL owns `SyncTrigger`. (Independent backstop: GovExec can revoke the trigger's `SYNC_ROLE` on `CustomSender`, no LOL quorum needed.) **Gate S1** = triggering off. **Evidence:** read back `getDelay() == type(uint48).max` / `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
+**Step 1 — stop the engine. Duty — LOL multisig** SHALL deactivate triggering: `setDelay(type(uint48).max)` (the "deactivated" delay value) and/or `setForwarder(0x…dead)` — LOL owns `SyncTrigger`. (Independent backstop: GovExec can revoke the trigger's `SYNC_ROLE` on `CustomSender`, no LOL quorum needed.) **Gate S1** = triggering off. **Evidence:** read back `getDelay() == type(uint48).max` / `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
 
 **Step 2 — stop the automation. Duty — LOL multisig** SHALL pause or delete the CRE workflow and stop funding its CRE credit. **Evidence:** `verify-cre-workflow` no longer reports `ACTIVE`. Levers: [docs/cre.md §CRE platform levers (workflow lifecycle)](docs/cre.md#cre-platform-levers-workflow-lifecycle).
 
 **Step 3 — let in-flight settle → Gate S2.** **Gate S2** = no pending CCIP round-trip for the lane: the last `Sync`(L2) has its matching `MessageSucceeded`(L1) and the wstETH return has landed (same in-flight cutover as §2 **Def** / [`DOC.md` §5.1](DOC.md#51-in-flight-round-trips-are-correct-by-design)). **Evidence:** CCIP manual-exec queue empty + L1 Receiver balance ~0.
 
-> **Def — the float drain itself has no in-flight dependency.** Each round-trip's return-leg (`feeDtoO`) fee is fronted at `sync()` time, baked into the value the trigger forwards (`src/SyncTrigger.sol:137-138`), so a drained float can **never** strand a return. Settle first only so the pool-liquidity recovery (Step 5) is clean and monitoring stays quiet — not because an earlier sweep would be unsafe.
+> **Def — the float drain itself has no in-flight dependency.** Each round-trip's return-leg (`feeDtoO`) fee is fronted at `sync()` time, baked into the value the trigger forwards (`src/SyncTrigger.sol:247`), so a drained float can **never** strand a return. Settle first only so the pool-liquidity recovery (Step 5) is clean and monitoring stays quiet — not because an earlier sweep would be unsafe.
 
 **Step 4 — drain the trigger. Duty — LOL multisig** SHALL `sweep` to a Lido-controlled recipient — a **LOL Safe transaction**: `sweep(address(0), <recipient>, <balance>)` for native, `sweep(<token>, <recipient>, <amount>)` for any stray ERC-20 (e.g. WETH). Recipient is a call parameter — choose it in the Safe transaction, do not assume a default. **Evidence:** `cast balance <trigger>` == 0 (and any swept ERC-20 balances == 0).
 
@@ -341,8 +338,8 @@ Mirror image of §Finalize: that step recovers the **old** system's residuals on
 
 | Treasury | Where | Recover (file:line) | Signer | Note |
 |---|---|---|---|---|
-| SyncTrigger native float | per L2 | `sweep(address(0),…)` `src/SyncTrigger.sol:163` | LOL multisig | emits `Swept`; corroborate by balance delta; tested `test/SyncTriggerTest.t.sol:310` |
-| SyncTrigger stray ERC-20 | per L2 | `sweep(token,…)` `src/SyncTrigger.sol:163` | LOL multisig | emits `Swept`; tested `test/SyncTriggerTest.t.sol:317` |
+| SyncTrigger native float | per L2 | `sweep(address(0),…)` `src/SyncTrigger.sol:288` | LOL multisig | emits `Swept`; corroborate by balance delta; tested `test/SyncTriggerTest.t.sol:338` |
+| SyncTrigger stray ERC-20 | per L2 | `sweep(token,…)` `src/SyncTrigger.sol:288` | LOL multisig | emits `Swept`; tested `test/SyncTriggerTest.t.sol:345` |
 | CREReceiver ETH (~0) | per L2 | `withdrawETH` `src/cre/CREReceiver.sol:202` | LOL multisig | forwarder call carries no value |
 | CRE credit | LOL CRE account | dashboard (off-chain) | LOL multisig | no on-chain signal — [docs/cre.md §Funding and billing](docs/cre.md#funding-and-billing) |
 | New OraclePool liquidity | per L2 | OraclePool owner path | LOL multisig | user funds, not fee float |

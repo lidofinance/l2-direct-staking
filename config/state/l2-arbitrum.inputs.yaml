@@ -8,6 +8,7 @@ config:
   - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
   - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
   - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
+  - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Arbitrum FeeQuoter maxPerMsgGasLimit
   # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
   # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=1_000_000)
   - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"

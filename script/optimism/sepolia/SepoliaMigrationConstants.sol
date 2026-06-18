@@ -28,6 +28,9 @@ library SepoliaMigrationConstants {
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.1e18;
     bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 400_000;
+    // FeeOtoD gasLimit ceiling for the Optimism-Sepolia rehearsal lane (matches the OP mainnet cap;
+    // any value >= the gasLimit suffices on testnet). Mirrors L2_SYNC_MAX_GAS_LIMIT on the prod lanes.
+    uint32 internal constant L2_SYNC_MAX_GAS_LIMIT = 7_000_000;
     uint32 internal constant L2_SYNC_ORIGIN_L2_GAS = 100_000;
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 0.01e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 1e18;

@@ -22,6 +22,7 @@ viewpoint that matches your task:
 | **[RUNBOOK.md](RUNBOOK.md)** | Operator · the migration *recipe / run* | 3-phase checklist (pre-live checks → live run → post-migration validation) with gates `G1–G4`, duties, evidence, and the migration sequence diagram. |
 | **[DOC.md](DOC.md)** | Architect / reviewer · the *resulting state* | Networks, components & provenance, access control & ownership, diagrams, the sync operation, fee **rationale** (§5.2), migration safety notes. |
 | **[docs/fees.md](docs/fees.md)** | Fee-tuning owner (LOL) · economics reference | The four fee quantities, byte layouts, the Glamsterdam headroom bump, and each bridge's refund/failure behavior. |
+| **[docs/otod-fee-amount-sensitivity.md](docs/otod-fee-amount-sensitivity.md)** | Fee-tuning owner (LOL) · fee-vs-amount finding | Whether the OtoD fee scales with the bridged amount (yes on OP/Linea at 5 bps uncapped, flat on Arb/Base), how the 100 WETH cap contains it, and the `maxAmount`↔`maxFee` tuning coupling. |
 | **[docs/cre.md](docs/cre.md)** | CRE operator · workflow lifecycle | CRE workflow setup / deploy / funding / levers + the workflow-owner lost-vs-compromised recovery procedure. |
 | **[docs/development.md](docs/development.md)** | Developer · build / test / scripts | The direct `forge script` reference and the four test layers (unit / CRE / fork-integration / dress rehearsal). |
 | **[docs/monitoring.md](docs/monitoring.md)** | On-call / SRE · post-migration alerts | The ongoing Signal · Expected · Severity→Response table once a network is live. |

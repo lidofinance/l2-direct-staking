@@ -1,8 +1,8 @@
 # ==========================================================================
 # CRE WORKFLOW SETTINGS FILE — Lido Direct Staking Sync Automation
 # ==========================================================================
-# The workflow polls SyncTrigger.shouldSync() and, when needed,
-# encodes a triggerSync() call and delivers it via the CRE Receiver.
+# The workflow polls SyncTrigger.shouldSync() + canSync() and, when a sync is both
+# due and executable, encodes a triggerSync() call and delivers it via the CRE Receiver.
 
 # ==========================================================================
 test-settings:

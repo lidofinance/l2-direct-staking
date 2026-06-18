@@ -17,6 +17,10 @@ contract OptimismForwarderGuardHarness is OptimismL2UpgradeScript {
     function expectedCREForwarder() external pure returns (address) {
         return _expectedCREForwarder();
     }
+
+    function resolvePinned(string calldata envName, address expected) external view returns (address, bool) {
+        return _resolvePinned(envName, expected);
+    }
 }
 
 contract SepoliaForwarderGuardHarness is SepoliaL2UpgradeScript {
@@ -71,5 +75,22 @@ contract L2CREForwarderGuardTest is Test {
 
         // Sepolia opts out → the forwarder is operator-supplied, so the same value passes through.
         assertEq(sep.creForwarder(), wrong, "sepolia reads env forwarder");
+    }
+
+    /// @dev The env-ABSENT branch — `_resolvePinned` defaults to the pin when the env var is unset — is
+    ///      the path production deploy-stage1 takes when `L2_CRE_FORWARDER` is omitted (the forwarder is
+    ///      a network constant, not an operator input). The sibling set-env assertions above can NEVER
+    ///      reach it: this forge-std has no `unsetEnv`/`envExists`, and `vm.setEnv` is process-global and
+    ///      sticky. So we drive the branch with a GUARANTEED-unset env NAME — nothing in the suite sets
+    ///      it, so `vm.envOr` genuinely takes its default. This is the regression guard the set-env tests
+    ///      cannot give: if `_resolvePinned` regressed from `vm.envOr(..., expected)` back to
+    ///      `vm.envAddress(...)` (re-making the value env-REQUIRED, undoing deploy-stage1's removed `:?`
+    ///      guard), the unset name would make it REVERT instead of returning the pin. Using a sentinel
+    ///      name (not `L2_CRE_FORWARDER`) also keeps this test free of the process-global env race.
+    function test_resolvePinned_defaultsToPinWhenEnvAbsent() public {
+        address pin = makeAddr("pinnedConstant");
+        (address resolved, bool ok) = opt.resolvePinned("L2_CRE_FORWARDER_GUARANTEED_UNSET_SENTINEL", pin);
+        assertEq(resolved, pin, "absent env -> defaults to the pin (env-OPTIONAL, not env-required)");
+        assertTrue(ok, "default-to-pin is a match, never a mismatch");
     }
 }

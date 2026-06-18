@@ -12,7 +12,7 @@ import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
-import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {SyncTrigger} from "src/SyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 
 import {UpgradeTestBase, MockBridgeAdapter} from "test/helpers/UpgradeTestBase.sol";
@@ -404,7 +404,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     }
 
     function test_deployedSyncTriggerIsOperational() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         assertEq(
@@ -418,16 +418,14 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         syncTrigger.setForwarder(forwarder);
         assertEq(syncTrigger.getForwarder(), forwarder, "forwarder should be configured");
 
-        (bool syncBeforeDelay,) = syncTrigger.shouldSync();
-        assertFalse(syncBeforeDelay, "sync should not be needed before delay");
+        assertFalse(syncTrigger.shouldSync(), "sync should not be needed before delay");
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
         uint256 expectedSyncAmount = stakeAmount > uint256(L2_SYNC_MAX_AMOUNT) ? L2_SYNC_MAX_AMOUNT : stakeAmount;
         {
-            (bool syncNeeded, uint256 amount) = syncTrigger.shouldSync();
-            assertTrue(syncNeeded, "sync should be needed after delay and min amount");
-            assertEq(amount, expectedSyncAmount, "amount should equal expected sync amount");
+            assertTrue(syncTrigger.shouldSync(), "sync should be needed after delay and min amount");
+            assertEq(syncTrigger.getAmountToSync(), expectedSyncAmount, "amount should equal expected sync amount");
         }
 
         (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
@@ -436,7 +434,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         address unauthorizedForwarder = makeAddr("notForwarder");
         vm.prank(unauthorizedForwarder);
-        vm.expectRevert(ISyncTrigger.SyncTriggerOnlyForwarder.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerOnlyForwarder.selector);
         syncTrigger.triggerSync();
 
         uint48 lastExecutionBefore = syncTrigger.getLastExecution();
@@ -452,13 +450,12 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertGt(syncTrigger.getLastExecution(), lastExecutionBefore, "last execution should move forward");
 
         {
-            (bool syncAfterTrigger,) = syncTrigger.shouldSync();
-            assertFalse(syncAfterTrigger, "sync should be false immediately after trigger");
+            assertFalse(syncTrigger.shouldSync(), "sync should be false immediately after trigger");
         }
     }
 
     function test_consecutiveSyncCycles() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         address forwarder = makeAddr("cycleForwarder");
         vm.prank(lidoL2LiquidityOwner);
@@ -476,13 +473,14 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + shortDelay);
 
+        // Fund the float so the upcoming triggerSync can pay (shouldSync itself is due-only now).
+        vm.deal(address(syncTrigger), maxNativeFee);
+
         {
-            (bool needed, uint256 amount) = syncTrigger.shouldSync();
-            assertTrue(needed, "cycle 1: sync should be needed");
-            assertGt(amount, 0, "cycle 1: amount should be > 0");
+            assertTrue(syncTrigger.shouldSync(), "cycle 1: sync should be due");
+            assertGt(syncTrigger.getAmountToSync(), 0, "cycle 1: amount should be > 0");
         }
 
-        vm.deal(address(syncTrigger), maxNativeFee);
         vm.prank(forwarder);
         syncTrigger.triggerSync();
 
@@ -490,8 +488,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(exec1, uint48(block.timestamp), "cycle 1: lastExecution should update");
 
         {
-            (bool neededAfter,) = syncTrigger.shouldSync();
-            assertFalse(neededAfter, "cycle 1: sync should be false right after trigger");
+            assertFalse(syncTrigger.shouldSync(), "cycle 1: sync should be false right after trigger");
         }
 
         // ── Cycle 2: accumulate more WETH, wait delay, sync again ──
@@ -507,20 +504,18 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         }
 
         {
-            (bool neededEarly,) = syncTrigger.shouldSync();
-            assertFalse(neededEarly, "cycle 2: sync should be false before delay");
+            assertFalse(syncTrigger.shouldSync(), "cycle 2: sync should be false before delay");
         }
 
         vm.warp(block.timestamp + shortDelay);
+        vm.deal(address(syncTrigger), maxNativeFee); // re-fund the float (cycle 1's sync consumed it)
 
         {
-            (bool needed, uint256 amount) = syncTrigger.shouldSync();
-            assertTrue(needed, "cycle 2: sync should be needed");
-            assertGt(amount, 0, "cycle 2: amount should be > 0");
+            assertTrue(syncTrigger.shouldSync(), "cycle 2: sync should be due");
+            assertGt(syncTrigger.getAmountToSync(), 0, "cycle 2: amount should be > 0");
         }
 
         uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
-        vm.deal(address(syncTrigger), maxNativeFee);
         vm.prank(forwarder);
         syncTrigger.triggerSync();
 
@@ -529,7 +524,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     }
 
     function test_syncTriggerRevertsWithInsufficientFees() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
@@ -540,8 +535,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        (bool syncNeeded,) = syncTrigger.shouldSync();
-        assertTrue(syncNeeded, "sync should be needed");
+        assertTrue(syncTrigger.shouldSync(), "sync should be needed");
 
         // The migration funds the trigger's fee float (production parity). Drain it so this test
         // exercises the float-ran-dry path: with a 0 balance, triggerSync must revert
@@ -573,7 +567,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
         vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
         (address syncTrigger,) =
-            deploySyncInfrastructure(cfg, LIDO_L2_GOVERNANCE_EXECUTOR, creForwarder, cfg.liquidityOwner);
+            deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
         vm.stopPrank();
 
         // Call via `this.` so executeMigrationSteps runs as a single external call and the
@@ -584,7 +578,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     }
 
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 amountBelowMin = uint256(L2_SYNC_MIN_AMOUNT) - 1;
         assertEq(
@@ -593,32 +587,32 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
             "pool should have WETH below min threshold"
         );
 
-        (bool syncNeeded,) = _shouldSyncAfterDelay(syncTrigger);
+        bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertFalse(syncNeeded, "sync should stay false when balance is below min");
     }
 
     function test_syncTriggerTriggersAtExactMinAmount() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 exactMinAmount = uint256(L2_SYNC_MIN_AMOUNT);
         assertEq(
             _provisionPoolAndAccumulateWeth(newPool, exactMinAmount), exactMinAmount, "pool should have exact min WETH"
         );
 
-        (bool syncNeeded, uint256 amount) = _shouldSyncAfterDelay(syncTrigger);
+        bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertTrue(syncNeeded, "sync should trigger at exact min amount");
-        assertEq(amount, exactMinAmount, "amount should be the exact min amount");
+        assertEq(syncTrigger.getAmountToSync(), exactMinAmount, "amount should be the exact min amount");
     }
 
     function test_syncTriggerCapsAtMaxAmount() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 balanceAboveMax = uint256(L2_SYNC_MAX_AMOUNT) + 1 ether;
         deal(L2_WETH, address(newPool), balanceAboveMax);
 
-        (bool syncNeeded, uint256 amount) = _shouldSyncAfterDelay(syncTrigger);
+        bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertTrue(syncNeeded, "sync should trigger when balance is above max");
-        assertEq(amount, uint256(L2_SYNC_MAX_AMOUNT), "amount should cap at max");
+        assertEq(syncTrigger.getAmountToSync(), uint256(L2_SYNC_MAX_AMOUNT), "amount should cap at max");
     }
 
     function test_upgradeSyncRoutesAcrossL2AndL1CCIPLayer() public {
@@ -805,7 +799,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     function test_productionDeployFundsSyncTriggerFloatForFirstSync() public {
         (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver) =
             _deployAndMigrateL2Production();
-        ISyncTrigger syncTrigger = ISyncTrigger(newSyncTrigger);
+        SyncTrigger syncTrigger = SyncTrigger(payable(newSyncTrigger));
 
         // Accounting: the deploy funded exactly the configured constant.
         L2UpgradeConfig memory cfg =
@@ -821,8 +815,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        (bool syncNeeded,) = syncTrigger.shouldSync();
-        assertTrue(syncNeeded, "sync should be needed");
+        assertTrue(syncTrigger.shouldSync(), "sync should be needed");
 
         // First sync, paid solely from the script-funded float (forwarder = CREReceiver in production wiring).
         vm.prank(address(newCREReceiver));
@@ -837,18 +830,18 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
     function _deployAndLoadSyncTrigger()
         internal
-        returns (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger)
+        returns (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger)
     {
         address syncTriggerAddress;
         (newPool, syncTriggerAddress) = _deployAndMigrateL2WithSyncTrigger();
-        syncTrigger = ISyncTrigger(syncTriggerAddress);
+        syncTrigger = SyncTrigger(payable(syncTriggerAddress));
     }
 
-    function _shouldSyncAfterDelay(ISyncTrigger syncTrigger)
+    function _shouldSyncAfterDelay(SyncTrigger syncTrigger)
         internal
-        returns (bool syncNeeded, uint256 amount)
+        returns (bool syncNeeded)
     {
         vm.warp(block.timestamp + L2_SYNC_DELAY);
-        (syncNeeded, amount) = syncTrigger.shouldSync();
+        syncNeeded = syncTrigger.shouldSync();
     }
 }

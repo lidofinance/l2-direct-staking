@@ -9,7 +9,6 @@ import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePoo
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {SyncTrigger} from "src/SyncTrigger.sol";
-import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 
 /**
@@ -42,6 +41,7 @@ contract L2UpgradeActions {
         uint128 destinationMaxFee;
         bool destinationPayInLink;
         uint32 destinationGasLimit;
+        uint32 maxGasLimit; // Per-lane FeeOtoD gasLimit ceiling = the lane's FeeQuoter maxPerMsgGasLimit (7M OP/Arb/Base, 3M Linea); rejects an over-cap bump at set-time (docs/audit-scope C-1)
         bytes feeDtoO; // Pre-encoded bridge fee (Optimism, Arbitrum, etc.)
         uint128 minSyncAmount;
         uint128 maxSyncAmount;
@@ -61,13 +61,6 @@ contract L2UpgradeActions {
     event L2CREReceiverDeployed(address indexed creReceiver, address indexed creForwarder);
     event L2SyncRoleGranted(address indexed customSender, address indexed syncTrigger);
     event L2SyncRoleRevoked(address indexed customSender, address indexed oldAutomation);
-    event L2SyncTriggerConfigured(
-        address indexed syncTrigger, uint128 minSyncAmount, uint128 maxSyncAmount, uint48 minSyncDelay
-    );
-    event L2SyncTriggerOwnershipTransferred(
-        address indexed syncTrigger, address indexed previousOwner, address indexed newOwner
-    );
-    event L2SyncTriggerForwarderSet(address indexed syncTrigger, address indexed forwarder);
     event L2SyncTriggerFunded(address indexed syncTrigger, uint256 amount);
     event L2CREReceiverOwnershipTransferred(
         address indexed creReceiver, address indexed previousOwner, address indexed newOwner
@@ -103,16 +96,33 @@ contract L2UpgradeActions {
         emit L2OraclePoolDeployed(address(newPool), cfg.liquidityOwner);
     }
 
-    function deploySyncTrigger(L2UpgradeConfig memory cfg, address syncTriggerOwner)
+    function deploySyncTrigger(L2UpgradeConfig memory cfg, address forwarder, address initialOwner)
         public
         returns (SyncTrigger syncTrigger)
     {
-        _requireNonZeroL2(syncTriggerOwner);
+        _requireNonZeroL2(initialOwner);
+        _requireNonZeroL2(forwarder);
         _requireNonZeroL2(cfg.customSender);
         if (cfg.destChainSelector == 0) revert L2UpgradeInvalidChainSelector();
 
-        syncTrigger = new SyncTrigger(cfg.customSender, cfg.destChainSelector, syncTriggerOwner);
-        emit L2SyncTriggerDeployed(address(syncTrigger), cfg.customSender, syncTriggerOwner);
+        // Born fully configured: the constructor validates and stores every operational parameter and
+        // sets the owner, so there is no post-deploy configure/transfer step. feeOtoD is built from the
+        // single-source encoder so it cannot drift from the verify-constants-sync oracle.
+        syncTrigger = new SyncTrigger(
+            cfg.customSender,
+            cfg.destChainSelector,
+            initialOwner,
+            SyncTrigger.InitParams({
+                forwarder: forwarder,
+                delay: cfg.minSyncDelay,
+                minAmount: cfg.minSyncAmount,
+                maxAmount: cfg.maxSyncAmount,
+                feeOtoD: _encodeFeeOtoD(cfg),
+                feeDtoO: cfg.feeDtoO,
+                maxGasLimit: cfg.maxGasLimit
+            })
+        );
+        emit L2SyncTriggerDeployed(address(syncTrigger), cfg.customSender, initialOwner);
     }
 
     function deployCREReceiver(
@@ -137,25 +147,25 @@ contract L2UpgradeActions {
     }
 
     /**
-     * @notice Deploy SyncTrigger + CREReceiver, configure, wire forwarder, and transfer ownership.
+     * @notice Deploy CREReceiver + a fully-configured SyncTrigger, wire them together, and fund the float.
      * @dev Shared by production scripts, Sepolia script, and fork tests. Pool must be deployed separately.
+     *
+     *      The receiver is deployed FIRST (with an empty allow-list seed) so the SyncTrigger can be
+     *      constructed with the real forwarder == receiver address; the receiver's allow-list is then
+     *      seeded with the now-deployed trigger (`setAllowedCall` requires the target to have code).
+     *      Because the constructor sets every parameter AND the owner, the SyncTrigger needs no
+     *      post-deploy owner action — it is owned by `cfg.liquidityOwner` (the LOL multisig) from birth.
      */
     function deploySyncInfrastructure(
         L2UpgradeConfig memory cfg,
-        address syncTriggerOwner,
         address creForwarder,
         address expectedAuthor
     ) public returns (address syncTrigger, address creReceiverAddr) {
-        SyncTrigger st = deploySyncTrigger(cfg, syncTriggerOwner);
-        configureSyncTrigger(address(st), cfg);
-        CREReceiver cr = deployCREReceiver(
-            creForwarder,
-            expectedAuthor,
-            address(st),
-            ISyncTrigger.triggerSync.selector
-        );
-        setSyncTriggerForwarder(address(st), address(cr));
-        transferSyncTriggerOwnership(address(st), cfg.liquidityOwner);
+        CREReceiver cr = deployCREReceiver(creForwarder, expectedAuthor, address(0), bytes4(0));
+        SyncTrigger st = deploySyncTrigger(cfg, address(cr), cfg.liquidityOwner);
+        // Seed the receiver's allow-list now that the trigger has code (CREReceiver's TargetHasNoCode
+        // guard). Same execution frame that deployed the receiver, so msg.sender == its owner.
+        cr.setAllowedCall(address(st), SyncTrigger.triggerSync.selector, true);
         transferCREReceiverOwnership(address(cr), cfg.liquidityOwner);
         fundSyncTrigger(address(st), cfg);
 
@@ -203,7 +213,7 @@ contract L2UpgradeActions {
         address expectedAuthor
     ) private view {
         CREReceiver cr = CREReceiver(payable(creReceiverAddr));
-        ISyncTrigger st = ISyncTrigger(syncTrigger);
+        SyncTrigger st = SyncTrigger(payable(syncTrigger));
         // pin the trigger to the real CustomSender. A typo'd/wrong syncTrigger address would
         // not have SENDER pointing at this CustomSender, so this catches a mis-wired trigger before
         // it is granted SYNC_ROLE (and, via the Stage-2 precondition, before any irreversible handover).
@@ -211,10 +221,10 @@ contract L2UpgradeActions {
         _requireL2PostCondition(st.getForwarder() == creReceiverAddr, "syncTrigger forwarder");
         _requireL2PostCondition(Ownable(syncTrigger).owner() == cfg.liquidityOwner, "syncTrigger owner");
         // operational parameters — verified IN-broadcast (Stage 1) and re-checked as a Stage-2
-        // precondition. A typo in a MigrationConstants value (e.g. a gas-limit of 100 instead of
-        // 1_000_000, a wrong selector, or a mis-encoded fee) is written by configureSyncTrigger without
-        // reverting, so without these reads the deploy looks green and the defect only surfaces if the
-        // operator separately runs verifyStage1 — or, worse, after go-live when sync() OOGs/reverts.
+        // precondition. The constructor rejects INVALID values (out-of-range gasLimit, zero delay, wrong
+        // fee length), but a wrong-but-VALID MigrationConstants typo (e.g. a gasLimit of 200_000 instead
+        // of 1_000_000) is stored without reverting, so without these reads the deploy looks green and the
+        // defect only surfaces if the operator separately runs verifyStage1 — or, worse, after go-live.
         _requireL2PostCondition(st.DEST_CHAIN_SELECTOR() == cfg.destChainSelector, "syncTrigger DEST_CHAIN_SELECTOR");
         _requireL2PostCondition(st.WNATIVE() == cfg.tokenIn, "syncTrigger WNATIVE");
         _requireL2PostCondition(st.getDelay() == cfg.minSyncDelay, "syncTrigger delay");
@@ -223,14 +233,18 @@ contract L2UpgradeActions {
         _requireL2PostCondition(maxAmount == cfg.maxSyncAmount, "syncTrigger maxAmount");
         _requireL2PostCondition(keccak256(st.getFeeDtoO()) == keccak256(cfg.feeDtoO), "syncTrigger feeDtoO");
         _requireL2PostCondition(
-            keccak256(st.getFeeOtoD())
-                == keccak256(FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit)),
+            keccak256(st.getFeeOtoD()) == keccak256(_encodeFeeOtoD(cfg)),
             "syncTrigger feeOtoD"
         );
+        // the per-lane gasLimit ceiling: the SyncTrigger constructor seeds it and _setFeeOtoD enforces
+        // gasLimit <= it, so a mistyped L2_SYNC_MAX_GAS_LIMIT (e.g. OP's 7M copy-pasted onto Linea's 3M
+        // lane) would otherwise pass the deploy green yet silently loosen the C-1 over-cap guard — the
+        // exact MigrationConstants-typo class this assertion block (see comment above) exists to catch.
+        _requireL2PostCondition(st.getMaxGasLimit() == cfg.maxGasLimit, "syncTrigger maxGasLimit");
         _requireL2PostCondition(cr.getForwarder() == creForwarder, "creReceiver forwarder");
         _requireL2PostCondition(cr.getExpectedAuthor() == expectedAuthor, "creReceiver expectedAuthor");
         _requireL2PostCondition(
-            cr.isCallAllowed(syncTrigger, ISyncTrigger.triggerSync.selector),
+            cr.isCallAllowed(syncTrigger, SyncTrigger.triggerSync.selector),
             "creReceiver allow-list seed"
         );
         _requireL2PostCondition(Ownable(creReceiverAddr).owner() == cfg.liquidityOwner, "creReceiver owner");
@@ -290,7 +304,7 @@ contract L2UpgradeActions {
         _requireL2PostCondition(!PausableImmutableOraclePool(oraclePool).paused(), "oraclePool paused");
 
         // SyncTrigger wiring + operational params (SENDER/forwarder/owner, DEST_CHAIN_SELECTOR, WNATIVE,
-        // delay, amounts, feeDtoO, feeOtoD) and the CREReceiver checks are asserted inside
+        // delay, amounts, feeDtoO, feeOtoD, maxGasLimit) and the CREReceiver checks are asserted inside
         // _assertSyncInfrastructure above, so they are not repeated here.
     }
 
@@ -321,7 +335,7 @@ contract L2UpgradeActions {
         _requireNonZeroL2(cfg.proxyAdmin);
 
         // read the actual on-chain owner rather than assuming cfg.initialOwner, mirroring
-        // transferSyncTriggerOwnership / transferCREReceiverOwnership — so the emitted previousOwner is
+        // transferCREReceiverOwnership — so the emitted previousOwner is
         // truthful for off-chain provenance even if the ProxyAdmin was transferred out-of-band beforehand.
         address previousOwner = Ownable(cfg.proxyAdmin).owner();
         Ownable(cfg.proxyAdmin).transferOwnership(cfg.governanceExecutor);
@@ -352,26 +366,11 @@ contract L2UpgradeActions {
         emit L2SyncRoleRevoked(customSender, oldAutomation);
     }
 
-    function configureSyncTrigger(address syncTrigger, L2UpgradeConfig memory cfg) public {
-        _requireNonZeroL2(syncTrigger);
-
-        ISyncTrigger trigger = ISyncTrigger(syncTrigger);
-        trigger.setFeeOtoD(
-            FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit)
-        );
-        trigger.setFeeDtoO(cfg.feeDtoO);
-        trigger.setAmounts(cfg.minSyncAmount, cfg.maxSyncAmount);
-        trigger.setDelay(cfg.minSyncDelay);
-        emit L2SyncTriggerConfigured(syncTrigger, cfg.minSyncAmount, cfg.maxSyncAmount, cfg.minSyncDelay);
-    }
-
-    function transferSyncTriggerOwnership(address syncTrigger, address newOwner) public {
-        _requireNonZeroL2(syncTrigger);
-        _requireNonZeroL2(newOwner);
-
-        address previousOwner = Ownable(syncTrigger).owner();
-        Ownable(syncTrigger).transferOwnership(newOwner);
-        emit L2SyncTriggerOwnershipTransferred(syncTrigger, previousOwner, newOwner);
+    /// @dev The CCIP-encoded OtoD fee blob for a config — the single source for the sites that need it
+    ///      (the SyncTrigger constructor's feeOtoD arg, the _assertSyncInfrastructure post-condition, and
+    ///      the runPrintFeeParams verify-constants-sync oracle), so they cannot drift on the encoding.
+    function _encodeFeeOtoD(L2UpgradeConfig memory cfg) internal pure returns (bytes memory) {
+        return FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit);
     }
 
     function executeMigrationSteps(
@@ -437,14 +436,6 @@ contract L2UpgradeActions {
         // off-chain before migration. The migrateSenderAdmin precondition guarantees this revoke was real.
         _requireL2PostCondition(!sender.hasRole(DEFAULT_ADMIN_ROLE, cfg.initialOwner), "initial owner admin revoke");
         _requireL2PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.governanceExecutor, "proxyAdmin owner");
-    }
-
-    function setSyncTriggerForwarder(address syncTrigger, address forwarder) public {
-        _requireNonZeroL2(syncTrigger);
-        _requireNonZeroL2(forwarder);
-
-        ISyncTrigger(syncTrigger).setForwarder(forwarder);
-        emit L2SyncTriggerForwarderSet(syncTrigger, forwarder);
     }
 
 }

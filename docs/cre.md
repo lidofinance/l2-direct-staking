@@ -16,12 +16,13 @@ Pool rebalancing is triggered by a CRE (Chainlink Runtime Environment) TypeScrip
 ```
 CRE DON (TypeScript/WASM, off-chain)
   ├── CronCapability trigger (every 5 minutes)
-  ├── EVMClient.callContract() → SyncTrigger.shouldSync()
-  ├── If syncNeeded:
+  ├── EVMClient.callContract() → SyncTrigger.shouldSync() (due?) + canSync() (executable?)
+  ├── If due && executable:
   │   ├── Encode triggerSync() calldata
   │   ├── Wrap in abi.encode(target, data) for CREReceiver
   │   ├── runtime.report() → sign with ECDSA/Keccak256
   │   └── EVMClient.writeReport() → CRE Forwarder
+  ├── Else if due (but !executable): log "blocked" (float/SYNC_ROLE/pause) — skip, no report
   │
 CRE Forwarder (on-chain; verifies signatures, ERC-165-gates the receiver)
   └── CREReceiver.onReport(metadata, report)
@@ -55,7 +56,7 @@ just test-cre-workflow
 
 ## Deployment
 
-CREReceiver is deployed per L2 network as part of Stage 1 `runDeploy` (which also configures `SyncTrigger.setForwarder(CREReceiver)` and pins `expectedAuthor` to the **LOL multisig** — the Safe that also owns the CREReceiver, the SyncTrigger, and the CRE workflow, **not** the Lido Deployer EOA; see [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)). Workflow deployment happens immediately after `runDeploy`, before Stage 2:
+CREReceiver is deployed per L2 network as part of Stage 1 `runDeploy` (it is deployed before the `SyncTrigger`, which is then constructed with `forwarder = CREReceiver`; the receiver's allow-list is seeded with the trigger via `setAllowedCall` once it has code, and `expectedAuthor` is pinned to the **LOL multisig** — the Safe that also owns the CREReceiver, the SyncTrigger, and the CRE workflow, **not** the Lido Deployer EOA; see [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)). Workflow deployment happens immediately after `runDeploy`, before Stage 2:
 
 1. Rewrite `config.deploy.<network>.json` with the deployed addresses — `just -E .env.<network> update-cre-config <network> "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"`.
 2. Deploy the workflow **owned by the LOL Safe**: `just -E .env.<network> deploy-cre-workflow <network>`. This runs `cre workflow deploy … --unsigned`; **execute the emitted `WorkflowRegistry` calldata from the LOL Safe** so the Safe address becomes the workflow owner (= `expectedAuthor`). `CRE_WORKFLOW_OWNER` (defaults to `L2_LIQUIDITY_OWNER`) sets the Safe address.
@@ -83,7 +84,7 @@ The sync workflow is off-chain WASM on Chainlink's CRE platform; its only on-cha
 | `cre workflow pause` / `activate` | LOL Safe (m-of-n) | Stop / start DON execution |
 | `cre workflow delete` | LOL Safe (m-of-n) | Retire the workflow |
 | `cre account link-key` / `unlink-key` | LOL Safe (m-of-n) | Associate / disassociate a wallet (owner-gated) |
-| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report if `shouldSync()` is true |
+| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report only if `shouldSync()` (amount/delay) AND `canSync()` (float, `SYNC_ROLE`, pool-pause) are both true; skips a due-but-blocked tick (`shouldSync() && !canSync()`) without a report |
 
 - The owner's EVM address (the **Safe address**) is propagated into every report as `metadata.workflowOwner` (bytes `[42:62]`); `CREReceiver._extractWorkflowOwner` reads it and, if `expectedAuthor != 0`, the two must match.
 - The report's `workflowName`/`workflowId` are deliberately **not** checked — authentication is `(forwarder, workflowOwner)` only (an owner-scoped label adds no defence against owner compromise, and the argument-less call-lock already bounds the blast radius; see [DOC.md §2.6](../DOC.md#26-credibility--security-of-the-application-layer-contracts)).
