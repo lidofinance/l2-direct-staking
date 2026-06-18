@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 
 import {L2UpgradeScriptBase} from "script/shared/L2UpgradeScriptBase.s.sol";
 import {OptimismL2UpgradeScript} from "script/optimism/OptimismL2Upgrade.s.sol";
-import {SepoliaL2UpgradeScript} from "script/optimism/sepolia/SepoliaL2Upgrade.s.sol";
 import {OptimismMigrationConstants as C} from "script/optimism/OptimismMigrationConstants.sol";
 
 /// @dev Exposes the internal env/gov-executor guard for unit testing.
@@ -19,7 +18,14 @@ contract OptimismGuardHarness is OptimismL2UpgradeScript {
     }
 }
 
-contract SepoliaGuardHarness is SepoliaL2UpgradeScript {
+/// @dev Opt-out network harness: keeps the base `address(0)` default for the expected executor (no
+///      canonical value → operator-supplied). Extends the abstract base directly, depending on no
+///      specific network script.
+contract OptOutGuardHarness is L2UpgradeScriptBase {
+    function _buildConfig(address, address, address) internal pure override returns (L2UpgradeConfig memory) {}
+    function _defaultLiquidityOwner() internal pure override returns (address) {}
+    function _expectedChainId() internal pure override returns (uint256) {}
+
     function envGovernanceExecutor() external view returns (address) {
         return _envGovernanceExecutor();
     }
@@ -35,17 +41,17 @@ contract SepoliaGuardHarness is SepoliaL2UpgradeScript {
 ///         executor). RPC-free — exercises only the env guard, not the broadcast/fork paths.
 contract L2GovernanceExecutorGuardTest is Test {
     OptimismGuardHarness internal opt;
-    SepoliaGuardHarness internal sep;
+    OptOutGuardHarness internal optOut;
 
     function setUp() public {
         opt = new OptimismGuardHarness();
-        sep = new SepoliaGuardHarness();
+        optOut = new OptOutGuardHarness();
     }
 
     function test_expectedExecutor_perNetwork() public {
-        // Mainnet pins the per-network constant; Sepolia opts out (no canonical executor).
+        // Mainnet pins the per-network constant; an opt-out network has none.
         assertEq(opt.expectedGovernanceExecutor(), C.LIDO_L2_GOVERNANCE_EXECUTOR, "optimism expected");
-        assertEq(sep.expectedGovernanceExecutor(), address(0), "sepolia opt-out");
+        assertEq(optOut.expectedGovernanceExecutor(), address(0), "opt-out network");
     }
 
     /// @dev Every env-dependent assertion lives in THIS single method on purpose: `vm.setEnv` mutates
@@ -66,7 +72,7 @@ contract L2GovernanceExecutorGuardTest is Test {
         );
         opt.envGovernanceExecutor();
 
-        // Sepolia opts out → the same "wrong" value passes through (operator-supplied, no canonical value).
-        assertEq(sep.envGovernanceExecutor(), wrong, "sepolia accepts any nonzero executor");
+        // Opt-out network → the same "wrong" value passes through (operator-supplied, no canonical value).
+        assertEq(optOut.envGovernanceExecutor(), wrong, "opt-out accepts any nonzero executor");
     }
 }

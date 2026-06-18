@@ -7,7 +7,6 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
-import {FeeSplit} from "src/libraries/FeeSplit.sol";
 
 /**
  * @dev Minimal view of OpenZeppelin's {Pausable} surface, used to probe the OraclePool's pause state
@@ -163,10 +162,10 @@ contract SyncTrigger is Ownable {
     }
 
     function getMaxFees() public view virtual returns (uint256 maxNativeFee, uint256 maxLinkFee) {
-        // Split shared with the deploy script's `runPrintFeeParams` via {FeeSplit} so the on-chain
-        // truth and the verify-constants-sync oracle cannot drift. Reverts on an empty fee blob — the
-        // sole on-chain caller, {canSync}, guards `_feeOtoD`/`_feeDtoO` non-empty before reaching here.
-        return FeeSplit.maxFees(_feeOtoD, _feeDtoO);
+        // Split shared with the deploy script's `runPrintFeeParams` via the {_maxFees} mirror so the
+        // on-chain truth and the verify-constants-sync oracle cannot drift. Reverts on an empty fee blob —
+        // the sole on-chain caller, {canSync}, guards `_feeOtoD`/`_feeDtoO` non-empty before reaching here.
+        return _maxFees(_feeOtoD, _feeDtoO);
     }
 
     function getMaxGasLimit() public view virtual returns (uint32) {
@@ -285,9 +284,9 @@ contract SyncTrigger is Ownable {
         bytes memory feeDtoO = _feeDtoO;
 
         // Native fee to front = the native-denominated legs of both blobs. Shared with
-        // getMaxFees()/canSync() via {FeeSplit} so the float pre-flight here and the executability
-        // check there cannot drift from the value actually sent.
-        (uint256 nativeAmount,) = FeeSplit.maxFees(feeOtoD, feeDtoO);
+        // getMaxFees()/canSync() via the {_maxFees} mirror so the float pre-flight here and the
+        // executability check there cannot drift from the value actually sent.
+        (uint256 nativeAmount,) = _maxFees(feeOtoD, feeDtoO);
 
         // Pre-flight the native fee float. `sync{value: nativeAmount}` fronts the CCIP fee from this
         // contract's own balance, which depletes monotonically (only the maxFeeOtoD overage refunds).
@@ -343,6 +342,31 @@ contract SyncTrigger is Ownable {
     }
 
     // ──────────────── Internal ───────────────────────────────────────────
+
+    /**
+     * @dev Splits the OtoD/DtoO fee blobs into their max native- and LINK-denominated totals, summing
+     *      each leg's `maxFee` into the native or LINK total per that leg's `payInLink` flag. Called by
+     *      BOTH {getMaxFees} and {triggerSync} so the executability check and the value actually fronted
+     *      share ONE on-chain definition. The deploy script's `runPrintFeeParams` keeps a byte-identical
+     *      mirror; the two copies are pinned together by `verify-constants-sync` (pre-deploy) and
+     *      state-mate (live) against the same `<net>.inputs.yaml` anchors, and by the fee-split
+     *      equivalence test. `decodeFeeMemory` reads the first 17 bytes (maxFee[0:16] + payInLink[16]) and
+     *      reverts (FeeCodecInvalidDataLength) on a <17-byte buffer, so callers must guard empty/unset
+     *      blobs ({canSync} pre-checks non-empty; the constructor/setters reject short blobs).
+     */
+    function _maxFees(bytes memory feeOtoD, bytes memory feeDtoO)
+        private
+        pure
+        returns (uint256 maxNativeFee, uint256 maxLinkFee)
+    {
+        (uint256 maxFeeOtoD, bool payInLinkOtoD) = FeeCodec.decodeFeeMemory(feeOtoD);
+        if (payInLinkOtoD) maxLinkFee = maxFeeOtoD;
+        else maxNativeFee = maxFeeOtoD;
+
+        (uint256 maxFeeDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(feeDtoO);
+        if (payInLinkDtoO) maxLinkFee += maxFeeDtoO;
+        else maxNativeFee += maxFeeDtoO;
+    }
 
     function _getAmountToSync() internal view virtual returns (uint256 amount) {
         address oraclePool = ICustomSender(SENDER).getOraclePool();

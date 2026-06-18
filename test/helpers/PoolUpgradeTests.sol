@@ -812,6 +812,15 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(maxLinkFee, 0, "no LINK leg expected in current config");
         assertGe(initialFloat, maxNativeFee, "float must cover one worst-case sync");
 
+        // Fee-split non-drift: the deploy-script copy of the native/LINK split (the inherited {_maxFees},
+        // the path `verify-constants-sync` exercises) must agree with the live on-chain
+        // `SyncTrigger.getMaxFees()` for the real per-lane production blobs. This is the tested cross-check
+        // that replaces the deleted shared {FeeSplit} library's structural single-source guarantee (the two
+        // copies are also pinned to the same `<net>.inputs.yaml` anchors by verify-constants-sync + state-mate).
+        (uint256 scriptNativeFee, uint256 scriptLinkFee) = _maxFees(_encodeFeeOtoD(cfg), cfg.feeDtoO);
+        assertEq(scriptNativeFee, maxNativeFee, "fee-split native drift: deploy script vs SyncTrigger");
+        assertEq(scriptLinkFee, maxLinkFee, "fee-split link drift: deploy script vs SyncTrigger");
+
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 

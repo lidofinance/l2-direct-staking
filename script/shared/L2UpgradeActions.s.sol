@@ -148,7 +148,7 @@ contract L2UpgradeActions {
 
     /**
      * @notice Deploy CREReceiver + a fully-configured SyncTrigger, wire them together, and fund the float.
-     * @dev Shared by production scripts, Sepolia script, and fork tests. Pool must be deployed separately.
+     * @dev Shared by production scripts and fork tests. Pool must be deployed separately.
      *
      *      The receiver is deployed FIRST (with an empty allow-list seed) so the SyncTrigger can be
      *      constructed with the real forwarder == receiver address; the receiver's allow-list is then
@@ -371,6 +371,25 @@ contract L2UpgradeActions {
     ///      the runPrintFeeParams verify-constants-sync oracle), so they cannot drift on the encoding.
     function _encodeFeeOtoD(L2UpgradeConfig memory cfg) internal pure returns (bytes memory) {
         return FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit);
+    }
+
+    /// @dev Deploy-script mirror of `SyncTrigger._maxFees` — the native/LINK split over the OtoD/DtoO fee
+    ///      blobs. Duplicated here (rather than importing a shared src/ library) so the audit scope carries
+    ///      no standalone split file; the two copies are pinned together by `verify-constants-sync` (this
+    ///      path, pre-deploy) and state-mate (the live `SyncTrigger.getMaxFees`, post-deploy) against the
+    ///      same `<net>.inputs.yaml` anchors, and by the fee-split equivalence test.
+    function _maxFees(bytes memory feeOtoD, bytes memory feeDtoO)
+        internal
+        pure
+        returns (uint256 maxNativeFee, uint256 maxLinkFee)
+    {
+        (uint256 maxFeeOtoD, bool payInLinkOtoD) = FeeCodec.decodeFeeMemory(feeOtoD);
+        if (payInLinkOtoD) maxLinkFee = maxFeeOtoD;
+        else maxNativeFee = maxFeeOtoD;
+
+        (uint256 maxFeeDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(feeDtoO);
+        if (payInLinkDtoO) maxLinkFee += maxFeeDtoO;
+        else maxNativeFee += maxFeeDtoO;
     }
 
     function executeMigrationSteps(

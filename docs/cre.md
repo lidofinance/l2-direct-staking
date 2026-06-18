@@ -42,7 +42,6 @@ CRE Forwarder (on-chain; verifies signatures, ERC-165-gates the receiver)
 | `cre-workflows/sync-automation/config.deploy.<network>.json` | Per-network production config (Optimism, Arbitrum, Base, Linea)      |
 | `cre-workflows/sync-automation/config.deploy.json`           | Base production config (Optimism defaults)                           |
 | `cre-workflows/sync-automation/config.simulate.json`         | Local simulation config                                              |
-| `cre-workflows/sync-automation/config.test.json`             | Testnet config (Optimism Sepolia)                                    |
 
 ## Setup
 

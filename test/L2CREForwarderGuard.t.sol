@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 
 import {L2UpgradeScriptBase} from "script/shared/L2UpgradeScriptBase.s.sol";
 import {OptimismL2UpgradeScript} from "script/optimism/OptimismL2Upgrade.s.sol";
-import {SepoliaL2UpgradeScript} from "script/optimism/sepolia/SepoliaL2Upgrade.s.sol";
 import {OptimismMigrationConstants as C} from "script/optimism/OptimismMigrationConstants.sol";
 
 /// @dev Exposes the internal CRE-forwarder resolver/pin for unit testing.
@@ -23,7 +22,14 @@ contract OptimismForwarderGuardHarness is OptimismL2UpgradeScript {
     }
 }
 
-contract SepoliaForwarderGuardHarness is SepoliaL2UpgradeScript {
+/// @dev Opt-out network harness: keeps the base `address(0)` default for the expected forwarder (no
+///      canonical value → operator-supplied). Extends the abstract base directly, depending on no
+///      specific network script.
+contract OptOutForwarderGuardHarness is L2UpgradeScriptBase {
+    function _buildConfig(address, address, address) internal pure override returns (L2UpgradeConfig memory) {}
+    function _defaultLiquidityOwner() internal pure override returns (address) {}
+    function _expectedChainId() internal pure override returns (uint256) {}
+
     function creForwarder() external view returns (address) {
         return _creForwarder();
     }
@@ -37,22 +43,22 @@ contract SepoliaForwarderGuardHarness is SepoliaL2UpgradeScript {
 ///         production networks pin it in code (CRE_FORWARDER) instead of reading `L2_CRE_FORWARDER`.
 ///         `_creForwarder()` therefore defaults to the pin and rejects a present-but-wrong env value:
 ///         a stale/mistyped forwarder must never be baked IMMUTABLY into CREReceiver (every
-///         CRE-triggered sync would then be silently rejected by the real forwarder). Sepolia opts out
-///         (no canonical forwarder) and supplies it via env as before. RPC-free — exercises only the
+///         CRE-triggered sync would then be silently rejected by the real forwarder). An opt-out
+///         network (no canonical forwarder) supplies it via env. RPC-free — exercises only the
 ///         resolver, not the broadcast/fork paths.
 contract L2CREForwarderGuardTest is Test {
     OptimismForwarderGuardHarness internal opt;
-    SepoliaForwarderGuardHarness internal sep;
+    OptOutForwarderGuardHarness internal optOut;
 
     function setUp() public {
         opt = new OptimismForwarderGuardHarness();
-        sep = new SepoliaForwarderGuardHarness();
+        optOut = new OptOutForwarderGuardHarness();
     }
 
     function test_expectedForwarder_perNetwork() public {
-        // Mainnet pins the Chainlink-published per-network forwarder; Sepolia opts out.
+        // Mainnet pins the Chainlink-published per-network forwarder; an opt-out network has none.
         assertEq(opt.expectedCREForwarder(), C.CRE_FORWARDER, "optimism pinned forwarder");
-        assertEq(sep.expectedCREForwarder(), address(0), "sepolia opt-out");
+        assertEq(optOut.expectedCREForwarder(), address(0), "opt-out network");
     }
 
     /// @dev Env-dependent assertions share ONE method on purpose: `vm.setEnv` mutates process-global
@@ -73,8 +79,8 @@ contract L2CREForwarderGuardTest is Test {
         );
         opt.creForwarder();
 
-        // Sepolia opts out → the forwarder is operator-supplied, so the same value passes through.
-        assertEq(sep.creForwarder(), wrong, "sepolia reads env forwarder");
+        // Opt-out network → the forwarder is operator-supplied, so the same value passes through.
+        assertEq(optOut.creForwarder(), wrong, "opt-out reads env forwarder");
     }
 
     /// @dev The env-ABSENT branch — `_resolvePinned` defaults to the pin when the env var is unset — is

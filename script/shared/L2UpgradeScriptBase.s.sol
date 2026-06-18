@@ -4,7 +4,6 @@ pragma solidity ^0.8.20;
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
 
-import {FeeSplit} from "src/libraries/FeeSplit.sol";
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
 
@@ -24,9 +23,9 @@ import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
  *
  *   runDeploy:
  *     - L2_LIDO_DEPLOYER_PRIVATE_KEY
- *     - L2_GOVERNANCE_EXECUTOR (only on opt-out/testnet networks; production networks pin it in code
+ *     - L2_GOVERNANCE_EXECUTOR (only on opt-out networks; production networks pin it in code
  *                              via _expectedGovernanceExecutor(), so it defaults to the pinned constant)
- *     - L2_CRE_FORWARDER (only on opt-out/testnet networks; production networks pin the forwarder in
+ *     - L2_CRE_FORWARDER (only on opt-out networks; production networks pin the forwarder in
  *                         code via _expectedCREForwarder(), so it is not required there)
  *     - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
  *
@@ -35,8 +34,8 @@ import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
  *     - L2_ORACLE_POOL (output of runDeploy)
  *     - L2_SYNC_TRIGGER (output of runDeploy)
  *     - L2_CRE_RECEIVER (output of runDeploy)
- *     - L2_GOVERNANCE_EXECUTOR (only on opt-out/testnet networks; production pins it in code)
- *     - L2_CRE_FORWARDER (only on opt-out/testnet networks; production pins it in code)
+ *     - L2_GOVERNANCE_EXECUTOR (only on opt-out networks; production pins it in code)
+ *     - L2_CRE_FORWARDER (only on opt-out networks; production pins it in code)
  *     - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
  *
  */
@@ -57,7 +56,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     function _expectedChainId() internal pure virtual returns (uint256);
 
     /// @dev Returns the known-correct L2 governance executor for this network, or address(0) to opt
-    ///      out of the check (e.g. Sepolia, where the executor is operator-supplied and has no
+    ///      out of the check (an opt-out network, where the executor is operator-supplied and has no
     ///      canonical value). Production networks override this to their per-chain
     ///      LIDO_L2_GOVERNANCE_EXECUTOR constant so that a wrong `L2_GOVERNANCE_EXECUTOR` env value is
     ///      rejected before any irreversible admin/ownership handover.
@@ -68,7 +67,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     }
 
     /// @dev Returns the fixed, Chainlink-published CRE Forwarder for this network, or address(0) to opt
-    ///      out (e.g. testnet, or before Chainlink has published the forwarder for a network). Mirrors
+    ///      out (e.g. before Chainlink has published the forwarder for a network). Mirrors
     ///      `_expectedGovernanceExecutor`, but because the forwarder is a per-network constant (not an
     ///      operator choice) pinning it here makes it fully non-env: `_creForwarder()` uses this value
     ///      directly, so `L2_CRE_FORWARDER` need not be set (and a present-but-wrong value is rejected).
@@ -104,7 +103,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     /// @dev Resolves a per-network PINNED address that is env-OPTIONAL. When the network pins a value
     ///      (`expected != 0`) the env var DEFAULTS to that constant and a present-but-different value is
     ///      reported as a mismatch (`ok == false`) for the caller to reject with its own typed error;
-    ///      when there is no pin (`expected == 0`, testnet opt-out) the operator MUST supply it via env.
+    ///      when there is no pin (`expected == 0`, opt-out) the operator MUST supply it via env.
     ///      Shared by `_creForwarder` and `_envGovernanceExecutor` so the two pinned addresses — both
     ///      fixed per-network constants, both verify-constants-sync'd — impose ONE operator contract (a
     ///      value the code already knows is never made mandatory) rather than two divergent ones, and a
@@ -129,7 +128,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     ///      the DEFAULT_ADMIN_ROLE / ProxyAdmin handover (Stage 2) with no on-chain guardrail — the same
     ///      class of bug as the historical wrong Base/Linea executor. (SyncTrigger ownership now goes to
     ///      the LOL multisig, so Stage 1 no longer assigns the executor; the guard still validates it in
-    ///      both stages.) When `_expectedGovernanceExecutor()` returns address(0) (testnet opt-out) the
+    ///      both stages.) When `_expectedGovernanceExecutor()` returns address(0) (opt-out) the
     ///      operator must supply it via env, as before.
     function _envGovernanceExecutor() internal view returns (address governanceExecutor) {
         address expected = _expectedGovernanceExecutor();
@@ -145,7 +144,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     ///      forwarder is NOT operator-supplied and `L2_CRE_FORWARDER` need not be set — it defaults to
     ///      the pin (via `_resolvePinned`). If the env var IS set it must match the pin, else we revert:
     ///      a stale/mistyped value must never silently override the constant that is baked immutably into
-    ///      CREReceiver. Opt-out networks (testnet / not-yet-published) return address(0) from the hook
+    ///      CREReceiver. Opt-out networks (e.g. a not-yet-published forwarder) return address(0) from the hook
     ///      and supply the forwarder via `L2_CRE_FORWARDER` as before.
     function _creForwarder() internal view returns (address creForwarder) {
         address expected = _expectedCREForwarder();
@@ -193,7 +192,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     /// @notice Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run. Actor: anyone.
     /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR
-    ///      (L2_CRE_FORWARDER only on opt-out/testnet networks; production networks pin it in code).
+    ///      (L2_CRE_FORWARDER only on opt-out networks; production networks pin it in code).
     ///      The CREReceiver.expectedAuthor pin is the LOL multisig (= liquidity owner / CRE workflow owner),
     ///      sourced from L2_LIQUIDITY_OWNER (or the network's default LOL multisig) — not the broadcasting EOA.
     function runVerifyStage1() public view {
@@ -221,16 +220,16 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     ///         the `<net>.inputs.yaml` `config:` fee anchors stay in lockstep with the Solidity source of
     ///         truth, and used when authoring those anchors. Pure computation — needs no RPC or broadcast.
     ///         The actor addresses do not affect any fee field, so dummy non-zero placeholders are passed.
-    /// @dev The native/LINK split is shared with `SyncTrigger.getMaxFees()` via the {FeeSplit} library,
-    ///      so this oracle and the contract cannot drift on fee-denomination semantics. Mirrors
-    ///      `L2UpgradeActions` feeOtoD encoding.
+    /// @dev The native/LINK split is shared with `SyncTrigger.getMaxFees()` via the inherited `_maxFees`
+    ///      mirror (byte-identical to `SyncTrigger._maxFees`), so this oracle and the contract cannot drift
+    ///      on fee-denomination semantics. Mirrors `L2UpgradeActions` feeOtoD encoding.
     function runPrintFeeParams() public view {
         L2UpgradeConfig memory cfg = _buildConfig(address(0xA11CE), address(0xB0B), address(0xC0FFEE));
 
         bytes memory feeOtoD = _encodeFeeOtoD(cfg);
         bytes memory feeDtoO = cfg.feeDtoO;
 
-        (uint256 maxNativeFee, uint256 maxLinkFee) = FeeSplit.maxFees(feeOtoD, feeDtoO);
+        (uint256 maxNativeFee, uint256 maxLinkFee) = _maxFees(feeOtoD, feeDtoO);
 
         console2.log("FEE_OTO_D=%s", vm.toString(feeOtoD));
         console2.log("FEE_DTO_O=%s", vm.toString(feeDtoO));

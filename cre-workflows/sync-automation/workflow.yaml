@@ -5,15 +5,6 @@
 # due and executable, encodes a triggerSync() call and delivers it via the CRE Receiver.
 
 # ==========================================================================
-test-settings:
-  user-workflow:
-    workflow-name: "lido-sync-automation-test"
-  workflow-artifacts:
-    workflow-path: "./main.ts"
-    config-path: "./config.test.json"
-    secrets-path: ""
-
-# ==========================================================================
 simulate-settings:
   user-workflow:
     workflow-name: "lido-sync-automation-simulate"

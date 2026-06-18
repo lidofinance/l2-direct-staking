@@ -37,9 +37,10 @@ against that commit (the Slither/coverage figures below are bound to it).
 | File | nSLOC | Notes |
 |------|------:|-------|
 | [`src/cre/CREReceiver.sol`](../src/cre/CREReceiver.sol) | ~135 | Receives DON-signed CRE reports via the Keystone forwarder; dispatches a whitelisted, argument-less call (production: `SyncTrigger.triggerSync()`). New, Lido-authored. License: MIT. |
-| [`src/SyncTrigger.sol`](../src/SyncTrigger.sol) | ~135 | Decides *when* and *how much* to sync; calls `CustomSender.sync()`, funding the CCIP native fee from its own balance. Adapted from upstream `SyncAutomation` (Keeper→CRE refactor). License: Apache-2.0. |
+| [`src/SyncTrigger.sol`](../src/SyncTrigger.sol) | ~141 | Decides *when* and *how much* to sync; calls `CustomSender.sync()`, funding the CCIP native fee from its own balance. Includes the inlined fee-denomination split `_maxFees` (formerly the standalone `FeeSplit` library; the deploy script's `runPrintFeeParams` keeps a byte-identical mirror, pinned by `verify-constants-sync` + a fee-split equivalence test). Adapted from upstream `SyncAutomation` (Keeper→CRE refactor). License: Apache-2.0. |
 
-**Total in-scope ≈ 270 nSLOC** (re-measured 2026-06-10 at `145affb`; the growth vs the earlier
+**Total in-scope ≈ 276 nSLOC** (re-measured 2026-06-10 at `145affb`, then +6 on 2026-06-18 when the
+former `FeeSplit` helper was inlined into `SyncTrigger` as `_maxFees`; the growth vs the earlier
 ≈230 figure is mostly a multi-line formatting pass on `CREReceiver` plus three new owner-setter
 guards — logic delta is ~10 lines), 2 non-upgradeable `Ownable` contracts, **0
 permissionless state-mutating function entry points** (the payable `receive()` fallbacks accept
@@ -51,7 +52,6 @@ liveness](#d-fee-configuration--liveness)).
 | File                                               | Notes                                                                                                                                                                                                                                                                                     |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/cre/interfaces/IReceiver.sol`                 | Keystone receiver interface — `onReport`-only; **its `interfaceId` (`0x805f2132`) is load-bearing** (a one-selector mistake silently bricks delivery). The file is reference, but the id **match** is asserted in the in-scope `CREReceiver.supportsInterface` and is an audit-focus item (§B).                                                                                                                                    |
-| `src/libraries/FeeSplit.sol`                       | Pure helper (~10 nSLOC, `internal` / inlined) splitting the OtoD/DtoO fee blobs into their max native/LINK totals. **In the production path** — exercised by the in-scope `SyncTrigger.getMaxFees()` — and shared with the deploy script's `runPrintFeeParams` so the on-chain split and the `verify-constants-sync` fee-anchor oracle cannot drift. New, Lido-authored. License: Apache-2.0.                                       |
 | `lib/chainlink-csr/**` @ `62108f7`                 | Upstream `CustomSender`, `OraclePool`, `FeeCodec`, `TokenHelper` — **out of scope** (relied-on upstream code). `SyncTrigger`'s fee/native/LINK accounting is *adapted from* (not byte-for-byte) upstream `SyncAutomation` at this commit. **Caveat — load-bearing for scope size:** upstream `SyncAutomation` is **not known to be audited** (no audit report vendored in `lib/chainlink-csr`; Chainlink's Direct-Staking reference template is published "AS IS … has not been audited"). So "adapted from audited upstream" must **not** be used to exclude this logic. Until (a) a concrete upstream audit reference and (b) an equivalence `git diff` of the shared accounting between `SyncTrigger` and `SyncAutomation` at the pinned commits are attached, treat the shared accounting as **in-scope by default**. |
 | `lib/chainlink-local/**` (vendored `ccip@eb419a0`) | CCIP routers, `KeystoneForwarder` / `IReceiver` — out of scope.                                                                                                                                                                                                                           |
 | `lib/openzeppelin-contracts{,-upgradeable}/**`     | `Ownable`, `SafeERC20`, `IERC165` — out of scope (relied-on upstream).                                                                                                                                                                                                                    |
@@ -314,9 +314,8 @@ below):
 | Where | What it holds |
 | --- | --- |
 | `script/{optimism,arbitrum,base,linea}/<Lane>MigrationConstants.sol` | Per-lane `LIDO_L2_GOVERNANCE_EXECUTOR`, `LIQUIDITY_OWNER`, `L2_SYNC_TRIGGER_INITIAL_FLOAT`, `L2_SYNC_DESTINATION_GAS_LIMIT`, sender / pool / old-automation addresses. |
-| `script/optimism/sepolia/SepoliaMigrationConstants.sol` | Testnet equivalents (opts out of the gov-executor guard; smaller float). |
 | `script/l1/L1MigrationConstants.sol` | `INITIAL_OWNER` (the external Stage-2 signer) plus the **shared** L1 receiver / `ProxyAdmin`. |
-| Deploy-time env | `LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_SYNC_TRIGGER_INITIAL_FLOAT` echoed for the broadcast-time guards. The CRE forwarder is **no longer** deploy-time env: it is pinned per lane in `<Lane>MigrationConstants.CRE_FORWARDER` (`_expectedCREForwarder()`, see §B); `L2_CRE_FORWARDER` is read only on the testnet opt-out lane. |
+| Deploy-time env | `LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_SYNC_TRIGGER_INITIAL_FLOAT` echoed for the broadcast-time guards. The CRE forwarder is **no longer** deploy-time env: it is pinned per lane in `<Lane>MigrationConstants.CRE_FORWARDER` (`_expectedCREForwarder()`, see §B). |
 | `config/state/l2.yaml` (one shared wiring for all 4 L2 lanes; + per-lane generated `.deployed.yaml` / static `.inputs.yaml` siblings) | Deployed-state verification oracle; the encoded fee blobs (`getFeeOtoD`/`getFeeDtoO`/`getMaxFees`) are now asserted against the `.inputs.yaml` anchors, themselves cross-checked vs `FeeCodec(constants)` by `verify-constants-sync`. |
 
 Cross-references: `DOC.md §1` (Networks) and `DOC.md §6.1` (the two different "initial" accounts).
@@ -501,7 +500,7 @@ Not every theme carries all three sub-lists.
     Owner-set — confirmable only on a deployed instance.
   - **G-1** (*source + config*): gov-executor guard — both stages revert
     (`L2UpgradeWrongGovernanceExecutor`) unless the env-supplied executor equals the per-network
-    `LIDO_L2_GOVERNANCE_EXECUTOR` constant (Sepolia opts out) — a wrong-but-nonzero executor cannot
+    `LIDO_L2_GOVERNANCE_EXECUTOR` constant — a wrong-but-nonzero executor cannot
     be baked into the `CustomSender` admin / `ProxyAdmin` handover (Stage 2; `SyncTrigger` now goes to the LOL multisig).
 - **Residual risks** — the highest-risk, off-chain track.
   - **External Initial Owner & non-atomic, no-forcing-function cutover.** Stage 2 is run by the

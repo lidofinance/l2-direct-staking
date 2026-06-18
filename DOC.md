@@ -690,7 +690,7 @@ authorization to run it.
   Stage 1 no longer assigns the executor now that `SyncTrigger` goes to the LOL multisig).
   This is the **independent** check the caveat below
   asks for — the executor is verified against a pinned constant, not against a value
-  derived from itself. (Sepolia opts out: its executor is operator-supplied.)
+  derived from itself.
 
 Subject to the §6.1 caveat: state-mate is a strong check **except** where its
 expected values were derived from the same constants being verified.

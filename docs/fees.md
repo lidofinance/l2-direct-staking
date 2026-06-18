@@ -389,8 +389,8 @@ automatically. The mechanics:
   size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
   "fill it up", and refill from the [§5 alert](monitoring.md#5-capacity--headroom--medium).
 - **Initial funding is part of `deploy-stage1` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
-  the amount is pinned as `L2_SYNC_TRIGGER_INITIAL_FLOAT` in each network's `MigrationConstants` (0.5 ETH;
-  Sepolia 0.15), sent from the Lido Deployer wallet during the Stage-1 broadcast. The script reverts with
+  the amount is pinned as `L2_SYNC_TRIGGER_INITIAL_FLOAT` in each network's `MigrationConstants` (0.5 ETH),
+  sent from the Lido Deployer wallet during the Stage-1 broadcast. The script reverts with
   `L2UpgradeFloatBelowFloor` if the constant doesn't cover one worst-case sync (`maxFee + feeDtoO`), and
   both the in-broadcast assert and `verify-stage1` read the balance back. Fork-test coverage:
   `test_productionDeployFundsSyncTriggerFloatForFirstSync` runs the first sync on the script-funded float

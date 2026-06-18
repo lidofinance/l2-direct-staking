@@ -1421,40 +1421,26 @@ _state-verify network rpc_url='':
     ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
     RPC_URL="{{rpc_url}}"
 
-    # Map network name to default RPC env var + state-mate yaml location.
+    # Map network name to default RPC env var.
     # Priority: positional [rpc_url] > L2_RPC_URL (from .env.<net>) > legacy fallbacks.
-    # The four mainnet L2 lanes share ONE wiring file (config/state/l2.yaml) and pass
-    # their per-lane siblings explicitly (auto-discovery is basename-keyed, so a bare l2.yaml would
-    # look for l2.inputs.yaml/l2.deployed.yaml). Sepolia keeps its own self-contained config whose
-    # siblings are auto-discovered by basename.
-    SHARED_L2_CONFIG="config/state/l2.yaml"
     case "$NETWORK" in
-      optimism) DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_OPTIMISM_RPC_URL:-${L2_OPTIMISM_RPC_URL:-}}}}"
-                STATE_MATE_CONFIG_PATH="$SHARED_L2_CONFIG" ;;
-      arbitrum) DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_ARBITRUM_RPC_URL:-${L2_ARBITRUM_RPC_URL:-}}}}"
-                STATE_MATE_CONFIG_PATH="$SHARED_L2_CONFIG" ;;
-      base)     DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_BASE_RPC_URL:-${L2_BASE_RPC_URL:-}}}}"
-                STATE_MATE_CONFIG_PATH="$SHARED_L2_CONFIG" ;;
-      linea)    DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_LINEA_RPC_URL:-${L2_LINEA_RPC_URL:-}}}}"
-                STATE_MATE_CONFIG_PATH="$SHARED_L2_CONFIG" ;;
-      sepolia)  DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_OPTIMISM_SEPOLIA_RPC_URL:-${L2_OPTIMISM_SEPOLIA_RPC_URL:-}}}}"
-                STATE_MATE_CONFIG_PATH="config/state/sepolia.yaml" ;;
+      optimism) DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_OPTIMISM_RPC_URL:-${L2_OPTIMISM_RPC_URL:-}}}}" ;;
+      arbitrum) DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_ARBITRUM_RPC_URL:-${L2_ARBITRUM_RPC_URL:-}}}}" ;;
+      base)     DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_BASE_RPC_URL:-${L2_BASE_RPC_URL:-}}}}" ;;
+      linea)    DEFAULT_RPC_URL="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${LOCAL_L2_LINEA_RPC_URL:-${L2_LINEA_RPC_URL:-}}}}" ;;
       *)        echo "Unknown network: $NETWORK" >&2; exit 1 ;;
     esac
 
     STATE_MATE_OUTPUT_FILE="${L2_STATE_MATE_OUTPUT_FILE:-${TMPDIR:-/tmp}/${NETWORK}-l2-state-mate.env}"
     STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
-    STATE_MATE_CONFIG="$ROOT_DIR/$STATE_MATE_CONFIG_PATH"
-
-    # When using the shared wiring, point it at this lane's siblings explicitly (absolute paths,
-    # since the runner cd's into lib/state-mate). Sepolia's self-contained config auto-discovers.
-    STATE_MATE_SIBLING_ARGS=()
-    if [[ "$STATE_MATE_CONFIG_PATH" == "$SHARED_L2_CONFIG" ]]; then
-      STATE_MATE_SIBLING_ARGS=(
-        --inputs   "$ROOT_DIR/config/state/l2-$NETWORK.inputs.yaml"
-        --deployed "$ROOT_DIR/config/state/l2-$NETWORK.deployed.yaml"
-      )
-    fi
+    # All four mainnet L2 lanes share ONE wiring file (config/state/l2.yaml) and pass their per-lane
+    # siblings explicitly (auto-discovery is basename-keyed, so a bare l2.yaml would look for
+    # l2.inputs.yaml/l2.deployed.yaml). Absolute paths, since the runner cd's into lib/state-mate.
+    STATE_MATE_CONFIG="$ROOT_DIR/config/state/l2.yaml"
+    STATE_MATE_SIBLING_ARGS=(
+      --inputs   "$ROOT_DIR/config/state/l2-$NETWORK.inputs.yaml"
+      --deployed "$ROOT_DIR/config/state/l2-$NETWORK.deployed.yaml"
+    )
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${NETWORK}-l2-state-verify.XXXXXX")"
     STATE_MATE_LOG="$WORK_DIR/state-mate.log"
 
@@ -1953,14 +1939,6 @@ test-base-upgrade-state-verify:
 test-linea-upgrade-state-verify:
     @just _state-verify linea ""
 
-# Verify post-migration state-mate checks for Sepolia (Optimism Sepolia testnet)
-# against the canonical config/state/sepolia.yaml. Use this after
-# `sepolia-deploy-csr` + `sepolia-deploy-stage1` + `sepolia-migrate-stage2` to confirm the
-# rehearsal landed the same on-chain post-conditions as the mainnet flow would.
-# Usage: just -E .env.sepolia test-sepolia-upgrade-state-verify
-test-sepolia-upgrade-state-verify:
-    @just _state-verify sepolia ""
-
 # Legacy alias
 test-optimism-upgrade-state:
     @just _acceptance-test
@@ -2082,90 +2060,3 @@ rpc-start-l2-linea:
 test-arbitrum-upgrade:
     # Prefer a local anvil fork when provided, otherwise run directly against the upstream RPC.
     forge test --match-contract ArbitrumPoolUpgradeTest --rpc-url "${LOCAL_L2_ARBITRUM_RPC_URL:-$L2_ARBITRUM_RPC_URL}" -vvv
-
-# ──────────────────────────────────────────────────────────────────
-# Sepolia testnet deployment
-# ──────────────────────────────────────────────────────────────────
-
-# Step 0: Deploy full CSR infrastructure to Sepolia + OP Sepolia
-# (mainnet has CSR already deployed by Chainlink; testnet must bootstrap from scratch).
-# Required env: DEPLOYER_PRIVATE_KEY, L1_SEPOLIA_RPC_URL, L2_OPTIMISM_SEPOLIA_RPC_URL.
-sepolia-deploy-csr:
-    forge script script/optimism/sepolia/SepoliaCSRDeploy.s.sol:SepoliaCSRDeployScript \
-        --broadcast --non-interactive -vvv
-
-# Stage 1: Lido Deployer deploys new OraclePool + SyncTrigger + CREReceiver and configures them.
-# Mirrors `just deploy-stage1 <network>` on mainnet — same `runDeploy()` entrypoint, same env contract.
-# Required env: L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR, L2_CRE_FORWARDER,
-#               L2_CUSTOM_SENDER, L2_PROXY_ADMIN, L2_PRICE_ORACLE, L2_BOOTSTRAP_SYNC_AUTOMATION,
-#               L2_OPTIMISM_SEPOLIA_RPC_URL.
-# Optional env: L2_LIQUIDITY_OWNER (defaults to L2_GOVERNANCE_EXECUTOR), L2_INITIAL_OWNER.
-sepolia-deploy-stage1:
-    forge script script/optimism/sepolia/SepoliaL2Upgrade.s.sol:SepoliaL2UpgradeScript \
-        --sig "runDeploy()" \
-        --rpc-url "$L2_OPTIMISM_SEPOLIA_RPC_URL" \
-        --broadcast --non-interactive -vvv
-
-# Stage-1 read-only verification: 18 post-state assertions inherited from L2UpgradeScriptBase.
-# Mirrors `just verify-stage1 <network>` on mainnet. Callable by anyone (no private key needed).
-# Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR,
-#               L2_CRE_FORWARDER. The CREReceiver.expectedAuthor pin is the CRE workflow owner =
-#               L2_LIQUIDITY_OWNER (on testnet this defaults to L2_GOVERNANCE_EXECUTOR).
-sepolia-verify-stage1:
-    forge script script/optimism/sepolia/SepoliaL2Upgrade.s.sol:SepoliaL2UpgradeScript \
-        --sig "runVerifyStage1()" \
-        --rpc-url "$L2_OPTIMISM_SEPOLIA_RPC_URL" \
-        --non-interactive -vvv
-
-# Stage 2: Initial Owner migrates L2 admin/role state. Wraps `executeMigrationSteps` with
-# bootstrap-automation neutralization (extras) and bootstrap-pool retirement (sweep + pause +
-# transfer). Mirrors `just migrate-stage2 <network>` on mainnet.
-# Required env: L2_OPTIMISM_SEPOLIA_RPC_URL, INITIAL_OWNER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR,
-#               L2_BOOTSTRAP_SYNC_AUTOMATION, L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER,
-#               L2_CRE_FORWARDER, L2_CUSTOM_SENDER, L2_PROXY_ADMIN, L2_PRICE_ORACLE.
-sepolia-migrate-stage2:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Mirror the mainnet migrate-stage2 guards: fail upfront with a clear just-level error rather than
-    # mid-simulation when SepoliaL2Upgrade.runMigrate -> _runMigrateBody reads any of these via
-    # vm.envAddress (L2_CRE_RECEIVER among them — SepoliaL2Upgrade.s.sol).
-    : "${L2_OPTIMISM_SEPOLIA_RPC_URL:?required; set it in .env.sepolia or export it before running}"
-    : "${INITIAL_OWNER_PRIVATE_KEY:?required for runMigrate(); export it before running}"
-    : "${L2_GOVERNANCE_EXECUTOR:?required (final L2 admin; also the default liquidity owner on Sepolia)}"
-    : "${L2_BOOTSTRAP_SYNC_AUTOMATION:?required; the bootstrap SyncAutomation to neutralize + de-role}"
-    : "${L2_ORACLE_POOL:?required; populate from sepolia-deploy-stage1 output}"
-    : "${L2_SYNC_TRIGGER:?required; populate from sepolia-deploy-stage1 output}"
-    : "${L2_CRE_RECEIVER:?required by runMigrate() (Stage-1-completeness precondition); populate from sepolia-deploy-stage1 output}"
-    : "${L2_CRE_FORWARDER:?required; the CRE forwarder Stage 1 wired into the CREReceiver}"
-    : "${L2_CUSTOM_SENDER:?required; the CSR CustomSender (SepoliaCSRDeploy output)}"
-    : "${L2_PROXY_ADMIN:?required; the CustomSender ProxyAdmin (SepoliaCSRDeploy output)}"
-    : "${L2_PRICE_ORACLE:?required; the price oracle (SepoliaCSRDeploy output)}"
-
-    for addr in "$L2_GOVERNANCE_EXECUTOR" "$L2_BOOTSTRAP_SYNC_AUTOMATION" "$L2_ORACLE_POOL" \
-                "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER" "$L2_CRE_FORWARDER" "$L2_CUSTOM_SENDER" \
-                "$L2_PROXY_ADMIN" "$L2_PRICE_ORACLE"; do
-      [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ && "$addr" != "0x0000000000000000000000000000000000000000" ]] \
-        || { echo "Bad address: $addr (expected 0x + 40 hex chars, non-zero)" >&2; exit 1; }
-    done
-
-    forge script script/optimism/sepolia/SepoliaL2Upgrade.s.sol:SepoliaL2UpgradeScript \
-        --sig "runMigrate()" \
-        --rpc-url "$L2_OPTIMISM_SEPOLIA_RPC_URL" \
-        --broadcast --non-interactive -vvv
-
-# Run L1 upgrade on Sepolia (migrate receiver admin + proxy admin to LIDO_DAO_AGENT).
-# Required env: INITIAL_OWNER_PRIVATE_KEY, LIDO_DAO_AGENT, L1_LIDO_CUSTOM_RECEIVER,
-#               L1_PROXY_ADMIN, L1_SEPOLIA_RPC_URL.
-sepolia-upgrade-l1:
-    forge script script/optimism/sepolia/SepoliaL1Upgrade.s.sol:SepoliaL1UpgradeScript \
-        --sig "run()" \
-        --rpc-url "$L1_SEPOLIA_RPC_URL" \
-        --broadcast --non-interactive -vvv
-
-# Anvil fork of Ethereum Sepolia
-rpc-start-l1-sepolia:
-    anvil -p 8545 -f "$L1_SEPOLIA_RPC_URL"
-
-# Anvil fork of Optimism Sepolia
-rpc-start-l2-optimism-sepolia:
-    anvil -p 8551 -f "$L2_OPTIMISM_SEPOLIA_RPC_URL"
