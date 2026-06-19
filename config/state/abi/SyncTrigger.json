@@ -68,6 +68,19 @@
   },
   {
     "type": "function",
+    "name": "MIN_DELAY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint48",
+        "internalType": "uint48"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "DEST_CHAIN_SELECTOR",
     "inputs": [],
     "outputs": [
@@ -114,19 +127,6 @@
         "name": "",
         "type": "bool",
         "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "getAmountToSync",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -221,11 +221,6 @@
     "outputs": [
       {
         "name": "maxNativeFee",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxLinkFee",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -350,13 +345,13 @@
   },
   {
     "type": "function",
-    "name": "shouldSync",
+    "name": "shouldSyncAmount",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "bool",
-        "internalType": "bool"
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -610,6 +605,22 @@
   },
   {
     "type": "error",
+    "name": "SyncTriggerDelayBelowMin",
+    "inputs": [
+      {
+        "name": "delay",
+        "type": "uint48",
+        "internalType": "uint48"
+      },
+      {
+        "name": "minDelay",
+        "type": "uint48",
+        "internalType": "uint48"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SyncTriggerGasLimitAboveMax",
     "inputs": [
       {
@@ -658,11 +669,6 @@
   },
   {
     "type": "error",
-    "name": "SyncTriggerInvalidDelay",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "SyncTriggerInvalidForwarder",
     "inputs": []
   },
@@ -684,6 +690,11 @@
   {
     "type": "error",
     "name": "SyncTriggerOnlyForwarder",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SyncTriggerPayInLinkNotSupported",
     "inputs": []
   },
   {
