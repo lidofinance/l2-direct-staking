@@ -404,6 +404,7 @@ verify-constants-sync:
 
     fail_count=0
     pass_count=0
+    skip_count=0
 
     norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '"'; }
 
@@ -428,6 +429,22 @@ verify-constants-sync:
         echo "      PASS $what = $expected"
         pass_count=$(( pass_count + 1 ))
       fi
+    }
+
+    # Same as expect_eq, but for anchors that live ONLY in a <stem>.deployed.yaml sibling. Those siblings
+    # are deploy-time artifacts (no longer committed — see "fix: update state-mate config"): the per-lane
+    # l2-<net>.deployed.yaml is written by `just deploy-stage1`, the l1-mainnet/extras ones are produced at
+    # verification time. On a pre-deploy / audit checkout the file is legitimately absent, so SKIP rather
+    # than report false drift. When the file IS present the check runs exactly like expect_eq — a genuine
+    # rename/missing-anchor still FAILs.
+    expect_eq_deferred() { # $1 what  $2 expected  $3 actual  $4 deployed_file
+      local what="$1" expected="$2" actual="$3" deployed_file="$4"
+      if [[ ! -f "$deployed_file" ]]; then
+        echo "      SKIP $what: $deployed_file absent (deployed-state sibling produced at deploy/verify time)"
+        skip_count=$(( skip_count + 1 ))
+        return
+      fi
+      expect_eq "$what" "$expected" "$actual"
     }
 
     sol_addr() {
@@ -497,6 +514,8 @@ verify-constants-sync:
       # in these siblings. yml_anchor strips `.yaml` and scans <stem>.inputs.yaml/<stem>.deployed.yaml,
       # so this stem still resolves the anchors even though the per-lane wiring file is gone.
       sm="config/state/l2-${net}.yaml"
+      # The l2CustomSender/Impl/ProxyAdmin anchors live only in the generated .deployed.yaml sibling.
+      l2_deployed="config/state/l2-${net}.deployed.yaml"
 
       sol_l2_sender=$(sol_addr   "$sol" L2_CUSTOM_SENDER)
       sol_l2_sender_impl=$(sol_addr "$sol" L2_CUSTOM_SENDER_IMPL)
@@ -518,9 +537,9 @@ verify-constants-sync:
       echo
       echo "[$net] state-mate siblings: ${sm%.yaml}.{inputs,deployed}.yaml (shared wiring: config/state/l2.yaml)"
       expect_eq "l2ChainId → ${upper}_CHAIN_ID"                                  "$sol_chain_id"      "$(yml_anchor "$sm" l2ChainId)"
-      expect_eq "l2CustomSender → L2_CUSTOM_SENDER"                              "$sol_l2_sender"     "$(yml_anchor "$sm" l2CustomSender)"
-      expect_eq "l2CustomSenderImpl → L2_CUSTOM_SENDER_IMPL"                     "$sol_l2_sender_impl" "$(yml_anchor "$sm" l2CustomSenderImpl)"
-      expect_eq "l2ProxyAdmin → L2_PROXY_ADMIN"                                  "$sol_l2_proxy"      "$(yml_anchor "$sm" l2ProxyAdmin)"
+      expect_eq_deferred "l2CustomSender → L2_CUSTOM_SENDER"                     "$sol_l2_sender"     "$(yml_anchor "$sm" l2CustomSender)"     "$l2_deployed"
+      expect_eq_deferred "l2CustomSenderImpl → L2_CUSTOM_SENDER_IMPL"            "$sol_l2_sender_impl" "$(yml_anchor "$sm" l2CustomSenderImpl)" "$l2_deployed"
+      expect_eq_deferred "l2ProxyAdmin → L2_PROXY_ADMIN"                         "$sol_l2_proxy"      "$(yml_anchor "$sm" l2ProxyAdmin)"      "$l2_deployed"
       expect_eq "l2OldOraclePool → L2_OLD_ORACLE_POOL"                           "$sol_l2_pool"       "$(yml_anchor "$sm" l2OldOraclePool)"
       expect_eq "l2GovernanceExecutor → LIDO_L2_GOVERNANCE_EXECUTOR"             "$sol_l2_gov"        "$(yml_anchor "$sm" l2GovernanceExecutor)"
       expect_eq "l2CreForwarder → CRE_FORWARDER"                                 "$sol_l2_fwd"        "$(yml_anchor "$sm" l2CreForwarder)"
@@ -579,9 +598,13 @@ verify-constants-sync:
 
     echo
     echo "[shared L1 yaml: $L1_YAML — L1 receiver, ProxyAdmin, immutables]"
-    expect_eq "l1LidoCustomReceiver → L1_LIDO_CUSTOM_RECEIVER"                   "$sol_l1_recv"       "$(yml_anchor "$L1_YAML" l1LidoCustomReceiver)"
-    expect_eq "l1LidoCustomReceiverImpl → L1_LIDO_CUSTOM_RECEIVER_IMPL"          "$sol_l1_recv_impl"  "$(yml_anchor "$L1_YAML" l1LidoCustomReceiverImpl)"
-    expect_eq "l1ProxyAdmin → L1_PROXY_ADMIN"                                    "$sol_l1_proxy"      "$(yml_anchor "$L1_YAML" l1ProxyAdmin)"
+    # These three live only in the l1-mainnet.deployed.yaml sibling (a deploy/verify-time artifact). The
+    # receiver + ProxyAdmin addresses are additionally cross-checked against Solidity via the justfile
+    # hardcodes below, so deferring them here when the sibling is absent loses no coverage for those two.
+    l1_deployed="config/state/l1-mainnet.deployed.yaml"
+    expect_eq_deferred "l1LidoCustomReceiver → L1_LIDO_CUSTOM_RECEIVER"          "$sol_l1_recv"       "$(yml_anchor "$L1_YAML" l1LidoCustomReceiver)"      "$l1_deployed"
+    expect_eq_deferred "l1LidoCustomReceiverImpl → L1_LIDO_CUSTOM_RECEIVER_IMPL" "$sol_l1_recv_impl"  "$(yml_anchor "$L1_YAML" l1LidoCustomReceiverImpl)"  "$l1_deployed"
+    expect_eq_deferred "l1ProxyAdmin → L1_PROXY_ADMIN"                           "$sol_l1_proxy"      "$(yml_anchor "$L1_YAML" l1ProxyAdmin)"              "$l1_deployed"
     expect_eq "lidoDaoAgent → LIDO_DAO_AGENT"                                    "$sol_dao_agent"     "$(yml_anchor "$L1_YAML" lidoDaoAgent)"
     expect_eq "initialOwner → INITIAL_OWNER"                                     "$sol_initial_owner" "$(yml_anchor "$L1_YAML" initialOwner)"
     expect_eq "l1Weth → L1_WETH"                                                 "$sol_l1_weth"       "$(yml_anchor "$L1_YAML" l1Weth)"
@@ -609,6 +632,7 @@ verify-constants-sync:
     echo "===================================================================="
     if (( fail_count == 0 )); then
       echo "OK $pass_count duplicates in sync with Solidity."
+      (( skip_count > 0 )) && echo "   ($skip_count deferred — their .deployed.yaml sibling is absent; it is produced at deploy/verify time, e.g. 'just deploy-stage1')"
     else
       echo "FAIL $fail_count drift(s) detected ($pass_count OK)."
       echo "     Fix the duplicate to match Solidity (canonical),"
