@@ -40,7 +40,7 @@ library LineaMigrationConstants {
     // Linea's gasLimit baseline is half the others (Linea Message Service uses a leaner adapter).
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 500_000;
-    // FeeOtoD gasLimit ceiling = Linea's FeeQuoter maxPerMsgGasLimit (the lowest of the four lanes;
+    // FeeOtoD gasLimit ceiling = Linea's EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit (the lowest of the four lanes;
     // docs/fees.md §lane caps, verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this,
     // so a chain-blind uniform over-bump fails at config time instead of bricking sync (audit-scope C-1).
     uint32 internal constant L2_SYNC_MAX_GAS_LIMIT = 3_000_000;

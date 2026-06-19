@@ -26,7 +26,7 @@ _l2-script-target network:
 setup:
     cd chainlink-csr && npm install --ignore-scripts && forge install
 
-# Per-network L2 preflight check. Five checks, in order:
+# Per-network L2 preflight check. Six checks, in order:
 #   1. RPC chain-id matches expected.
 #   2. CustomSender contract has bytecode at the expected address.
 #   3. Legacy SyncAutomation.getLastExecution() age (Chainlink-Automation upkeep
@@ -37,6 +37,20 @@ setup:
 #      authoritative "is a sync in flight" gate. The Sync event fires regardless
 #      of caller, so this catches every code path: legacy upkeep, Gelato,
 #      manual sync(), and the future SyncTrigger.
+#   6. Configured SyncTrigger maxGasLimit ceiling vs the lane's LIVE CCIP
+#      maxPerMsgGasLimit. The hardcoded ceiling (constant ↔ inputs.yaml ↔ deployed
+#      state are cross-checked by `verify-constants-sync`/state-mate, but all three
+#      mirror EACH OTHER, never CCIP). This step is the only check against the live
+#      lane cap: a ceiling ABOVE it would let an over-cap feeOtoD pass setFeeOtoD
+#      then revert MessageGasLimitTooHigh inside every sync (audit-scope C-1). The
+#      cap lives in a different contract AND a different struct word per CCIP version,
+#      so this branches on typeAndVersion and reads a version-keyed word offset (do NOT
+#      decode the whole struct — it reorders across versions). Read paths, each verified
+#      against the live ramps (2026-06; getOnRamp uses the ETH-mainnet selector):
+#        EVM2EVMOnRamp 1.5.0 (Optimism, Linea): getDynamicConfig() word 10
+#        OnRamp 1.6.0 (Base, Arbitrum): getDynamicConfig() word 1 = feeQuoter, then
+#          FeeQuoter.getDestChainConfig(sel) word 3 (FeeQuoter 2.0.0) / word 4 (1.6.0)
+#      An unrecognized onRamp/FeeQuoter version WARN-skips instead of reading a wrong field.
 #
 # The 12 h window matches L2_SYNC_DELAY (minSyncDelay) configured on each
 # network's SyncAutomation / SyncTrigger; past 12 h since the last sync, the
@@ -93,7 +107,7 @@ preflight-check:
       [[ "$code" != "0x" && -n "$code" ]]
     }
 
-    echo "[1/5] CHECK chain-id of RPC matches expected ($EXPECTED_CHAIN_ID)"
+    echo "[1/6] CHECK chain-id of RPC matches expected ($EXPECTED_CHAIN_ID)"
     echo "      cmd: cast chain-id --rpc-url <rpc>"
     actual_chain_id=$(cast chain-id --rpc-url "$L2_RPC_URL")
     if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
@@ -109,14 +123,14 @@ preflight-check:
     fi
     echo "      PASS chain-id = $actual_chain_id (head block ${head_age}s old)"
 
-    echo "[2/5] CHECK CustomSender contract has bytecode at $SENDER"
+    echo "[2/6] CHECK CustomSender contract has bytecode at $SENDER"
     echo "      cmd: cast code $SENDER --rpc-url <rpc>"
     if ! has_code "$SENDER"; then
       die "CustomSender $SENDER has no code on this RPC"
     fi
     echo "      PASS bytecode present at CustomSender"
 
-    echo "[3/5] CHECK legacy SyncAutomation last execution age at $OLD_SYNC"
+    echo "[3/6] CHECK legacy SyncAutomation last execution age at $OLD_SYNC"
     if ! has_code "$OLD_SYNC"; then
       echo "      WARN no contract bytecode at $OLD_SYNC (legacy automation may already be revoked/replaced)"
     else
@@ -140,7 +154,7 @@ preflight-check:
       echo "           (https://app.gelato.network/) for pending Linea upkeeps before running Stage 2."
     fi
 
-    echo "[4/5] CHECK old oracle pool token balances (WETH + wstETH)"
+    echo "[4/6] CHECK old oracle pool token balances (WETH + wstETH)"
     if ! has_code "$POOL"; then
       echo "      WARN no contract bytecode at $POOL (old oracle pool unreachable on this RPC)"
     else
@@ -160,7 +174,7 @@ preflight-check:
       report_balance wstETH "$WSTETH"
     fi
 
-    echo "[5/5] CHECK CustomSender 'Sync' events in last ~12h (catches every sync path)"
+    echo "[5/6] CHECK CustomSender 'Sync' events in last ~12h (catches every sync path)"
     # topic0 of ICustomSender.Sync(address,uint64,bytes32,uint256); see lib/chainlink-csr/selectors.txt
     SYNC_TOPIC=0x2826f7440c9ba1050bcd2c586a60551875ac8951ec73f01df55ef00b59ae1a9c
     latest_block=$(cast block-number --rpc-url "$L2_RPC_URL" | tr -d '\r\n')
@@ -198,6 +212,80 @@ preflight-check:
       fi
     else
       echo "      WARN could not derive 12h-ago block estimate (timestamp probe failed); skipping Sync event scan."
+    fi
+
+    echo "[6/6] CHECK configured maxGasLimit ceiling vs live CCIP maxPerMsgGasLimit"
+    # The CCIP config structs drift across versions (field order changes), so do NOT decode
+    # the whole evolving tuple — extract just the one word we want by its version-keyed offset.
+    # DestChainConfig / DynamicConfig are fully static structs: each field is one 32-byte word,
+    # in declaration order. Print the Nth (1-based) word of raw ABI return data as decimal.
+    abi_word_dec() { local raw="${1#0x}" n="$2" w; w="${raw:$(((n-1)*64)):64}"; [[ ${#w} -eq 64 ]] && cast --to-dec "0x$w"; }
+    # Source both values from the lane's inputs.yaml (the single source verify-constants-sync
+    # already guards) rather than hardcoding copies here. `$2=="&anchor"` matches the anchor
+    # exactly (no substring/positional surprises) and takes the value field.
+    sm_inputs="config/state/l2-${L2_NETWORK}.inputs.yaml"
+    EXPECTED=$(awk '$2=="&maxGasLimit"{print $3; exit}' "$sm_inputs" 2>/dev/null)
+    # Every L2->L1 OtoD message targets Ethereum mainnet, so getOnRamp takes the mainnet CCIP
+    # selector (same for all four lanes); fall back to the literal if the anchor read fails.
+    DEST_SEL=$(awk '$2=="&ethMainnetCcipChainSelector"{print $3; exit}' "$sm_inputs" 2>/dev/null)
+    : "${DEST_SEL:=5009297550715157269}"
+    if [[ -z "${EXPECTED:-}" || ! "$EXPECTED" =~ ^[0-9]+$ ]]; then
+      echo "      WARN could not read &maxGasLimit from $sm_inputs; skipping live-cap check"
+    else
+      ROUTER=$(cast call "$SENDER" 'CCIP_ROUTER()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+      ONRAMP=$(cast call "$ROUTER" 'getOnRamp(uint64)(address)' "$DEST_SEL" --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+      if [[ -z "$ROUTER" ]]; then
+        echo "      WARN CustomSender.CCIP_ROUTER() did not respond; skipping live-cap check"
+      elif [[ -z "$ONRAMP" || "$ONRAMP" == "0x0000000000000000000000000000000000000000" ]]; then
+        echo "      WARN Router.getOnRamp($DEST_SEL) = ${ONRAMP:-<none>} — lane not provisioned on this RPC; skipping cap check"
+      else
+        # The cap lives in a different contract — and at a different word offset — per CCIP
+        # version, so branch on typeAndVersion. Each known (version -> offset) pair is verified
+        # against the live ramps in the recipe's doc above. `version_known` distinguishes a
+        # recognized-but-undecodable ramp (RPC hiccup) from an unknown version (already warned).
+        TV=$(cast call "$ONRAMP" 'typeAndVersion()(string)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+        TV="${TV%\"}"; TV="${TV#\"}"   # strip cast's surrounding quotes, if any
+        LIVE_CAP=""; version_known=
+        case "$TV" in
+          "EVM2EVMOnRamp 1.5.0")
+            # v1.5 (Optimism, Linea): maxPerMsgGasLimit is word 10 of the OnRamp DynamicConfig.
+            version_known=1
+            raw=$(cast call "$ONRAMP" 'getDynamicConfig()' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+            LIVE_CAP=$(abi_word_dec "$raw" 10)
+            ;;
+          OnRamp*)
+            # v1.6 (Base, Arbitrum): the cap moved to the FeeQuoter. OnRamp.getDynamicConfig()'s
+            # first field is the feeQuoter address (right-aligned word 1); the cap is then a
+            # version-keyed word of FeeQuoter.getDestChainConfig (2.0.0 reordered it vs 1.6.0).
+            dyn=$(cast call "$ONRAMP" 'getDynamicConfig()' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+            dyn=${dyn#0x}
+            FQ="0x${dyn:24:40}"
+            FQV=$(cast call "$FQ" 'typeAndVersion()(string)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+            FQV="${FQV%\"}"; FQV="${FQV#\"}"
+            raw=$(cast call "$FQ" 'getDestChainConfig(uint64)' "$DEST_SEL" --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
+            case "$FQV" in
+              "FeeQuoter 2.0.0")  version_known=1; LIVE_CAP=$(abi_word_dec "$raw" 3) ;;  # isEnabled, maxDataBytes, maxPerMsgGasLimit, ...
+              "FeeQuoter 1.6.0"*) version_known=1; LIVE_CAP=$(abi_word_dec "$raw" 4) ;;  # isEnabled, maxNumTokens, maxDataBytes, maxPerMsgGasLimit
+              *) echo "      WARN unrecognized FeeQuoter version '$FQV' at $FQ; cap field offset unknown — skipping (CCIP layout may have changed)" ;;
+            esac
+            ;;
+          *)
+            echo "      WARN unrecognized onRamp typeAndVersion '$TV' at $ONRAMP; cap check skipped (CCIP layout may have changed — re-verify the read path)"
+            ;;
+        esac
+        if [[ -n "$LIVE_CAP" && "$LIVE_CAP" =~ ^[0-9]+$ ]]; then
+          echo "      INFO onRamp $ONRAMP ($TV); live maxPerMsgGasLimit = $LIVE_CAP, configured ceiling = $EXPECTED"
+          if (( EXPECTED > LIVE_CAP )); then
+            die "configured maxGasLimit ceiling $EXPECTED exceeds live CCIP cap $LIVE_CAP on $L2_NETWORK ($TV) — an over-cap feeOtoD would pass setFeeOtoD then revert MessageGasLimitTooHigh inside every sync"
+          elif (( EXPECTED == LIVE_CAP )); then
+            echo "      PASS ceiling == live CCIP cap = $LIVE_CAP"
+          else
+            echo "      WARN ceiling $EXPECTED is below live CCIP cap $LIVE_CAP (tighter than CCIP; OK, but widen if the headroom isn't intentional)"
+          fi
+        elif [[ -n "$version_known" ]]; then
+          echo "      WARN could not decode live maxPerMsgGasLimit from $ONRAMP ($TV); skipping cap comparison"
+        fi
+      fi
     fi
 
     echo "===================================================================="

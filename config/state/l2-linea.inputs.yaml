@@ -8,7 +8,7 @@ config:
   - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
   - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
   - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
-  - &maxGasLimit 3000000                 # 3M     SyncTrigger.getMaxGasLimit() — Linea FeeQuoter maxPerMsgGasLimit (lowest of the four)
+  - &maxGasLimit 3000000                 # 3M     SyncTrigger.getMaxGasLimit() — Linea EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit (lowest of the four)
   # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
   # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=500_000)  — Linea gasLimit is 500k
   - &feeOtoD "0x000000000000000001bc16d674ec8000000007a120"

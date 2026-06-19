@@ -36,7 +36,7 @@ library OptimismMigrationConstants {
     // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
-    // FeeOtoD gasLimit ceiling = Optimism's FeeQuoter maxPerMsgGasLimit (docs/fees.md §lane caps,
+    // FeeOtoD gasLimit ceiling = Optimism's EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit (docs/fees.md §lane caps,
     // verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this — config-time guard
     // for the over-bump footgun (audit-scope C-1).
     uint32 internal constant L2_SYNC_MAX_GAS_LIMIT = 7_000_000;

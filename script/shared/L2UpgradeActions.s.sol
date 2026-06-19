@@ -40,7 +40,7 @@ contract L2UpgradeActions {
         uint64 destChainSelector;
         uint128 destinationMaxFee;
         uint32 destinationGasLimit;
-        uint32 maxGasLimit; // Per-lane FeeOtoD gasLimit ceiling = the lane's FeeQuoter maxPerMsgGasLimit (7M OP/Arb/Base, 3M Linea); rejects an over-cap bump at set-time (docs/audit-scope C-1)
+        uint32 maxGasLimit; // Per-lane FeeOtoD gasLimit ceiling = the lane's CCIP maxPerMsgGasLimit (EVM2EVMOnRamp v1.5 on OP/Linea, FeeQuoter v1.6 on Base/Arb; 7M OP/Arb/Base, 3M Linea); rejects an over-cap bump at set-time (docs/audit-scope C-1)
         bytes feeDtoO; // Pre-encoded bridge fee (Optimism, Arbitrum, etc.)
         uint128 minSyncAmount;
         uint128 maxSyncAmount;
