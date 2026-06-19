@@ -168,6 +168,8 @@ l2:
         getMaxFees: *maxNativeFee # native fee total derived from the fee blobs (LINK payment not supported)
         getMaxGasLimit: *maxGasLimit # FeeOtoD gasLimit ceiling = lane FeeQuoter maxPerMsgGasLimit; set during migration (rejects an over-cap bump at set-time, audit-scope C-1)
         shouldSyncAmount: 0 # delay-gated amount-to-sync: a nonzero return signals due-ness AND carries the amount; 0 at the verified state — no WETH accumulated yet. Executability is the separate canSync(), not asserted here: it reads the fee float, which drifts per-sync (see <net>.inputs.yaml), so no stable equality holds
+        MIN_DELAY: 60 # immutable 1-minute rate-limiter floor (SyncTrigger.MIN_DELAY = 1 minutes), lane-invariant
+        canSync: null # covered-but-skipped: reads the per-sync fee float (drifts), so no stable equality holds — same rationale as shouldSyncAmount above
 
     creReceiver:
       name: CREReceiver
