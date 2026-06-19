@@ -85,14 +85,19 @@ just verify-constants-sync      # needs yq
 just -E .env.<network> preflight-check       # chain-id, sender bytecode, legacy-sync age, old-pool balances, Sync events (~12h)
 just -E .env.<network> preflight-check-l1     # L1 mainnet + receiver adapter/sender wiring for this lane
 
-# c (cont.) CRE forwarder version   (Evidence: prints "Forwarder and Router 1.0.0")
-#    The repo vendors TWO Keystone forwarders with INCOMPATIBLE onReport/metadata ABIs. CREReceiver
-#    assumes the CCIP onReport(bytes,bytes) + metadata[42:62] layout, so the pinned forwarder MUST be
-#    the CCIP one. Reject the legacy "KeystoneForwarder 1.0.0" (onReport(bytes32,address,bytes)).
-#    The forwarder is pinned per lane in <Lane>MigrationConstants.CRE_FORWARDER (= the l2CreForwarder
-#    state-mate anchor), not env-supplied; read this lane's pinned value from the inputs file:
-FWD=$(yq '.. | select(anchor == "l2CreForwarder")' config/state/l2-$L2_NETWORK.inputs.yaml | tr -d '"')
-cast call $FWD "typeAndVersion()(string)" --rpc-url $L2_RPC_URL   # expect: "Forwarder and Router 1.0.0"
+# c (cont.) CRE forwarder integrity — pinned forwarder is the build CREReceiver speaks (Evidence: every lane "➜ PASS", exit 0)
+#    Two Keystone forwarders exist with INCOMPATIBLE ABIs: the legacy onReport(bytes32,address,bytes)
+#    (no ERC-165 gate) vs the ERC-165-gating onReport(bytes,bytes) "Router" build that CREReceiver
+#    implements. The pinned forwarder MUST be the Router build, or reports are never delivered and sync
+#    silently never fires.
+#    ⚠ Do NOT discriminate on typeAndVersion: the live forwarders report the STALE label
+#    "KeystoneForwarder 1.0.0" while actually BEING the Router build — that string is EXPECTED and
+#    correct, NOT the legacy contract (verified on-chain, all 4 lanes, 2026-06-19). verify-cre-forwarder
+#    checks the real discriminators (EXTCODEHASH pin + Router ABI fingerprint: isForwarder + 3-arg
+#    getTransmitter present, legacy 2-arg getTransmitter absent) for every lane in one read-only pass.
+#    Addresses come from the l2CreForwarder anchor in config/state/l2-<net>.inputs.yaml (pinned per lane
+#    in <Lane>MigrationConstants.CRE_FORWARDER), not env-supplied.
+just verify-cre-forwarder        # needs RPC_<NET> (or legacy L2_<NET>_RPC_URL) reachable for each lane
 ```
 
 **d. Dress rehearsal** — the *actual* operator recipes on an anvil fork of one L2 + L1 (validates recipe wiring end-to-end; Linea shown, substitute per net):
@@ -293,7 +298,7 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 
 - **CRITICAL:** the G4 invariant table above (any drift = key compromise / unintended governance); L1 Receiver balance ~0 (`MessageFailed` → page); CCIP manual-exec queue empty; Arbitrum retryable auto-redeems (≤7-day window or funds lost).
 - **HIGH:** `SyncTrigger.getLastExecution()` advancing < 24 h while pool WETH ≥ min; `Sync`(L2) ↔ `MessageSucceeded`(L1) 1:1; CRE workflow `ACTIVE` + owner = LOL Safe; **≥1 `CREReceiver.CallExecuted` observed** (the only proof the DON-embedded author matches the pin — a green registry-owner check does NOT prove it); **CRE credit funded under the LOL Safe's CRE account** (dashboard-only, no on-chain signal — a liveness stall with healthy fees + funded float ⇒ suspect credit starvation; see [docs/monitoring.md §4](docs/monitoring.md#4-cre-workflow-health--funding--high)).
-- **MEDIUM:** actual CCIP fee / `maxFee` < 80% (on **OP/Linea** this also tracks **sync size** — 5 bps, uncapped; the 100 WETH cap holds it to ~40%, [fee amount-sensitivity](docs/otod-fee-amount-sensitivity.md)); `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees().maxNativeFee` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
+- **MEDIUM:** actual CCIP fee / `maxFee` < 80% (on **OP/Linea** this also tracks **sync size** — 5 bps, uncapped; the 100 WETH cap holds it to ~40%, [fee amount-sensitivity](docs/otod-fee-amount-sensitivity.md)); `ccipReceive` gas / `gasLimit` < 80%; SyncTrigger ETH balance ≥ 2× `getMaxFees()` (depletes ~0.005 ETH/sync, monotonic; < 1× = lane stalls).
 
 ### Recover (CRE workflow-owner incident)
 
@@ -319,7 +324,7 @@ Mirror image of §Finalize: that step recovers the **old** system's residuals on
 
 > **Def — a drain emits `Swept`; the balance is ground truth.** `SyncTrigger.sweep` (`src/SyncTrigger.sol:288`) emits `Swept(token, recipient, amount)` (`src/SyncTrigger.sol:299`), like every config setter, so a drain *is* observable in the log. Still treat the **balance delta** (`cast balance <trigger>` → 0) plus the recipient's credit as the authoritative **Evidence** — the event corroborates, the balance confirms.
 
-**Step 1 — stop the engine. Duty — LOL multisig** SHALL deactivate triggering: `setDelay(type(uint48).max)` (the "deactivated" delay value) and/or `setForwarder(0x…dead)` — LOL owns `SyncTrigger`. (Independent backstop: GovExec can revoke the trigger's `SYNC_ROLE` on `CustomSender`, no LOL quorum needed.) **Gate S1** = triggering off. **Evidence:** read back `getDelay() == type(uint48).max` / `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
+**Step 1 — stop the engine. Duty — LOL multisig** SHALL deactivate triggering: `setForwarder(0x…dead)` — LOL owns `SyncTrigger` (the `delay` lever is a rate-limiter only, not a kill switch). (Independent backstop: GovExec can revoke the trigger's `SYNC_ROLE` on `CustomSender`, no LOL quorum needed.) **Gate S1** = triggering off. **Evidence:** read back `getForwarder()` = the dead address; `getLastExecution()` stops advancing on later CRE ticks.
 
 **Step 2 — stop the automation. Duty — LOL multisig** SHALL pause or delete the CRE workflow and stop funding its CRE credit. **Evidence:** `verify-cre-workflow` no longer reports `ACTIVE`. Levers: [docs/cre.md §CRE platform levers (workflow lifecycle)](docs/cre.md#cre-platform-levers-workflow-lifecycle).
 

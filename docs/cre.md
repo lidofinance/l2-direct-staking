@@ -16,7 +16,7 @@ Pool rebalancing is triggered by a CRE (Chainlink Runtime Environment) TypeScrip
 ```
 CRE DON (TypeScript/WASM, off-chain)
   ├── CronCapability trigger (every 5 minutes)
-  ├── EVMClient.callContract() → SyncTrigger.shouldSync() (due?) + canSync() (executable?)
+  ├── EVMClient.callContract() → SyncTrigger.shouldSyncAmount() (due? amount?) + canSync() (executable?)
   ├── If due && executable:
   │   ├── Encode triggerSync() calldata
   │   ├── Wrap in abi.encode(target, data) for CREReceiver
@@ -83,13 +83,14 @@ The sync workflow is off-chain WASM on Chainlink's CRE platform; its only on-cha
 | `cre workflow pause` / `activate` | LOL Safe (m-of-n) | Stop / start DON execution |
 | `cre workflow delete` | LOL Safe (m-of-n) | Retire the workflow |
 | `cre account link-key` / `unlink-key` | LOL Safe (m-of-n) | Associate / disassociate a wallet (owner-gated) |
-| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report only if `shouldSync()` (amount/delay) AND `canSync()` (float, `SYNC_ROLE`, pool-pause) are both true; skips a due-but-blocked tick (`shouldSync() && !canSync()`) without a report |
+| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report only if `shouldSyncAmount()` (amount/delay) is nonzero AND `canSync()` (float, `SYNC_ROLE`, pool-pause) is true; skips a due-but-blocked tick (`shouldSyncAmount() > 0 && !canSync()`) without a report |
 
 - The owner's EVM address (the **Safe address**) is propagated into every report as `metadata.workflowOwner` (bytes `[42:62]`); `CREReceiver._extractWorkflowOwner` reads it and, if `expectedAuthor != 0`, the two must match.
 - The report's `workflowName`/`workflowId` are deliberately **not** checked — authentication is `(forwarder, workflowOwner)` only (an owner-scoped label adds no defence against owner compromise, and the argument-less call-lock already bounds the blast radius; see [DOC.md §2.6](../DOC.md#26-credibility--security-of-the-application-layer-contracts)).
 - Updating the WASM under the same owner does **not** change `metadata.workflowOwner`, so `expectedAuthor` keeps accepting reports after a routine code update.
 - **Rotating a Safe *signer*** (`addOwner` / `swapOwner` / `removeOwner`) does **not** change the Safe address, so it needs **no** `setExpectedAuthor` re-pin and **no** redeploy. Only changing the workflow owner *to a different address* would require `setExpectedAuthor` ×4 — and with a Safe owner that is never needed except in the catastrophic whole-Safe-compromise case ([Workflow-owner key](#workflow-owner-key--lost-vs-compromised-consequences--recovery)).
-- CRE-side pause is instant but depends on Chainlink infra; the authoritative kill switches are on-chain — `LOL → CREReceiver.setForwarder(0x…dead)` / `SyncTrigger.setForwarder(0x…dead)` / `setDelay(max)`, and the independent `GovExec → CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`. Neither the CRE DON nor the Forwarder is controllable by this project.
+- CRE-side pause is instant but depends on Chainlink infra; the authoritative kill switches are on-chain — `LOL → CREReceiver.setForwarder(0x…dead)` / `SyncTrigger.setForwarder(0x…dead)`, and the independent `GovExec → CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`. Neither the CRE DON nor the Forwarder is controllable by this project.
+- The pinned CRE Forwarder is the ERC-165-gating, 2-arg-`onReport(bytes,bytes)` "Router" build that `CREReceiver` speaks — **verified on-chain (all 4 lanes)**; re-check read-only with `just verify-cre-forwarder`. ⚠ It reports the *stale* `typeAndVersion` label `"KeystoneForwarder 1.0.0"` (not the legacy 3-arg `onReport(bytes32,address,bytes)` contract) — discriminate on the ABI/EXTCODEHASH, never the version string (see [audit-scope §B](audit-scope.md#b-delivery-integrity--forwarder--erc-165-gate)).
 
 ## Workflow-owner key — lost vs compromised (consequences & recovery)
 

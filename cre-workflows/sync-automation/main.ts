@@ -4,8 +4,8 @@
  * Triggers periodic sync of accumulated L2 WETH to L1 for Lido staking.
  *
  * Flow:
- *   CronCapability trigger → read shouldSync() (due?) + canSync() (executable?) → if both, encode
- *   triggerSync() → sign report → write to CREReceiver → SyncTrigger.triggerSync() →
+ *   CronCapability trigger → read shouldSyncAmount() (due? amount?) + canSync() (executable?) → if both,
+ *   encode triggerSync() → sign report → write to CREReceiver → SyncTrigger.triggerSync() →
  *   CustomSender.sync() → CCIP → L1
  */
 
@@ -25,12 +25,10 @@ import { z } from "zod";
 import { isAddress, zeroAddress, type Hex } from "viem";
 import {
   encodeReportPayload,
-  encodeShouldSyncCall,
-  decodeShouldSyncResult,
+  encodeShouldSyncAmountCall,
+  decodeShouldSyncAmountResult,
   encodeCanSyncCall,
   decodeCanSyncResult,
-  encodeAmountToSyncCall,
-  decodeAmountToSyncResult,
   decideSyncAction,
 } from "./encoding";
 
@@ -81,10 +79,11 @@ const onCronTrigger = (runtime: Runtime<Config>): string => {
   const evmClient = new EVMClient(network.chainSelector.selector);
 
   // 2. Probe the two on-chain predicates the DON gates on. A sync proceeds only when it is both DUE
-  //    (shouldSync: delay elapsed + pool WETH >= minAmount) AND executable (canSync: the fee float,
-  //    SYNC_ROLE, and pool-pause preconditions that would otherwise make triggerSync revert). Splitting
-  //    them lets the DON suppress a due-but-blocked tick (a silent, signalless stall surfaced off-chain)
-  //    instead of submitting a guaranteed-revert report every tick.
+  //    (shouldSyncAmount: nonzero ⇔ delay elapsed + pool WETH >= minAmount, and the value IS the amount)
+  //    AND executable (canSync: the fee float, SYNC_ROLE, and pool-pause preconditions that would
+  //    otherwise make triggerSync revert). Splitting them lets the DON suppress a due-but-blocked tick
+  //    (a silent, signalless stall surfaced off-chain) instead of submitting a guaranteed-revert report
+  //    every tick.
   const staticCall = (data: Hex): Hex => {
     const res = evmClient
       .callContract(runtime, {
@@ -99,12 +98,12 @@ const onCronTrigger = (runtime: Runtime<Config>): string => {
     return bytesToHex(res.data);
   };
 
-  runtime.log("Calling shouldSync (is a sync due?)...");
-  const due = decodeShouldSyncResult(staticCall(encodeShouldSyncCall()));
-
-  // Only probe executability + amount when a sync is actually due — saves two eth_calls on idle ticks.
+  runtime.log("Calling shouldSyncAmount (is a sync due, and for how much?)...");
+  // One read yields both due-ness and the amount: nonzero ⇔ due. Only probe executability when actually
+  // due — saves an eth_call on idle ticks.
+  const amount = decodeShouldSyncAmountResult(staticCall(encodeShouldSyncAmountCall()));
+  const due = amount !== 0n;
   const executable = due ? decodeCanSyncResult(staticCall(encodeCanSyncCall())) : false;
-  const amount = due ? decodeAmountToSyncResult(staticCall(encodeAmountToSyncCall())) : 0n;
 
   runtime.log(`due=${due} executable=${executable} amount=${amount}`);
 

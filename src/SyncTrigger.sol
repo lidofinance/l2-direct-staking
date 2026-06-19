@@ -33,11 +33,12 @@ contract SyncTrigger is Ownable {
     error SyncTriggerSyncNotNeeded();
     error SyncTriggerOnlyForwarder();
     error SyncTriggerInvalidForwarder();
-    error SyncTriggerInvalidDelay();
     error SyncTriggerInvalidRecipient();
     error SyncTriggerNativeTransferFailed();
     error SyncTriggerInsufficientFloat(uint256 required, uint256 available);
     error SyncTriggerGasLimitAboveMax(uint32 gasLimit, uint32 maxGasLimit);
+    error SyncTriggerDelayBelowMin(uint48 delay, uint48 minDelay);
+    error SyncTriggerPayInLinkNotSupported();
 
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
     event DelaySet(uint48 delay);
@@ -54,7 +55,9 @@ contract SyncTrigger is Ownable {
      *         silently transposed at the call site. The immutable identity (`sender`, `destChainSelector`)
      *         and `initialOwner` are passed as separate constructor arguments.
      * @param forwarder The address allowed to call {triggerSync} (the CREReceiver).
-     * @param delay Minimum seconds between syncs; `type(uint48).max` deactivates syncing.
+     * @param delay Minimum seconds between syncs; must be at least {MIN_DELAY} — the throttle cannot be
+     *        set below one sync/minute. A larger delay still throttles harder, up to effectively pausing
+     *        syncing (e.g. `type(uint48).max`); only the sub-floor lower bound is rejected.
      * @param minAmount Minimum pool WETH that makes a sync due.
      * @param maxAmount Maximum WETH synced per trigger.
      * @param feeOtoD CCIP-encoded origin->destination fee blob (exactly 21 bytes).
@@ -71,6 +74,16 @@ contract SyncTrigger is Ownable {
         bytes feeDtoO;
         uint32 maxGasLimit;
     }
+
+    /**
+     * @notice Floor for `delay`: the on-chain rate-limiter can never be weakened below one sync/minute
+     *         (it can still be set HIGHER, up to effectively pausing syncing). Both the constructor and
+     *         {setDelay} reject any value below this. A `delay` of `0` would make the gate
+     *         `block.timestamp < _lastExecution + delay` permanently false, letting an unbounded number
+     *         of `triggerSync` calls land in a single block (each fronting the full native fee); a floor
+     *         of one minute caps syncing at one per minute per lane regardless of DON cadence.
+     */
+    uint48 public constant MIN_DELAY = 1 minutes;
 
     address public immutable SENDER;
     uint64 public immutable DEST_CHAIN_SELECTOR;
@@ -100,12 +113,13 @@ contract SyncTrigger is Ownable {
      *      at construction by delegating to the same internal setters the owner uses post-deploy, so the
      *      contract is born fully configured and emits the canonical `*Set` events. The call order is
      *      load-bearing: `_setMaxGasLimit` must precede `_setFeeOtoD`, which validates the decoded
-     *      gasLimit against the ceiling. Grants {SENDER} an unbounded LINK allowance to pay CCIP fees.
+     *      gasLimit against the ceiling.
      *
      *      Every parameter is strict — there is no "unset" representation: `_setFeeOtoD`/`_setFeeDtoO`
-     *      reject empty blobs (length guards) and the amount/delay/forwarder setters reject zero, so a
-     *      half-configured SyncTrigger cannot be constructed. Deactivation stays available post-deploy
-     *      via `setDelay(type(uint48).max)`.
+     *      reject empty blobs (length guards) and the amount/forwarder setters reject zero, so a
+     *      half-configured SyncTrigger cannot be constructed. `delay` must be at least {MIN_DELAY} (the
+     *      throttle cannot be set below the floor; a larger delay still throttles, up to effectively
+     *      pausing syncing).
      */
     constructor(address sender, uint64 destChainSelector, address initialOwner, InitParams memory p)
         Ownable(initialOwner)
@@ -118,8 +132,6 @@ contract SyncTrigger is Ownable {
         DEST_CHAIN_SELECTOR = destChainSelector;
         WNATIVE = ICustomSender(sender).WNATIVE();
         _lastExecution = uint48(block.timestamp);
-
-        IERC20(ICustomSender(sender).LINK_TOKEN()).forceApprove(sender, type(uint256).max);
 
         // Ceiling first: `_setFeeOtoD` validates gasLimit <= `_maxGasLimit`. `_setMaxGasLimit`'s
         // stored-feeOtoD re-check is skipped here because `_feeOtoD` is still empty at this point.
@@ -157,13 +169,8 @@ contract SyncTrigger is Ownable {
         return _feeDtoO;
     }
 
-    function getAmountToSync() public view virtual returns (uint256) {
-        return _getAmountToSync();
-    }
-
-    function getMaxFees() public view virtual returns (uint256 maxNativeFee, uint256 maxLinkFee) {
-        // Split shared with the deploy script's `runPrintFeeParams` via the {_maxFees} mirror so the
-        // on-chain truth and the verify-constants-sync oracle cannot drift. Reverts on an empty fee blob —
+    function getMaxFees() public view virtual returns (uint256 maxNativeFee) {
+        // Native fee total = the {_maxFees} split over the stored fee blobs. Reverts on an empty fee blob —
         // the sole on-chain caller, {canSync}, guards `_feeOtoD`/`_feeDtoO` non-empty before reaching here.
         return _maxFees(_feeOtoD, _feeDtoO);
     }
@@ -173,54 +180,54 @@ contract SyncTrigger is Ownable {
     }
 
     /**
-     * @notice Returns whether a sync is DUE: the `delay` rate-limit has elapsed since the last sync AND
-     *         the pool holds at least `minAmount` WETH (the amount itself, capped at `maxAmount`, is
-     *         exposed separately via {getAmountToSync}).
+     * @notice Returns the WETH amount a sync would move RIGHT NOW (capped at `maxAmount`), or `0` if a
+     *         sync is not DUE — i.e. the `delay` rate-limit has not elapsed since the last sync, or the
+     *         pool holds less than `minAmount` WETH. A nonzero return both signals due-ness and carries
+     *         the amount, so the off-chain caller needs a single read for both.
      * @dev One of the two on-chain signals the CRE DON polls each tick; {canSync} (executability) is the
-     *      other. The DON submits a `triggerSync` report only when BOTH hold; a tick that is due but not
-     *      executable is a stall it suppresses (logs `blocked`, emits no report) rather than a
-     *      guaranteed-revert submission that would silently stall syncing with no on-chain signal.
-     *      {triggerSync} also re-checks this predicate on-chain as a defense-in-depth rate-limit.
+     *      other. The DON submits a `triggerSync` report only when this is nonzero AND {canSync} holds; a
+     *      tick that is due but not executable is a stall it suppresses (logs `blocked`, emits no report)
+     *      rather than a guaranteed-revert submission that would silently stall syncing with no on-chain
+     *      signal. {triggerSync} calls this on-chain as a defense-in-depth rate-limit + amount source.
      *
      *      Deliberately TOTAL (never reverts) so the off-chain `eth_call` probe always gets a clean
-     *      bool: it reads only `block.timestamp`, the stored window, and the pool balance — never the fee
-     *      blobs, whose decode reverts while unset (that guard lives in {canSync}).
-     * @return True if a sync is due (delay elapsed AND pool WETH >= minAmount).
+     *      number: it reads only `block.timestamp`, the stored window, and the pool balance — never the
+     *      fee blobs, whose decode reverts while unset (that guard lives in {canSync}).
+     * @return The amount to sync (delay elapsed AND pool WETH >= minAmount), else 0.
      */
-    function shouldSync() public view virtual returns (bool) {
-        // widen to uint256 before adding. With uint48 operands, _lastExecution + _delay
-        // overflow-reverts when _delay == type(uint48).max (the "deactivated" value), turning the
-        // intended "no sync" into a panic that the off-chain CRE eth_call probe sees as a revert.
-        // In uint256 the threshold is simply unreachable, so the deactivated state cleanly returns false.
-        if (block.timestamp < uint256(_lastExecution) + _delay) return false;
+    function shouldSyncAmount() public view virtual returns (uint256) {
+        // widen to uint256 before adding: with uint48 operands a large `_delay` could make
+        // `_lastExecution + _delay` overflow and revert, turning the intended "no sync" into a panic
+        // that the off-chain CRE eth_call probe sees as a revert. In uint256 the sum never overflows,
+        // so the predicate stays TOTAL and cleanly returns 0 until the window has elapsed.
+        if (block.timestamp < uint256(_lastExecution) + _delay) return 0;
 
-        return _getAmountToSync() != 0;
+        return _getAmountToSync();
     }
 
     /**
      * @notice Returns whether a due sync would actually SUCCEED on-chain right now — the executability
-     *         predicate the CRE DON polls alongside {shouldSync}. The DON submits a `triggerSync` report
-     *         only when both are true; a due-but-`!canSync` tick is suppressed (logged `blocked`, no
-     *         report) instead of a guaranteed-revert submission that would silently stall syncing.
+     *         predicate the CRE DON polls alongside {shouldSyncAmount}. The DON submits a `triggerSync`
+     *         report only when both are true; a due-but-`!canSync` tick is suppressed (logged `blocked`,
+     *         no report) instead of a guaranteed-revert submission that would silently stall syncing.
      * @dev Checks the `triggerSync -> CustomSender.sync` preconditions reachable through stable,
      *      non-CCIP surfaces:
      *      - this contract still holds `SYNC_ROLE` on {SENDER} (revocation is a documented kill switch);
      *      - the OraclePool is not paused (also a documented kill switch — the DON then halts cleanly);
-     *      - the native fee float covers `getMaxFees().maxNativeFee` (the value `triggerSync` fronts);
-     *      - the LINK fee float covers `getMaxFees().maxLinkFee` (pulled by `CustomSender` via allowance).
+     *      - the native fee float covers `getMaxFees()` (the value `triggerSync` fronts).
      *
-     *      Like {shouldSync} it is deliberately TOTAL (never reverts) so the off-chain probe gets a clean
-     *      bool — hence the empty-fee guard below, since `getMaxFees` reverts on an unset blob.
+     *      Like {shouldSyncAmount} it is deliberately TOTAL (never reverts) so the off-chain probe gets a
+     *      clean bool — hence the empty-fee guard below, since `getMaxFees` reverts on an unset blob.
      *
      *      It deliberately does NOT check the live CCIP fee, which would require mirroring `CustomSender`'s
-     *      internal message construction (no public quote view) and would drift across CSR/CCIP releases.
+     *      internal message construction (no public quote view) and would drift across CustomSender/CCIP releases.
      *      Live-fee adequacy stays an off-chain monitoring concern; an under-funded float also surfaces
      *      on-chain via the named {SyncTriggerInsufficientFloat} revert in {triggerSync}.
      *
      *      Three further `sync`-time preconditions are likewise NOT checked — a regression in any spams
      *      router/sync reverts rather than producing a clean stall, so all are caught elsewhere:
      *      - the CCIP dest-chain allow-list (`IRouterClient.isChainSupported`) and the RMN curse state,
-     *        watched off-chain (docs/monitoring.md §3). If CCIP governance de-allow-lists
+     *        watched off-chain. If CCIP governance de-allow-lists
      *        `DEST_CHAIN_SELECTOR` or RMN curses the lane, both predicates still return true and every
      *        `triggerSync` reverts INSIDE the router. The RMN curse has no single stable view to mirror;
      *        the allow-list does, but is omitted too, to keep the predicate free of CCIP-version coupling
@@ -229,17 +236,16 @@ contract SyncTrigger is Ownable {
      *        `_setMaxGasLimit` vs the `_maxGasLimit` bound): a `feeOtoD` gasLimit above the lane's
      *        FeeQuoter `maxPerMsgGasLimit` reverts `MessageGasLimitTooHigh` inside every `sync`.
      *
-     *      The LINK branch is dormant today: every lane pays both legs in native (`payInLink == false`),
-     *      so `maxLinkFee == 0`. It is gated on the configured MAX (`getMaxFees().maxLinkFee`) whereas
-     *      `CustomSender` pulls only the LIVE LINK fee, so a balance in `[liveFee, maxLinkFee)` reads as a
-     *      conservative false-negative; a LINK-starved `triggerSync` reverts in `CustomSender`'s
-     *      `transferFrom` with no named float error (unlike the native {SyncTriggerInsufficientFloat}).
-     * @return True if every checked precondition holds (does NOT include due-ness — see {shouldSync}).
+     *      LINK fee payment is not supported: both fee setters reject `payInLink == true`
+     *      ({SyncTriggerPayInLinkNotSupported}), so every leg is native and there is no LINK float to check.
+     * @return True if every checked precondition holds (does NOT include due-ness — see {shouldSyncAmount}).
      */
     function canSync() public view returns (bool) {
         if (!IAccessControl(SENDER).hasRole(ICustomSender(SENDER).SYNC_ROLE(), address(this))) return false;
 
-        if (_isPaused(ICustomSender(SENDER).getOraclePool())) return false;
+        address oraclePool = ICustomSender(SENDER).getOraclePool();
+        if (oraclePool == address(0)) return false;
+        if (_isPaused(oraclePool)) return false;
 
         // Empty-fee guard (defense-in-depth). The strict constructor and the setters only ever store a
         // full, decodable blob, so an empty _feeOtoD/_feeDtoO is no longer reachable post-construction;
@@ -248,13 +254,9 @@ contract SyncTrigger is Ownable {
         // TOTAL: a due-but-unconfigured trigger reads as "not executable", never a probe revert.
         if (_feeOtoD.length == 0 || _feeDtoO.length == 0) return false;
 
-        (uint256 maxNativeFee, uint256 maxLinkFee) = getMaxFees();
+        uint256 maxNativeFee = getMaxFees();
 
         if (address(this).balance < maxNativeFee) return false;
-        if (
-            maxLinkFee > 0
-                && IERC20(ICustomSender(SENDER).LINK_TOKEN()).balanceOf(address(this)) < maxLinkFee
-        ) return false;
 
         return true;
     }
@@ -263,19 +265,18 @@ contract SyncTrigger is Ownable {
 
     /**
      * @notice Triggers a sync of accumulated WETH from the L2 pool to L1 via CCIP.
-     * @dev Re-checks {shouldSync} on-chain as a defense-in-depth rate-limit, then pre-flights the native
-     *      fee float before fronting the CCIP fee.
+     * @dev Re-checks {shouldSyncAmount} on-chain as a defense-in-depth rate-limit, then pre-flights the
+     *      native fee float before fronting the CCIP fee.
      *
      * Requirements:
      * - The caller must be the forwarder (CREReceiver).
      * - The sync conditions must be met (delay passed, pool balance >= minAmount).
      */
     function triggerSync() public virtual onlyForwarder {
-        // Defense-in-depth rate-limit re-checking shouldSync()'s window, but reading the pending amount
-        // only ONCE here (calling shouldSync() would compute _getAmountToSync() a second time). Widen to
-        // uint256 so the deactivated `_delay == type(uint48).max` value can't overflow-revert.
-        if (block.timestamp < uint256(_lastExecution) + _delay) revert SyncTriggerSyncNotNeeded();
-        uint256 amount = _getAmountToSync();
+        // Defense-in-depth rate-limit + amount source in a SINGLE read: shouldSyncAmount() returns the
+        // delay-gated, cap-clamped amount (0 when the delay window has not elapsed or the pool is below
+        // minAmount), so a `0` covers both "not due yet" and "nothing to sync".
+        uint256 amount = shouldSyncAmount();
         if (amount == 0) revert SyncTriggerSyncNotNeeded();
 
         _lastExecution = uint48(block.timestamp);
@@ -283,10 +284,10 @@ contract SyncTrigger is Ownable {
         bytes memory feeOtoD = _feeOtoD;
         bytes memory feeDtoO = _feeDtoO;
 
-        // Native fee to front = the native-denominated legs of both blobs. Shared with
-        // getMaxFees()/canSync() via the {_maxFees} mirror so the float pre-flight here and the
-        // executability check there cannot drift from the value actually sent.
-        (uint256 nativeAmount,) = _maxFees(feeOtoD, feeDtoO);
+        // Native fee to front = the sum of both fee blobs' maxFees (every leg is native — the setters
+        // reject `payInLink == true`). Shared with getMaxFees()/canSync() via the {_maxFees} mirror so the
+        // float pre-flight here and the executability check there cannot drift from the value actually sent.
+        uint256 nativeAmount = _maxFees(feeOtoD, feeDtoO);
 
         // Pre-flight the native fee float. `sync{value: nativeAmount}` fronts the CCIP fee from this
         // contract's own balance, which depletes monotonically (only the maxFeeOtoD overage refunds).
@@ -344,28 +345,22 @@ contract SyncTrigger is Ownable {
     // ──────────────── Internal ───────────────────────────────────────────
 
     /**
-     * @dev Splits the OtoD/DtoO fee blobs into their max native- and LINK-denominated totals, summing
-     *      each leg's `maxFee` into the native or LINK total per that leg's `payInLink` flag. Called by
-     *      BOTH {getMaxFees} and {triggerSync} so the executability check and the value actually fronted
-     *      share ONE on-chain definition. The deploy script's `runPrintFeeParams` keeps a byte-identical
-     *      mirror; the two copies are pinned together by `verify-constants-sync` (pre-deploy) and
-     *      state-mate (live) against the same `<net>.inputs.yaml` anchors, and by the fee-split
-     *      equivalence test. `decodeFeeMemory` reads the first 17 bytes (maxFee[0:16] + payInLink[16]) and
-     *      reverts (FeeCodecInvalidDataLength) on a <17-byte buffer, so callers must guard empty/unset
-     *      blobs ({canSync} pre-checks non-empty; the constructor/setters reject short blobs).
+     * @dev Sums the OtoD/DtoO fee blobs' `maxFee`s into the total NATIVE fee {triggerSync} fronts. Every
+     *      leg is native: both fee setters reject `payInLink == true` ({SyncTriggerPayInLinkNotSupported}),
+     *      so the decoded `payInLink` flag is always false and is ignored here. Called by BOTH {getMaxFees}
+     *      and {triggerSync} so the executability check and the value actually fronted share ONE on-chain
+     *      definition. `decodeFeeMemory` reads the first 17 bytes (maxFee[0:16] + payInLink[16]) and reverts
+     *      (FeeCodecInvalidDataLength) on a <17-byte buffer, so callers must guard empty/unset blobs
+     *      ({canSync} pre-checks non-empty; the constructor/setters reject short blobs).
      */
     function _maxFees(bytes memory feeOtoD, bytes memory feeDtoO)
         private
         pure
-        returns (uint256 maxNativeFee, uint256 maxLinkFee)
+        returns (uint256 maxNativeFee)
     {
-        (uint256 maxFeeOtoD, bool payInLinkOtoD) = FeeCodec.decodeFeeMemory(feeOtoD);
-        if (payInLinkOtoD) maxLinkFee = maxFeeOtoD;
-        else maxNativeFee = maxFeeOtoD;
-
-        (uint256 maxFeeDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(feeDtoO);
-        if (payInLinkDtoO) maxLinkFee += maxFeeDtoO;
-        else maxNativeFee += maxFeeDtoO;
+        (uint256 maxFeeOtoD,) = FeeCodec.decodeFeeMemory(feeOtoD);
+        (uint256 maxFeeDtoO,) = FeeCodec.decodeFeeMemory(feeDtoO);
+        maxNativeFee = maxFeeOtoD + maxFeeDtoO;
     }
 
     function _getAmountToSync() internal view virtual returns (uint256 amount) {
@@ -387,6 +382,7 @@ contract SyncTrigger is Ownable {
         // actively reverts is caught — a code-less `pool`, or one whose `paused()` returns < 32 bytes,
         // reverts during the success-branch ABI decode and PROPAGATES past this try/catch. Not reachable
         // today; do not rely on this to tolerate an arbitrary `pool` address.
+        // NB: if the address has no bytecode it still returns false.
         try IPausableLike(pool).paused() returns (bool paused) {
             return paused;
         } catch {
@@ -404,13 +400,13 @@ contract SyncTrigger is Ownable {
     }
 
     function _setDelay(uint48 delay) internal virtual {
-        // reject 0: with _delay == 0, `_getAmountToSync`'s `block.timestamp >= _lastExecution + 0` is
-        // ALWAYS true, permanently defeating the time-based rate limiter — every forwarder invocation
-        // would fire a sync the moment the pool crosses minAmount, fragmenting batches and draining the
-        // fee float at the CRE cron cadence. Deactivation uses `type(uint48).max` (the constructor
-        // default), never 0, so 0 is never a valid value — guard the owner against this self-footgun,
-        // mirroring the setForwarder(0) and setAmounts(0,...) guards.
-        if (delay == 0) revert SyncTriggerInvalidDelay();
+        // Enforce a MIN_DELAY floor so the rate-limiter can never be disabled. A `delay` of 0 (or any
+        // sub-minute value) would make the gate `block.timestamp < _lastExecution + delay` false within
+        // the same block/minute, so multiple `triggerSync` calls could land back-to-back, each fronting
+        // the full native fee — fee burn / batch fragmentation bounded only by minAmount and the float.
+        // The one-minute floor caps syncing at once per minute per lane WITHOUT relying on the DON
+        // delivering at most one report per block.
+        if (delay < MIN_DELAY) revert SyncTriggerDelayBelowMin(delay, MIN_DELAY);
         _delay = delay;
         emit DelaySet(delay);
     }
@@ -431,9 +427,13 @@ contract SyncTrigger is Ownable {
         // blob would store cleanly then self-DoS inside `sync`. (`memory` not `calldata`: the constructor
         // reuses this validator, and constructor args cannot be calldata.)
         if (fee.length != 21) revert FeeCodec.FeeCodecInvalidDataLength(fee.length, 21);
-        (,, uint32 gasLimit) = FeeCodec.decodeCCIPMemory(fee);
+        (, bool payInLink, uint32 gasLimit) = FeeCodec.decodeCCIPMemory(fee);
+        // LINK fee payment is not supported — reject a blob that asks `CustomSender` to pay the CCIP fee in
+        // LINK. The trigger holds no LINK and grants no LINK allowance, so a `payInLink == true` blob would
+        // be accepted here yet revert inside `CustomSender`'s LINK `transferFrom` on every sync.
+        if (payInLink) revert SyncTriggerPayInLinkNotSupported();
         // a decodable 21-byte config can still carry a gasLimit below the sender's floor, which
-        // makes every sync revert with CustomSenderInsufficientGas while shouldSync stays true —
+        // makes every sync revert with CustomSenderInsufficientGas while shouldSyncAmount stays nonzero —
         // the CRE DON would then submit a reverting tx every tick. Enforce the floor at set-time.
         if (gasLimit < ICustomSender(SENDER).MIN_PROCESS_MESSAGE_GAS()) {
             revert SyncTriggerInvalidParameters();
@@ -441,7 +441,7 @@ contract SyncTrigger is Ownable {
         // ...and reject a gasLimit above the per-lane ceiling. CCIP's FeeQuoter (v1.6) / OnRamp (v1.5)
         // caps gasLimit at a per-lane `maxPerMsgGasLimit`; an over-cap config (e.g. a chain-blind uniform
         // bump that exceeds Linea's lower cap) is otherwise accepted here yet reverts MessageGasLimitTooHigh
-        // inside every sync, with shouldSync still true. Fail loudly at set-time. `_maxGasLimit` is
+        // inside every sync, with shouldSyncAmount still nonzero. Fail loudly at set-time. `_maxGasLimit` is
         // seeded (constructor) / owner-set per lane, so this bound always binds.
         if (gasLimit > _maxGasLimit) {
             revert SyncTriggerGasLimitAboveMax(gasLimit, _maxGasLimit);
@@ -459,7 +459,7 @@ contract SyncTrigger is Ownable {
         // Re-validate the ALREADY-stored feeOtoD against the new ceiling. `_setFeeOtoD` enforces
         // gasLimit <= _maxGasLimit only at fee-set time, so LOWERING the ceiling here (e.g. to mirror a
         // CCIP `maxPerMsgGasLimit` cut) below a previously-accepted gasLimit would otherwise silently
-        // re-open the C-1 stall: `shouldSync` stays true while every `sync` reverts MessageGasLimitTooHigh
+        // re-open the gas-limit stall: `shouldSyncAmount` stays nonzero while every `sync` reverts MessageGasLimitTooHigh
         // in CCIP's FeeQuoter. Reject the lowering so the owner re-sets feeOtoD first. An empty feeOtoD
         // (fresh deploy) carries no gasLimit, so skip it — the bound binds again on the next setFeeOtoD.
         if (_feeOtoD.length != 0) {
@@ -477,20 +477,22 @@ contract SyncTrigger is Ownable {
         // >= 17); reject short buffers here rather than letting them self-DoS inside sync. The memory
         // decoder enforces the same >= 17 bound as the calldata decodeFee. (`memory` not `calldata`:
         // the constructor reuses this validator, and constructor args cannot be calldata.)
+        (, bool payInLink) = FeeCodec.decodeFeeMemory(fee);
+        // LINK fee payment is not supported — reject a `payInLink == true` blob (same capability guard as
+        // _setFeeOtoD). This pins ONE bit, the payment rail, which the trigger CAN honor (it never pays
+        // LINK); it is NOT the lane-shape check deliberately left off-chain below.
+        if (payInLink) revert SyncTriggerPayInLinkNotSupported();
         //
-        // DELIBERATELY GENERIC — unlike _setFeeOtoD (which pins the exact 21-byte CCIP shape + gasLimit
-        // floor/ceiling), this does NOT enforce the lane-specific feeDtoO shape the L1 bridge adapter
-        // requires (Arbitrum 29B with feeAmount != 0; Optimism/Base 21B with feeAmount == 0; Linea 17B;
-        // all payInLink == false). A lane-mismatched blob is accepted here AND on L2 (CustomSender also
-        // decodes feeDtoO only with the generic decodeFee), crosses to L1, and reverts inside the
-        // adapter — parked by the defensive receiver for owner recovery (recoverTokens), not lost. Left
-        // off-chain on purpose: the format is immutable-per-lane (pinned in chainlink-csr + the L1
-        // adapter, changeable only via a coordinated L1-governance setAdapter, so an on-chain check
-        // would couple this trigger to a format it cannot re-bind), the failure is owner-gated
-        // (onlyOwner) and L1-recoverable, and the encoded bytes are pinned off-chain at deploy
-        // (verify-stage1 keccak vs the migration constants; live state-mate getFeeDtoO). The residual is
-        // a manual post-deploy retune — see docs/fees.md §FeeDtoO encoding, docs/audit-scope.md §D F-4.
-        FeeCodec.decodeFeeMemory(fee);
+        // DELIBERATELY GENERIC ON SHAPE — unlike _setFeeOtoD (which pins the exact 21-byte CCIP shape +
+        // gasLimit floor/ceiling), this does NOT enforce the lane-specific feeDtoO shape the L1 bridge
+        // adapter requires (Arbitrum 29B with feeAmount != 0; Optimism/Base 21B with feeAmount == 0; Linea
+        // 17B). A lane-mismatched blob is accepted here AND on L2 (CustomSender also decodes feeDtoO only
+        // with the generic decodeFee), crosses to L1, and reverts inside the adapter — parked by the
+        // defensive receiver for owner recovery (recoverTokens), not lost. Left off-chain on purpose: the
+        // format is immutable-per-lane (fixed by the destination L1 bridge adapter, changeable only via a
+        // coordinated L1-governance setAdapter, so an on-chain check would couple this trigger to a format
+        // it cannot re-bind), the failure is owner-gated (onlyOwner) and L1-recoverable, and the encoded
+        // bytes are pinned off-chain when the blob is authored. The residual is a manual retune of feeDtoO.
         _feeDtoO = fee;
         emit FeeDtoOSet(fee);
     }

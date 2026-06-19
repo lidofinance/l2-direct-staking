@@ -418,18 +418,20 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         syncTrigger.setForwarder(forwarder);
         assertEq(syncTrigger.getForwarder(), forwarder, "forwarder should be configured");
 
-        assertFalse(syncTrigger.shouldSync(), "sync should not be needed before delay");
+        assertEq(syncTrigger.shouldSyncAmount(), 0, "sync should not be needed before delay");
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
         uint256 expectedSyncAmount = stakeAmount > uint256(L2_SYNC_MAX_AMOUNT) ? L2_SYNC_MAX_AMOUNT : stakeAmount;
         {
-            assertTrue(syncTrigger.shouldSync(), "sync should be needed after delay and min amount");
-            assertEq(syncTrigger.getAmountToSync(), expectedSyncAmount, "amount should equal expected sync amount");
+            assertEq(
+                syncTrigger.shouldSyncAmount(),
+                expectedSyncAmount,
+                "sync should be needed after delay; amount should equal expected sync amount"
+            );
         }
 
-        (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
-        assertEq(maxLinkFee, 0, "sync should not require LINK fee");
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
         vm.deal(address(syncTrigger), maxNativeFee);
 
         address unauthorizedForwarder = makeAddr("notForwarder");
@@ -450,7 +452,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertGt(syncTrigger.getLastExecution(), lastExecutionBefore, "last execution should move forward");
 
         {
-            assertFalse(syncTrigger.shouldSync(), "sync should be false immediately after trigger");
+            assertEq(syncTrigger.shouldSyncAmount(), 0, "sync should be false immediately after trigger");
         }
     }
 
@@ -467,18 +469,17 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setDelay(shortDelay);
 
-        (uint256 maxNativeFee,) = syncTrigger.getMaxFees();
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
 
         // ── Cycle 1: accumulate WETH, wait delay, sync ──
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + shortDelay);
 
-        // Fund the float so the upcoming triggerSync can pay (shouldSync itself is due-only now).
+        // Fund the float so the upcoming triggerSync can pay (shouldSyncAmount itself ignores the float).
         vm.deal(address(syncTrigger), maxNativeFee);
 
         {
-            assertTrue(syncTrigger.shouldSync(), "cycle 1: sync should be due");
-            assertGt(syncTrigger.getAmountToSync(), 0, "cycle 1: amount should be > 0");
+            assertGt(syncTrigger.shouldSyncAmount(), 0, "cycle 1: sync should be due (amount > 0)");
         }
 
         vm.prank(forwarder);
@@ -488,7 +489,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(exec1, uint48(block.timestamp), "cycle 1: lastExecution should update");
 
         {
-            assertFalse(syncTrigger.shouldSync(), "cycle 1: sync should be false right after trigger");
+            assertEq(syncTrigger.shouldSyncAmount(), 0, "cycle 1: sync should be false right after trigger");
         }
 
         // ── Cycle 2: accumulate more WETH, wait delay, sync again ──
@@ -504,15 +505,14 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         }
 
         {
-            assertFalse(syncTrigger.shouldSync(), "cycle 2: sync should be false before delay");
+            assertEq(syncTrigger.shouldSyncAmount(), 0, "cycle 2: sync should be false before delay");
         }
 
         vm.warp(block.timestamp + shortDelay);
         vm.deal(address(syncTrigger), maxNativeFee); // re-fund the float (cycle 1's sync consumed it)
 
         {
-            assertTrue(syncTrigger.shouldSync(), "cycle 2: sync should be due");
-            assertGt(syncTrigger.getAmountToSync(), 0, "cycle 2: amount should be > 0");
+            assertGt(syncTrigger.shouldSyncAmount(), 0, "cycle 2: sync should be due (amount > 0)");
         }
 
         uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
@@ -535,7 +535,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        assertTrue(syncTrigger.shouldSync(), "sync should be needed");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be needed");
 
         // The migration funds the trigger's fee float (production parity). Drain it so this test
         // exercises the float-ran-dry path: with a 0 balance, triggerSync must revert
@@ -601,7 +601,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertTrue(syncNeeded, "sync should trigger at exact min amount");
-        assertEq(syncTrigger.getAmountToSync(), exactMinAmount, "amount should be the exact min amount");
+        assertEq(syncTrigger.shouldSyncAmount(), exactMinAmount, "amount should be the exact min amount");
     }
 
     function test_syncTriggerCapsAtMaxAmount() public {
@@ -612,7 +612,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertTrue(syncNeeded, "sync should trigger when balance is above max");
-        assertEq(syncTrigger.getAmountToSync(), uint256(L2_SYNC_MAX_AMOUNT), "amount should cap at max");
+        assertEq(syncTrigger.shouldSyncAmount(), uint256(L2_SYNC_MAX_AMOUNT), "amount should cap at max");
     }
 
     function test_upgradeSyncRoutesAcrossL2AndL1CCIPLayer() public {
@@ -808,23 +808,21 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(newSyncTrigger.balance, initialFloat, "deploy should fund exactly the configured float");
 
         // Floor invariant: the float covers at least one worst-case sync (mirrors fundSyncTrigger's guard).
-        (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
-        assertEq(maxLinkFee, 0, "no LINK leg expected in current config");
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
         assertGe(initialFloat, maxNativeFee, "float must cover one worst-case sync");
 
-        // Fee-split non-drift: the deploy-script copy of the native/LINK split (the inherited {_maxFees},
-        // the path `verify-constants-sync` exercises) must agree with the live on-chain
-        // `SyncTrigger.getMaxFees()` for the real per-lane production blobs. This is the tested cross-check
-        // that replaces the deleted shared {FeeSplit} library's structural single-source guarantee (the two
-        // copies are also pinned to the same `<net>.inputs.yaml` anchors by verify-constants-sync + state-mate).
-        (uint256 scriptNativeFee, uint256 scriptLinkFee) = _maxFees(_encodeFeeOtoD(cfg), cfg.feeDtoO);
-        assertEq(scriptNativeFee, maxNativeFee, "fee-split native drift: deploy script vs SyncTrigger");
-        assertEq(scriptLinkFee, maxLinkFee, "fee-split link drift: deploy script vs SyncTrigger");
+        // Fee non-drift: the deploy-script copy of the native fee total (the inherited {_maxFees}, the path
+        // `verify-constants-sync` exercises) must agree with the live on-chain `SyncTrigger.getMaxFees()`
+        // for the real per-lane production blobs. This is the tested cross-check that replaces the deleted
+        // shared {FeeSplit} library's structural single-source guarantee (the two copies are also pinned to
+        // the same `<net>.inputs.yaml` anchors by verify-constants-sync + state-mate).
+        uint256 scriptNativeFee = _maxFees(_encodeFeeOtoD(cfg), cfg.feeDtoO);
+        assertEq(scriptNativeFee, maxNativeFee, "fee drift: deploy script vs SyncTrigger");
 
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        assertTrue(syncTrigger.shouldSync(), "sync should be needed");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be needed");
 
         // First sync, paid solely from the script-funded float (forwarder = CREReceiver in production wiring).
         vm.prank(address(newCREReceiver));
@@ -851,6 +849,6 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         returns (bool syncNeeded)
     {
         vm.warp(block.timestamp + L2_SYNC_DELAY);
-        syncNeeded = syncTrigger.shouldSync();
+        syncNeeded = syncTrigger.shouldSyncAmount() > 0;
     }
 }

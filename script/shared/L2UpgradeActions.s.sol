@@ -39,7 +39,6 @@ contract L2UpgradeActions {
         uint96 fee;
         uint64 destChainSelector;
         uint128 destinationMaxFee;
-        bool destinationPayInLink;
         uint32 destinationGasLimit;
         uint32 maxGasLimit; // Per-lane FeeOtoD gasLimit ceiling = the lane's FeeQuoter maxPerMsgGasLimit (7M OP/Arb/Base, 3M Linea); rejects an over-cap bump at set-time (docs/audit-scope C-1)
         bytes feeDtoO; // Pre-encoded bridge fee (Optimism, Arbitrum, etc.)
@@ -187,14 +186,14 @@ contract L2UpgradeActions {
     function fundSyncTrigger(address syncTrigger, L2UpgradeConfig memory cfg) public {
         _requireNonZeroL2(syncTrigger);
 
-        (uint256 feeAmountDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(cfg.feeDtoO);
+        (uint256 feeAmountDtoO,) = FeeCodec.decodeFeeMemory(cfg.feeDtoO);
         // floor mirrors the worst-case native value SyncTrigger.triggerSync fronts: the OtoD cap plus the
-        // DtoO bridge fee, each counted only when paid in native (not LINK). NOTE: this validates
+        // DtoO bridge fee (both native — LINK fee payment is not supported). NOTE: this validates
         // float >= the CONFIGURED cap, NOT float >= the LIVE CCIP router fee. Whether destinationMaxFee
         // itself sits above the live ccipReceive fee is a separate config-adequacy question, validated
         // off-chain via the fee-measurement recipe (README §Fee-denomination); a cap set below the live
         // fee would pass this floor yet revert inside CCIPSenderUpgradeable at sync time.
-        uint256 floor = (cfg.destinationPayInLink ? 0 : cfg.destinationMaxFee) + (payInLinkDtoO ? 0 : feeAmountDtoO);
+        uint256 floor = cfg.destinationMaxFee + feeAmountDtoO;
         if (cfg.syncTriggerInitialFloat < floor) {
             revert L2UpgradeFloatBelowFloor(cfg.syncTriggerInitialFloat, floor);
         }
@@ -370,26 +369,24 @@ contract L2UpgradeActions {
     ///      (the SyncTrigger constructor's feeOtoD arg, the _assertSyncInfrastructure post-condition, and
     ///      the runPrintFeeParams verify-constants-sync oracle), so they cannot drift on the encoding.
     function _encodeFeeOtoD(L2UpgradeConfig memory cfg) internal pure returns (bytes memory) {
-        return FeeCodec.encodeCCIP(cfg.destinationMaxFee, cfg.destinationPayInLink, cfg.destinationGasLimit);
+        // payInLink hardcoded false — LINK fee payment is not supported (SyncTrigger rejects payInLink).
+        return FeeCodec.encodeCCIP(cfg.destinationMaxFee, false, cfg.destinationGasLimit);
     }
 
-    /// @dev Deploy-script mirror of `SyncTrigger._maxFees` — the native/LINK split over the OtoD/DtoO fee
-    ///      blobs. Duplicated here (rather than importing a shared src/ library) so the audit scope carries
-    ///      no standalone split file; the two copies are pinned together by `verify-constants-sync` (this
-    ///      path, pre-deploy) and state-mate (the live `SyncTrigger.getMaxFees`, post-deploy) against the
-    ///      same `<net>.inputs.yaml` anchors, and by the fee-split equivalence test.
+    /// @dev Deploy-script mirror of `SyncTrigger._maxFees` — the total NATIVE fee over the OtoD/DtoO fee
+    ///      blobs (every leg is native; LINK fee payment is not supported). Duplicated here (rather than
+    ///      importing a shared src/ library) so the audit scope carries no standalone split file; the two
+    ///      copies are pinned together by `verify-constants-sync` (this path, pre-deploy) and state-mate
+    ///      (the live `SyncTrigger.getMaxFees`, post-deploy) against the same `<net>.inputs.yaml` anchors,
+    ///      and by the fee-split equivalence test.
     function _maxFees(bytes memory feeOtoD, bytes memory feeDtoO)
         internal
         pure
-        returns (uint256 maxNativeFee, uint256 maxLinkFee)
+        returns (uint256 maxNativeFee)
     {
-        (uint256 maxFeeOtoD, bool payInLinkOtoD) = FeeCodec.decodeFeeMemory(feeOtoD);
-        if (payInLinkOtoD) maxLinkFee = maxFeeOtoD;
-        else maxNativeFee = maxFeeOtoD;
-
-        (uint256 maxFeeDtoO, bool payInLinkDtoO) = FeeCodec.decodeFeeMemory(feeDtoO);
-        if (payInLinkDtoO) maxLinkFee += maxFeeDtoO;
-        else maxNativeFee += maxFeeDtoO;
+        (uint256 maxFeeOtoD,) = FeeCodec.decodeFeeMemory(feeOtoD);
+        (uint256 maxFeeDtoO,) = FeeCodec.decodeFeeMemory(feeDtoO);
+        maxNativeFee = maxFeeOtoD + maxFeeDtoO;
     }
 
     function executeMigrationSteps(

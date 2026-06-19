@@ -83,10 +83,14 @@ Source links are pinned to the vendored submodule commits.
 
 ¹ Official Chainlink production code; Chainlink states CCIP was audited before mainnet but does not
   publish the reports — no linkable URL, so "audited" is vendor-asserted.
-² The repo vendors two incompatible `KeystoneForwarder` variants (the `ccip` copy above and a
-  `chainlink-brownie-contracts` copy); the production forwarder must be the CCIP
-  `"Forwarder and Router 1.0.0"` (`onReport(bytes,bytes)`) — see §B. Its per-network address is
-  Chainlink-published, **not** pinned in the repo (see below).
+² The repo vendors two incompatible `KeystoneForwarder` variants — the legacy
+  `onReport(bytes32,address,bytes)` (no ERC-165 gate) and the ERC-165-gating `onReport(bytes,bytes)`
+  "Router" build that `CREReceiver` implements; the production forwarder must be the latter. **Verified
+  on-chain (all 4 lanes, 2026-06-19): it is** — identical EXTCODEHASH
+  `0x2b21870eb5ea9013a781ed3db7d5fab742b612b2ac8de0990ac9d95b22f795fc` + the Router ABI. ⚠ The live
+  forwarder reports the **stale** `typeAndVersion` label `"KeystoneForwarder 1.0.0"`, so the version
+  string is NOT the discriminator (the ABI/ERC-165 behaviour is) — see §B and `just verify-cre-forwarder`.
+  Its per-network address is Chainlink-published, **not** pinned in the repo (see below).
 ³ Not vendored or pinned at a commit here (the link is the `develop` branch, BSL-1.1); referenced
   only by the end-state ownership invariant (W-1, §E).
 
@@ -138,10 +142,13 @@ forge test
 ```
 
 **Static analysis & coverage** (Slither figures measured 2026-06-04 — re-confirm on the audit
-revision; since then three guard branches and their tests were added — zero-recipient
-`withdrawETH`, `setDelay(0)`, `setFeeOtoD` gas-limit floor — and the toolchain was bumped to
-solc 0.8.34 / osaka. The **94-test** unit suite and the 214-test full suite pass; the
-coverage figures below were measured at `c50b224`, 2026-06-11):
+revision; since then guard branches and their tests churned — zero-recipient `withdrawETH` and the
+`setFeeOtoD` gas-limit floor were added, a `MIN_DELAY` (1 minute) floor was added to `setDelay`/the
+constructor (delay can no longer be 0 — see I-4), `shouldSync()` became `shouldSyncAmount() → uint256`
+(absorbing the removed `getAmountToSync`), and `withdrawETH` gained an `amount==0` no-op short-circuit —
+and the toolchain was bumped to solc 0.8.34 / osaka. The unit and full
+suites pass; re-measure the test counts (previously **94** unit / 214 full) and the coverage figures
+(last taken at `c50b224`, 2026-06-11) on the audit revision):
 
 - Slither 0.11.5 (`--exclude-dependencies`, filtered to `src/`) + `forge lint`: **14 results, all
   Low / Informational — 0 High, 0 Medium**, each triaged as accepted-by-design or a minor nit.
@@ -179,7 +186,7 @@ CRE DON ──signs report──► CRE Keystone forwarder (L2, Chainlink-operat
 
 A single sync proceeds as:
 
-1. The Chainlink CRE workflow decides off-chain (`eth_call` probes of `shouldSync()`
+1. The Chainlink CRE workflow decides off-chain (`eth_call` probes of `shouldSyncAmount()`
    and `canSync()`) whether a sync is due and executable and, if both, the DON signs a report.
 2. The Chainlink CRE Keystone forwarder validates the report and — only after the ERC-165
    delivery gate (`supportsInterface(0x805f2132)` **and** `0x01ffc9a7`) — calls
@@ -386,17 +393,21 @@ Not every theme carries all three sub-lists.
     the receiver — reports are never delivered, WETH accumulates on L2, never staked, **with no
     revert**. This was a real, since-fixed delivery bug; the id **match** lives in the in-scope
     `CREReceiver.supportsInterface`. (`DOC.md §2.6.B`.)
-  - **Forwarder ABI/version not pinned on-chain.** The forwarder address is now **pinned per lane**
+  - **Forwarder ABI/version not asserted in-contract.** The forwarder address is **pinned per lane**
     in `<Lane>MigrationConstants.CRE_FORWARDER` and used directly by `_expectedCREForwarder()` /
-    `L2UpgradeScriptBase._creForwarder()` (so it is not env-supplied; a present-but-wrong
-    `L2_CRE_FORWARDER` is rejected with `L2UpgradeWrongCREForwarder`), and cross-checked vs the
-    `l2CreForwarder` state-mate anchor by `verify-constants-sync`. That pins the *address*, but there
-    is still **no `typeAndVersion`/ABI assertion on-chain**, and the repo vendors two incompatible
-    Keystone forwarders. The deployed one must be the CCIP `"Forwarder and Router 1.0.0"`
-    (`onReport(bytes,bytes)`), not the legacy `onReport(bytes32,address,bytes)` variant — confirm each
-    lane's production forwarder is the ERC-165-gated one with the
-    `workflowId(32) | workflowName(10) | workflowOwner(20)` metadata layout. (`RUNBOOK.md §1.c`;
-    [Where the addresses live](#where-the-addresses-live).)
+    `L2UpgradeScriptBase._creForwarder()` (not env-supplied; a present-but-wrong `L2_CRE_FORWARDER` is
+    rejected with `L2UpgradeWrongCREForwarder`), and cross-checked vs the `l2CreForwarder` state-mate
+    anchor by `verify-constants-sync`. That pins the *address*; `CREReceiver` does **not** assert the
+    forwarder's *ABI/version* at runtime. The two vendored Keystone forwarders are ABI-incompatible —
+    the deployed one must be the ERC-165-gating `onReport(bytes,bytes)` "Router" build, not the legacy
+    `onReport(bytes32,address,bytes)` variant. **Verified on-chain (all 4 lanes, 2026-06-19): it is** —
+    identical EXTCODEHASH `0x2b21870eb5ea9013a781ed3db7d5fab742b612b2ac8de0990ac9d95b22f795fc` + the
+    Router ABI fingerprint (`isForwarder` + 3-arg `getTransmitter` present, legacy 2-arg absent);
+    `just verify-cre-forwarder` re-checks this read-only, per lane. ⚠ **The version string is NOT the
+    discriminator:** the live forwarder reports the *stale* label `"KeystoneForwarder 1.0.0"` while
+    being the Router build — gating on the string (as `RUNBOOK.md §1.c` once did) would false-reject
+    the correct forwarder. Discriminate on the ABI/ERC-165 behaviour + EXTCODEHASH.
+    (`RUNBOOK.md §1.c`; [Where the addresses live](#where-the-addresses-live).)
   - **DON-embedded author vs registry owner.** `verify-cre-workflow` confirms only the
     `WorkflowRegistry.owner` (plus, since `145affb`: non-zero `workflowId`/`expectedAuthor` inputs
     — closing a false-green against a non-existent workflow — and a non-empty `binaryUrl`); the
@@ -408,14 +419,17 @@ Not every theme carries all three sub-lists.
 #### C. Rate-limiting, deactivation & reentrancy
 
 - **Invariants**
-  - **I-2** (*source*): deactivated `SyncTrigger` (`_delay == type(uint48).max`) returns "no sync":
-    the threshold is computed in `uint256`, so the max delay is simply unreachable — it cannot
-    overflow/revert. Confirm the off-chain CRE `eth_call` probe relies on this clean `(false, 0)`
-    rather than tolerating a revert.
-  - **I-4** (*source*): `setDelay(0)` reverts (`SyncTriggerInvalidDelay`) — `_delay == 0` would make
-    the time gate `block.timestamp >= _lastExecution + 0` always true, permanently defeating the
-    rate limiter (a sync would fire every forwarder invocation once the pool crosses `minAmount`,
-    draining the fee float at the CRE cron cadence). Deactivation uses `type(uint48).max`, never 0.
+  - **I-2** (*source*): the `delay` window is computed in `uint256` (`uint256(_lastExecution) + _delay`),
+    so even the largest representable `delay` cannot overflow/revert — `shouldSyncAmount()` and
+    `triggerSync()` stay TOTAL and the off-chain CRE `eth_call` probe gets a clean `0` (no sync) rather
+    than a revert. No `delay` value is special-cased.
+  - **I-4** (*source*): `delay` is a rate-limiter with a hard floor — `setDelay` and the constructor
+    reject any value below `MIN_DELAY` (1 minute), so the rate-limiter cannot be disabled and no two
+    syncs can land in the same block/minute (a `delay` of `0` would make the time gate
+    `block.timestamp < _lastExecution + delay` permanently false). Above the floor `delay` is a plain
+    duration over the rest of the `uint48` range with **no** special value — there is no deactivation
+    sentinel; deactivation is via `setForwarder(0x…dead)` or `revokeRole(SYNC_ROLE)`. Confirm no caller
+    assumes a specific `getDelay()` value.
   - **R-1** (*source*): reentrancy — `onReport`'s `target.call` and the `sync → refundExcessNative →
     SyncTrigger.receive()` path are non-reentrant via `onlyForwarder` + empty `receive()`.
 
@@ -425,7 +439,7 @@ Not every theme carries all three sub-lists.
   - **F-1** (*deployed instance + off-chain ops — operating assumption, not a source invariant*):
     fee sufficiency — `SyncTrigger` native balance ≥
     the per-sync fee. Depletion is monotonic (~`actualFee`/sync) with **no on-chain refill** — a
-    liveness assumption, not a guarded invariant. Below `getMaxFees().maxNativeFee` the next
+    liveness assumption, not a guarded invariant. Below `getMaxFees()` the next
     `triggerSync` reverts at the value transfer **with no named error**. Funding is permissionless;
     recovery (`sweep`) is owner-only (LOL multisig).
   - **F-2** (*source + config*): deploy-time float floor — Stage 1 reverts (`L2UpgradeFloatBelowFloor`)
@@ -439,8 +453,8 @@ Not every theme carries all three sub-lists.
   - **F-3** (*source*): `setFeeOtoD` enforces, at set-time, that the encoded `gasLimit` is ≥
     `CustomSender.MIN_PROCESS_MESSAGE_GAS()` (in addition to the exact-21-byte decode check) — a
     decodable config below the sender's floor would otherwise make every `sync` revert
-    `CustomSenderInsufficientGas` while `shouldSync`/`canSync` stay true, so the CRE DON would submit a
-    reverting tx every tick.
+    `CustomSenderInsufficientGas` while `shouldSyncAmount`/`canSync` stay positive/true, so the CRE DON
+    would submit a reverting tx every tick.
 - **Residual risks**
   - **Gas-limit headroom is tight on Optimism/Base post-Glamsterdam.** The fork harness now
     isolates `ccipReceive` on **all four lanes** (the v1.5 lanes — Optimism, Linea — use the same
@@ -469,12 +483,14 @@ Not every theme carries all three sub-lists.
     >250k gas drop the postman auto-claim. L1: under-gassed `ccipReceive` parks funds for permissionless
     `retryFailedMessage`. (`docs/fees.md §Failure modes`.)
   - **F-4 — `feeDtoO` serialization boundary (deliberately off-chain; *not* an on-chain invariant).**
-    `setFeeDtoO` validates only the generic 17-byte prefix (`FeeCodec.decodeFee`: `len>=17` + the
-    `payInLink` bit), **not** the lane-specific shape the L1 adapter enforces (Arbitrum 29B with
-    `feeAmount != 0`; Optimism/Base 21B with `feeAmount == 0`; Linea 17B; all `payInLink == false`).
+    `setFeeDtoO` validates the generic 17-byte prefix (`FeeCodec.decodeFee`: `len>=17`) and rejects
+    `payInLink == true` (`SyncTriggerPayInLinkNotSupported` — LINK fee payment is not supported), but
+    **not** the lane-specific shape the L1 adapter enforces (Arbitrum 29B with `feeAmount != 0`;
+    Optimism/Base 21B with `feeAmount == 0`; Linea 17B; all `payInLink == false`, now enforced on-chain).
     This is the lone fee-blob asymmetry: `feeOtoD` is uniform (CCIP 21-byte) and fully guarded (**F-3**
-    floor + **C-1** ceiling + exact-21), whereas a lane-mismatched `feeDtoO` (wrong length,
-    `payInLink == true`, or nonzero `feeAmount` on OP/Base/Linea) passes set-time **and** L2 (`CustomSender`
+    floor + **C-1** ceiling + exact-21), whereas a lane-mismatched `feeDtoO` (wrong lane length, or nonzero
+    `feeAmount` on OP/Base/Linea — but NOT `payInLink == true`, which is now rejected at set-time) passes
+    set-time **and** L2 (`CustomSender`
     also decodes it only with the generic `decodeFee`), crosses to L1, and reverts inside the adapter →
     defensive catch parks it in `failedHashes`; `retryFailedMessage` re-runs the same frozen bytes
     (deterministic re-revert), so only `recoverTokens` (L1 `DEFAULT_ADMIN_ROLE`) frees the stranded WETH.
@@ -534,7 +550,7 @@ Not every theme carries all three sub-lists.
 #### G. Scope boundary & upstream assurance
 
 - **Residual risks**
-  - **Upstream `SyncAutomation` is not known to be audited.** `SyncTrigger`'s shared fee/native/LINK
+  - **Upstream `SyncAutomation` is not known to be audited.** `SyncTrigger`'s shared fee/native
     accounting is *adapted from* (not byte-for-byte) upstream — so "adapted from audited upstream"
     cannot be used to exclude it. It is **in-scope by default** until an upstream audit reference + an
     equivalence `git diff` at the pinned commits land. Deployed-bytecode source-verification is also
@@ -570,7 +586,7 @@ Not every theme carries all three sub-lists.
 | **`OraclePool`** | L2 pool that accumulates user WETH awaiting sync; out of scope. |
 | **sync** | The L2→L1 operation: pull WETH from the pool, bridge to L1 for staking, bridge `wstETH` back. |
 | **OtoD / DtoO** | Origin-to-Destination / Destination-to-Origin CCIP fee legs (`feeOtoD` / `feeDtoO`). |
-| **`payInLink`** | Flag in a fee buffer: pay the CCIP fee in LINK instead of native. |
+| **`payInLink`** | Flag in a fee buffer: pay the CCIP fee in LINK instead of native. `SyncTrigger` rejects `true` — LINK payment is not supported. |
 | **nullary** | A call with no arguments — calldata is exactly the 4-byte selector (`data.length == 4`). |
 | **LOL** | Liquidity Observation Lab — the Lido liquidity multisig (Safe). Post-migration it owns `SyncTrigger`, `CREReceiver`, and the `OraclePool`, and is the CRE workflow owner pinned as `expectedAuthor`. (Distinct from the Lido L2 **governance executor**, which administers `SyncTrigger`'s `SYNC_ROLE` and owns the `CustomSender` admin + `ProxyAdmin`.) |
 | **WETH / wstETH** | Wrapped ether (the asset users supply on L2) / wrapped staked ETH (minted on L1, bridged back). |

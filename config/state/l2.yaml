@@ -161,15 +161,13 @@ l2:
         getDelay: *syncDelay
         getAmounts:
           result: [*syncMinAmount, *syncMaxAmount]
-        getAmountToSync: 0
         getForwarder: *l2CreReceiver # pinned during Stage 1 deploy
         getFeeOtoD: *feeOtoD # FeeCodec.encodeCCIP(maxFee, payInLink, gasLimit) — set during migration
         getFeeDtoO: *feeDtoO # FeeCodec.encode<Net>L1toL2(...) — lane-specific encoding, set during migration
         getLastExecution: null # deployment timestamp
-        getMaxFees:
-          result: [*maxNativeFee, *maxLinkFee] # derived from the fee blobs
+        getMaxFees: *maxNativeFee # native fee total derived from the fee blobs (LINK payment not supported)
         getMaxGasLimit: *maxGasLimit # FeeOtoD gasLimit ceiling = lane FeeQuoter maxPerMsgGasLimit; set during migration (rejects an over-cap bump at set-time, audit-scope C-1)
-        shouldSync: false # due-ness predicate (delay + pool WETH >= minAmount); false at the verified state — no WETH accumulated yet (amount mirrored by getAmountToSync: 0 above). Executability is the separate canSync(), not asserted here: it reads the fee float, which drifts per-sync (see <net>.inputs.yaml), so no stable equality holds
+        shouldSyncAmount: 0 # delay-gated amount-to-sync: a nonzero return signals due-ness AND carries the amount; 0 at the verified state — no WETH accumulated yet. Executability is the separate canSync(), not asserted here: it reads the fee float, which drifts per-sync (see <net>.inputs.yaml), so no stable equality holds
 
     creReceiver:
       name: CREReceiver

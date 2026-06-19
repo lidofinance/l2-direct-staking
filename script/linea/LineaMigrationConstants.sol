@@ -39,7 +39,6 @@ library LineaMigrationConstants {
     // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     // Linea's gasLimit baseline is half the others (Linea Message Service uses a leaner adapter).
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
-    bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 500_000;
     // FeeOtoD gasLimit ceiling = Linea's FeeQuoter maxPerMsgGasLimit (the lowest of the four lanes;
     // docs/fees.md §lane caps, verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this,

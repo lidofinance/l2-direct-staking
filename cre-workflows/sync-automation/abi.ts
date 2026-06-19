@@ -1,11 +1,11 @@
 /**
- * ABI for SyncTrigger contract (shouldSync / canSync / getAmountToSync / triggerSync).
+ * ABI for SyncTrigger contract (shouldSyncAmount / canSync / triggerSync).
  */
 export const SyncTriggerABI = [
   {
     inputs: [],
-    name: "shouldSync",
-    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    name: "shouldSyncAmount",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
     stateMutability: "view",
     type: "function",
   },
@@ -13,13 +13,6 @@ export const SyncTriggerABI = [
     inputs: [],
     name: "canSync",
     outputs: [{ internalType: "bool", name: "", type: "bool" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [],
-    name: "getAmountToSync",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
     stateMutability: "view",
     type: "function",
   },

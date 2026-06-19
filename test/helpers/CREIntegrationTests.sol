@@ -32,9 +32,8 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         // Fund the float so canSync (executability) holds; the migration already granted SYNC_ROLE.
         vm.deal(address(syncTrigger), 1 ether);
 
-        assertTrue(syncTrigger.shouldSync(), "sync should be due");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be due (amount > 0)");
         assertTrue(syncTrigger.canSync(), "sync should be executable");
-        assertGt(syncTrigger.getAmountToSync(), 0, "sync amount should be > 0");
 
         bytes memory callData = abi.encodeCall(SyncTrigger.triggerSync, ());
         bytes memory report = abi.encode(address(syncTrigger), callData);
@@ -157,12 +156,12 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
-        // shouldSync is the due-ness predicate (delay + pool >= min); no float needed to assert it.
+        // shouldSyncAmount is the due-ness + amount signal (delay + pool >= min); no float needed for it.
 
-        assertFalse(syncTrigger.shouldSync(), "sync should not be due before delay");
+        assertEq(syncTrigger.shouldSyncAmount(), 0, "sync should not be due before delay");
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
-        assertTrue(syncTrigger.shouldSync(), "sync should be due after delay");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be due after delay");
     }
 
     function test_crePathRespectsMinAmount() public {
@@ -172,7 +171,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, belowMin);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        assertFalse(syncTrigger.shouldSync(), "sync should not trigger below min");
+        assertEq(syncTrigger.shouldSyncAmount(), 0, "sync should not trigger below min");
     }
 
     function test_crePathCapsAtMaxAmount() public {
@@ -181,7 +180,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         deal(L2_WETH, address(newPool), uint256(L2_SYNC_MAX_AMOUNT) + 50 ether);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        assertEq(syncTrigger.getAmountToSync(), uint256(L2_SYNC_MAX_AMOUNT), "should cap at max");
+        assertEq(syncTrigger.shouldSyncAmount(), uint256(L2_SYNC_MAX_AMOUNT), "should cap at max");
 
         // Silence unused variable warning.
         newPool;
@@ -204,7 +203,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         vm.warp(block.timestamp + L2_SYNC_DELAY);
         vm.deal(address(syncTrigger), 1 ether); // fund float so the CRE triggerSync can pay
 
-        assertTrue(syncTrigger.shouldSync(), "sync should be due before trigger");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be due before trigger");
 
         uint48 lastExecBefore = syncTrigger.getLastExecution();
 
@@ -221,7 +220,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     /// @notice Cross-checks that canSync() tracks real on-chain executability for the fee-float case
     ///         (the most material stall in LOW-2): below getMaxFees().maxNativeFee canSync is false AND
     ///         triggerSync reverts with the named SyncTriggerInsufficientFloat; at the float canSync is
-    ///         true AND the CRE-driven sync succeeds. shouldSync (due-ness) stays true throughout.
+    ///         true AND the CRE-driven sync succeeds. shouldSyncAmount (due-ness) stays nonzero throughout.
     function test_canSyncTracksFloatExecutability() public {
         (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
 
@@ -229,18 +228,16 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        uint256 amount = syncTrigger.getAmountToSync();
+        uint256 amount = syncTrigger.shouldSyncAmount();
         assertGt(amount, 0, "a sync is due");
-        assertTrue(syncTrigger.shouldSync(), "and shouldSync agrees it is due");
 
-        (uint256 maxNativeFee,) = syncTrigger.getMaxFees();
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
         assertGt(maxNativeFee, 0, "native-fee lane");
 
         // One wei short of the float: canSync false (blocked), but the need is still reported and due.
         vm.deal(address(syncTrigger), maxNativeFee - 1);
         assertFalse(syncTrigger.canSync(), "canSync false below the float");
-        assertTrue(syncTrigger.shouldSync(), "still due below the float");
-        assertEq(syncTrigger.getAmountToSync(), amount, "still reports the need (stall, not no-op)");
+        assertEq(syncTrigger.shouldSyncAmount(), amount, "still due, still reports the need (stall, not no-op)");
 
         // The chain agrees: triggerSync reverts with the named float error. Called directly as the
         // forwarder (CREReceiver) to read the RAW error — via onReport the receiver wraps it in
@@ -271,7 +268,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        (uint256 maxNativeFee,) = syncTrigger.getMaxFees();
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
         vm.deal(address(syncTrigger), maxNativeFee);
 
         assertTrue(syncTrigger.canSync(), "canSync true while unpaused + funded");
@@ -280,8 +277,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         newPool.pause();
 
         assertFalse(syncTrigger.canSync(), "canSync false when pool paused");
-        assertTrue(syncTrigger.shouldSync(), "still due while blocked");
-        assertGt(syncTrigger.getAmountToSync(), 0, "need still reported while blocked");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "still due, need still reported while blocked");
 
         // The chain agrees: pull() is whenNotPaused, so the CRE-driven sync reverts.
         bytes memory report = abi.encode(address(syncTrigger), abi.encodeCall(SyncTrigger.triggerSync, ()));

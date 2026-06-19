@@ -74,7 +74,6 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
 
     // Sync defaults
     uint128 internal L2_SYNC_DESTINATION_MAX_FEE;
-    bool internal L2_SYNC_DESTINATION_PAY_IN_LINK;
     uint32 internal L2_SYNC_DESTINATION_GAS_LIMIT;
     uint128 internal L2_SYNC_MIN_AMOUNT;
     uint128 internal L2_SYNC_MAX_AMOUNT;
@@ -334,9 +333,8 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
     }
 
     function _defaultSyncFees() internal view returns (bytes memory feeOtoD, bytes memory feeDtoO) {
-        feeOtoD = FeeCodec.encodeCCIP(
-            L2_SYNC_DESTINATION_MAX_FEE, L2_SYNC_DESTINATION_PAY_IN_LINK, L2_SYNC_DESTINATION_GAS_LIMIT
-        );
+        // payInLink hardcoded false — LINK fee payment is not supported (SyncTrigger rejects payInLink).
+        feeOtoD = FeeCodec.encodeCCIP(L2_SYNC_DESTINATION_MAX_FEE, false, L2_SYNC_DESTINATION_GAS_LIMIT);
         feeDtoO = _defaultFeeDtoO();
     }
 

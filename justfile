@@ -464,10 +464,8 @@ verify-constants-sync:
           "$(fee_val FEE_OTO_D)"      "$(yml_anchor "$sm" feeOtoD)"
         expect_eq "feeDtoO → FeeCodec.encode${cap}L1toL2(...)" \
           "$(fee_val FEE_DTO_O)"      "$(yml_anchor "$sm" feeDtoO)"
-        expect_eq "maxNativeFee → SyncTrigger.getMaxFees().maxNativeFee" \
+        expect_eq "maxNativeFee → SyncTrigger.getMaxFees()" \
           "$(fee_val MAX_NATIVE_FEE)" "$(yml_anchor "$sm" maxNativeFee)"
-        expect_eq "maxLinkFee → SyncTrigger.getMaxFees().maxLinkFee" \
-          "$(fee_val MAX_LINK_FEE)"   "$(yml_anchor "$sm" maxLinkFee)"
         expect_eq "maxGasLimit → SyncTrigger.getMaxGasLimit() (L2_SYNC_MAX_GAS_LIMIT)" \
           "$(fee_val MAX_GAS_LIMIT)"  "$(yml_anchor "$sm" maxGasLimit)"
       else
@@ -530,6 +528,83 @@ verify-constants-sync:
       exit 1
     fi
     echo "===================================================================="
+
+# Verify each hand-maintained ABI mirror under config/state/abi/ that has a LOCAL src/ source stays
+# faithful to `forge inspect` — the guard that would have caught the dropped
+# `SyncTriggerPayInLinkNotSupported` error. state-mate consumes these JSONs as the call-ABI but only
+# invokes the getters it is told to, and `verify-constants-sync` checks addresses/uints/anchors only —
+# neither diffs the ABI member set, so an added/removed/renamed error, event, or function signature can
+# drift silently. Two conventions live in config/state/abi/, so each mirror declares its mode:
+#   exact  — the mirror is the FULL contract ABI (every function, event AND error) and must equal
+#            `forge inspect` member-for-member (e.g. SyncTrigger.json; this is what catches a dropped error).
+#   subset — the mirror is a CURATED read-ABI (only the view getters state-mate invokes, e.g.
+#            CREReceiver.json); every member it lists must still match the source signature exactly, but
+#            members absent from the mirror are allowed.
+# Comparison is on canonical (key-sorted, compact) members, so forge's order vs the file's never matters.
+# External/vendored mirrors (adapters, executors, upstream chainlink-csr types, legacy SyncAutomation) are
+# out of scope. Pure local compute — no RPC.
+#
+# Usage: just verify-abi-sync
+verify-abi-sync:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    cd "$ROOT_DIR"
+    command -v jq    >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    command -v forge >/dev/null 2>&1 || { echo "forge is required" >&2; exit 1; }
+
+    # "<mirror json>|<source path>:<contract>|<exact|subset>". Add a row when an in-repo contract gains a
+    # mirror; pick the mode matching the file's intent (see header).
+    PAIRS=(
+      "config/state/abi/SyncTrigger.json|src/SyncTrigger.sol:SyncTrigger|exact"
+      "config/state/abi/CREReceiver.json|src/cre/CREReceiver.sol:CREReceiver|subset"
+    )
+
+    # One canonical (key-sorted, compact) line per ABI member. `internalType` is stripped: it is cosmetic
+    # (the Solidity source type name — only `type` drives the selector/decode), and the curated mirrors omit
+    # it while forge emits it, so comparing it would flag a false drift.
+    strip() { jq -S -c 'walk(if type == "object" then del(.internalType) else . end) | .[]'; }
+
+    rc=0
+    for pair in "${PAIRS[@]}"; do
+      json="${pair%%|*}"; rest="${pair#*|}"; src="${rest%%|*}"; mode="${rest##*|}"
+      if [[ ! -f "$json" ]]; then echo "✗ ${json} — mirror file missing"; rc=1; continue; fi
+      live="$(forge inspect "$src" abi --json 2>/dev/null)"
+      if [[ -z "$live" ]]; then echo "✗ ${src} — forge inspect produced no ABI (build error?)"; rc=1; continue; fi
+
+      # Canonical members, sorted — declaration order is irrelevant.
+      forge_members="$(echo "$live" | strip | sort)"
+      json_members="$(strip < "$json" | sort)"
+      count="$(echo "$json_members" | grep -c .)"
+
+      if [[ "$mode" == exact ]]; then
+        if [[ "$forge_members" == "$json_members" ]]; then
+          echo "✓ ${json} (exact, ${count} members) matches ${src}"
+        else
+          echo "✗ ${json} (exact) DRIFTS from 'forge inspect ${src}' — regenerate it:"
+          echo "      forge inspect ${src} abi --json > ${json}"
+          comm -23 <(echo "$forge_members") <(echo "$json_members") | jq -r '"    + missing from mirror: \(.type) \(.name // "-")"'
+          comm -13 <(echo "$forge_members") <(echo "$json_members") | jq -r '"    - stale/extra in mirror: \(.type) \(.name // "-")"'
+          rc=1
+        fi
+      else
+        # subset: every mirror member must exist verbatim in the source ABI; members absent from the
+        # mirror are fine. Catches a curated getter whose signature drifted from the contract.
+        stale="$(comm -13 <(echo "$forge_members") <(echo "$json_members"))"
+        if [[ -z "$stale" ]]; then
+          echo "✓ ${json} (subset, ${count} members) faithfully matches ${src}"
+        else
+          echo "✗ ${json} (subset) lists members that no longer match ${src}:"
+          echo "$stale" | jq -r '"    - \(.type) \(.name // "-") (\(.inputs|length)-arg)"'
+          rc=1
+        fi
+      fi
+    done
+
+    echo
+    if (( rc == 0 )); then echo "OK — every in-repo ABI mirror is faithful to forge inspect."
+    else echo "FAIL — ABI mirror drift detected (rc=${rc})."; fi
+    exit $rc
 
 # Lint: every L2 state-mate `externals:` / `deployed:` ANCHOR (the contamination-prone address
 # surface) must be pinned to a source-of-truth — either cross-checked in `verify-constants-sync`
@@ -1175,6 +1250,200 @@ quote-ccip-fee-by-amount:
         fi
       fi
     done
+    exit $rc
+
+# Verify each lane's pinned CRE Keystone forwarder is the ERC-165-gating, 2-arg-`onReport` "Router"
+# build that `CREReceiver` speaks — the load-bearing external assumption of the whole CRE→sync path.
+#
+# WHY NOT typeAndVersion: the live forwarders report the STALE label "KeystoneForwarder 1.0.0" even
+# though their bytecode is the newer Forwarder-and-Router build (the vendored CCIP copy of that same
+# code is labelled "Forwarder and Router 1.0.0"). The version STRING is therefore NOT a safe
+# discriminator — do NOT gate on it (an operator who rejected "KeystoneForwarder 1.0.0" would reject
+# the CORRECT live forwarder). The real test is bytecode identity (EXTCODEHASH) + the Router ABI
+# fingerprint:
+#   • isForwarder(address)                    — present only in the Router build
+#   • getTransmitter(address,bytes32,bytes2)  — Router 3-arg form (present)
+#   • getTransmitter(address,bytes32)         — legacy 2-arg form; MUST revert (absent)
+# The Router build's only delivery path is abi.encodeCall(IReceiver.onReport,(metadata,report)) (the
+# 2-arg onReport) behind ERC165Checker.supportsInterface(receiver, 0x805f2132). The legacy variant
+# instead calls onReport(bytes32,address,bytes) with NO ERC-165 gate → our receiver would never be
+# invoked and sync would silently never fire. Known-good EXTCODEHASH (all 4 lanes, verified 2026-06-19):
+#   0x2b21870eb5ea9013a781ed3db7d5fab742b612b2ac8de0990ac9d95b22f795fc
+# Forwarder addresses come from config/state/l2-<net>.inputs.yaml (l2CreForwarder anchor); the optional
+# receiver cross-check reads l2CreReceiver from .deployed.yaml. Needs RPC_<NET> (or legacy
+# L2_<NET>_RPC_URL). Read-only.
+# Verify each lane's pinned CRE forwarder is the ERC-165-gating 2-arg-onReport Router build (read-only, 4 lanes).
+verify-cre-forwarder:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    command -v yq >/dev/null 2>&1 || { echo "yq (mikefarah) is required" >&2; exit 1; }
+
+    # Known-good forwarder bytecode (EXTCODEHASH) — identical across all four production lanes.
+    EXPECT_CODEHASH="0x2b21870eb5ea9013a781ed3db7d5fab742b612b2ac8de0990ac9d95b22f795fc"
+    # Dummy args for the view-function ABI probes (values irrelevant — we test selector existence).
+    A="0x0000000000000000000000000000000000000001"
+    B32="0x0000000000000000000000000000000000000000000000000000000000000000"
+    B2="0x0000"
+    IRECEIVER_ID="0x805f2132"   # type(IReceiver).interfaceId (onReport-only)
+    ERC165_ID="0x01ffc9a7"      # ERC-165 base
+
+    # `cast call` probe with transport-error retries. Sets REPLY_STATUS ∈ {ok,revert,rpcerr} + REPLY_OUT.
+    # Crucially distinguishes a genuine EVM revert (selector absent / reverts — a REAL answer) from a
+    # flaky-RPC transport error (retried, then surfaced as "unverified" rather than a false absent/mismatch
+    # — a spurious "legacy forwarder detected!" on a 500 would be exactly the false signal we're killing).
+    probe () {
+      local url="$1"; shift
+      local attempt out
+      for attempt in 1 2 3 4; do
+        if out="$(cast call "$@" --rpc-url "$url" 2>&1)"; then REPLY_STATUS=ok; REPLY_OUT="$out"; return; fi
+        # Classify the failure. Transport/server errors are matched FIRST and retried — even if their body
+        # happens to contain the substring "revert" (a 5xx page, proxy error, or timeout), so a flaky RPC
+        # is never mis-read as a genuine EVM answer (the spurious "legacy detected!" on a 500 we are
+        # killing). Only a clean execution-revert with NO transport marker is a real "selector absent /
+        # reverts" answer. (Safe here because the probed selectors revert with a bare "execution reverted",
+        # never a message carrying a transport phrase.)
+        if grep -qiE 'error sending request|tcp connect|connection (refused|reset|closed|error)|timed out|dns error|deserializ|bad gateway|gateway time|service unavailable|temporarily unavailable|too many requests|server error|status code' <<<"$out"; then
+          REPLY_STATUS=rpcerr; REPLY_OUT="$out"   # transport/server error → loop and retry
+        elif grep -qiE 'execution reverted|revert' <<<"$out"; then
+          REPLY_STATUS=revert; REPLY_OUT="$out"; return
+        else
+          REPLY_STATUS=rpcerr; REPLY_OUT="$out"   # unrecognized failure → treat as transport, retry
+        fi
+      done
+    }
+    # Fetch EXTCODEHASH with retries; echoes a 0x+64hex hash on success, empty on persistent RPC error.
+    fetch_codehash () {
+      local addr="$1" url="$2" attempt out
+      for attempt in 1 2 3 4; do
+        out="$(cast codehash "$addr" --rpc-url "$url" 2>/dev/null | tr -d '\r')"
+        [[ "$out" =~ ^0x[0-9a-fA-F]{64}$ ]] && { echo "$out"; return; }
+      done
+      echo ""
+    }
+
+    # One source-of-truth lane list; display names + RPC env-var names derived (matches quote-ccip-fees).
+    NETS=( optimism arbitrum base linea )
+    declare -a NAMES RPC_ENVS L2_ENVS FWD RECV
+    for net in "${NETS[@]}"; do
+      u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
+      NAMES+=("${u:0:1}${net:1}"); RPC_ENVS+=("RPC_$u"); L2_ENVS+=("L2_${u}_RPC_URL")
+    done
+
+    # ── Resolve each lane's pinned forwarder (.inputs.yaml) and deployed receiver (.deployed.yaml, if
+    #    present) — addressed by anchor via recursive descent, never hardcoded. ──
+    echo "Resolved from config/state/l2-<net>.{inputs,deployed}.yaml:"
+    for i in "${!NETS[@]}"; do
+      inf="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
+      dep="${ROOT_DIR}/config/state/l2-${NETS[$i]}.deployed.yaml"
+      [[ -f "$inf" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $inf" >&2; exit 1; }
+      FWD[$i]="$(yq '[.. | select(anchor=="l2CreForwarder")][0]' "$inf" | tr -d '"')"
+      RECV[$i]=""
+      if [[ -f "$dep" ]]; then
+        r="$(yq '[.. | select(anchor=="l2CreReceiver")][0]' "$dep" 2>/dev/null | tr -d '"')"
+        [[ "$r" =~ ^0x[0-9a-fA-F]{40}$ ]] && RECV[$i]="$r"
+      fi
+      printf '  %-9s forwarder=%s%s\n' "${NAMES[$i]}" "${FWD[$i]}" \
+        "$( [[ -n "${RECV[$i]}" ]] && echo "  receiver=${RECV[$i]}" )"
+    done
+    echo "  expected EXTCODEHASH (all lanes) = ${EXPECT_CODEHASH}"
+    echo
+
+    rc=0; recv_skipped=0   # recv_skipped: PASSing lanes whose receiver-side ERC-165 cross-check did not run
+    for i in "${!NAMES[@]}"; do
+      name="${NAMES[$i]}"; rpc_env="${RPC_ENVS[$i]}"; l2_env="${L2_ENVS[$i]}"; fwd="${FWD[$i]}"
+      echo "──── ${name}  ${fwd} ────"
+      if [[ ! "$fwd" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+        echo "  ✗ FAIL — l2CreForwarder anchor missing/malformed in inputs file"; rc=1; continue
+      fi
+      rpc_val="${!rpc_env:-}"
+      [[ -n "$rpc_val" ]] || rpc_val="${!l2_env:-}"
+      if [[ -z "$rpc_val" ]]; then echo "  (skipped — set ${rpc_env} or legacy ${l2_env})"; rc=1; continue; fi
+      if ! cast chain-id --rpc-url "$rpc_val" >/dev/null 2>&1; then
+        echo "  (skipped — ${rpc_env} not reachable: ${rpc_val})"; rc=1; continue
+      fi
+
+      pass=1; unver=0
+
+      # informational only — NOT a gate (see header: the live label is the stale "KeystoneForwarder 1.0.0")
+      tv="$(cast call "$fwd" 'typeAndVersion()(string)' --rpc-url "$rpc_val" 2>&1 | tr -d '\r')"
+      echo "  typeAndVersion = ${tv}   (informational; not a discriminator)"
+
+      # 1) bytecode identity — the strongest pin
+      ch="$(fetch_codehash "$fwd" "$rpc_val")"
+      if [[ -z "$ch" ]]; then
+        echo "  ⚠ EXTCODEHASH unverified (RPC error after retries)"; unver=1
+      elif [[ "$ch" == "$EXPECT_CODEHASH" ]]; then
+        echo "  ✓ EXTCODEHASH matches known-good Router build"
+      else
+        echo "  ✗ EXTCODEHASH MISMATCH: ${ch} — bytecode changed, re-verify ABI before trusting"; pass=0
+      fi
+
+      # 2) Router ABI present: isForwarder(address)
+      probe "$rpc_val" "$fwd" 'isForwarder(address)(bool)' "$A"
+      case "$REPLY_STATUS" in
+        ok)     echo "  ✓ isForwarder(address) present (Router build)";;
+        revert) echo "  ✗ isForwarder(address) absent — NOT the Router build"; pass=0;;
+        *)      echo "  ⚠ isForwarder(address) unverified (RPC error)"; unver=1;;
+      esac
+
+      # 3) Router ABI present: 3-arg getTransmitter
+      probe "$rpc_val" "$fwd" 'getTransmitter(address,bytes32,bytes2)(address)' "$A" "$B32" "$B2"
+      case "$REPLY_STATUS" in
+        ok)     echo "  ✓ getTransmitter(address,bytes32,bytes2) present (Router 3-arg form)";;
+        revert) echo "  ✗ getTransmitter(address,bytes32,bytes2) absent — NOT the Router build"; pass=0;;
+        *)      echo "  ⚠ getTransmitter(address,bytes32,bytes2) unverified (RPC error)"; unver=1;;
+      esac
+
+      # 4) legacy ABI ABSENT: 2-arg getTransmitter MUST revert (it is the legacy variant's signature)
+      probe "$rpc_val" "$fwd" 'getTransmitter(address,bytes32)(address)' "$A" "$B32"
+      case "$REPLY_STATUS" in
+        revert) echo "  ✓ legacy getTransmitter(address,bytes32) absent (not the legacy variant)";;
+        ok)     echo "  ✗ legacy getTransmitter(address,bytes32) RESPONDS — legacy onReport(bytes32,address,bytes) forwarder detected!"; pass=0;;
+        *)      echo "  ⚠ legacy getTransmitter(address,bytes32) unverified (RPC error)"; unver=1;;
+      esac
+
+      # 5) optional receiver-side cross-check — does OUR receiver pass the ERC-165 gate this forwarder
+      #    enforces? Skips cleanly (does not fail) when the address has no code on this RPC, e.g. a
+      #    fork/rehearsal .deployed.yaml or a pre-deploy state.
+      if [[ -n "${RECV[$i]}" ]]; then
+        code="$(cast code "${RECV[$i]}" --rpc-url "$rpc_val" 2>/dev/null | tr -d '\r')"
+        if [[ -z "$code" || "$code" == "0x" ]]; then
+          echo "  · receiver cross-check skipped (l2CreReceiver ${RECV[$i]} has no code on this RPC — fork artifact or pre-deploy)"
+          recv_skipped=$((recv_skipped + 1))
+        else
+          probe "$rpc_val" "${RECV[$i]}" 'supportsInterface(bytes4)(bool)' "$IRECEIVER_ID"; s1="$REPLY_OUT"; st1="$REPLY_STATUS"
+          probe "$rpc_val" "${RECV[$i]}" 'supportsInterface(bytes4)(bool)' "$ERC165_ID";   s2="$REPLY_OUT"; st2="$REPLY_STATUS"
+          if [[ "$st1" == ok && "$st2" == ok && "$s1" == "true" && "$s2" == "true" ]]; then
+            echo "  ✓ CREReceiver ${RECV[$i]} passes the gate (supportsInterface ${IRECEIVER_ID} && ${ERC165_ID})"
+          elif [[ "$st1" == rpcerr || "$st2" == rpcerr ]]; then
+            echo "  ⚠ CREReceiver gate unverified (RPC error)"; unver=1
+          else
+            echo "  ✗ CREReceiver ${RECV[$i]} FAILS the ERC-165 gate (${IRECEIVER_ID}=${s1} ${ERC165_ID}=${s2}) — reports would not be delivered"; pass=0
+          fi
+        fi
+      else
+        echo "  · receiver cross-check skipped (no l2CreReceiver anchor in .deployed.yaml)"
+        recv_skipped=$((recv_skipped + 1))
+      fi
+
+      if (( ! pass )); then echo "  ➜ FAIL"; rc=1
+      elif (( unver )); then echo "  ➜ INCOMPLETE — some checks unverified (RPC errors); re-run"; rc=1
+      else echo "  ➜ PASS"; fi
+    done
+
+    echo
+    if (( rc == 0 )); then
+      if (( recv_skipped > 0 )); then
+        echo "OK (forwarder side) — every checked lane is the ERC-165-gating, 2-arg-onReport Router build."
+        echo "   NOTE: the CREReceiver-side ERC-165 cross-check was SKIPPED on ${recv_skipped} lane(s) (no l2CreReceiver in .deployed.yaml, or no code on-chain) — receiver↔forwarder gate compatibility is NOT confirmed there; re-run post-deploy against a populated .deployed.yaml."
+      else
+        echo "OK — every checked lane is the ERC-165-gating, 2-arg-onReport Router build, and CREReceiver passes the gate on every lane."
+      fi
+    else
+      echo "FAILures or skips above (rc=${rc})"
+    fi
     exit $rc
 
 [private]

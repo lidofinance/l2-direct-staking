@@ -30,7 +30,6 @@ import {IReceiver} from "./interfaces/IReceiver.sol";
  *      signed by the same owner could at most trigger the intended, rate-limited sync; binding the
  *      name would only add operational rigidity (a workflow rename ⇒ redeploy) for a negligible
  *      gain. The authentication boundary is therefore deliberately "(forwarder, workflowOwner)".
- *      See DOC.md.
  *
  *      Invariants:
  *      - _expectedAuthor is never address(0) (enforced at construction and by setters).
@@ -142,7 +141,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     }
 
     /// @notice Returns the forwarder address that is allowed to call `onReport`.
-    /// @dev Convenience accessor for off-chain tooling / deploy verification. Deliberately NOT
+    /// @dev Convenience accessor for off-chain callers. Deliberately NOT
     ///      part of `IReceiver`: keeping it out preserves `type(IReceiver).interfaceId == 0x805f2132`.
     function getForwarder() external view returns (address) {
         return _forwarder;
@@ -211,7 +210,11 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         address payable to,
         uint256 amount
     ) external onlyOwner {
+        // Validation-first (mirrors SyncTrigger.sweep): the recipient guard runs before the amount==0
+        // short-circuit, so address(0) is never valid regardless of amount. A zero amount is then a
+        // no-op — no transfer, and no misleading ETHWithdrawn(to, 0) for indexers to chase.
         if (to == address(0)) revert InvalidRecipientAddress();
+        if (amount == 0) return;
         (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert ETHTransferFailed();
         emit ETHWithdrawn(to, amount);

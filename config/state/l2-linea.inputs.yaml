@@ -14,9 +14,8 @@ config:
   - &feeOtoD "0x000000000000000001bc16d674ec8000000007a120"
   # feeDtoO = FeeCodec.encodeLineaL1toL2()  — 17-byte zero blob (feeAmount always 0 on Linea)
   - &feeDtoO "0x0000000000000000000000000000000000"
-  # getMaxFees() derived from the blobs: native = maxFee + DtoO(0) = 0.125e18, link = 0
+  # getMaxFees() derived from the blobs: native = maxFee + DtoO(0) = 0.125e18 (LINK payment not supported)
   - &maxNativeFee 125000000000000000
-  - &maxLinkFee 0
   # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
   - &l2GovExecutorName "LineaBridgeExecutor" # governanceExecutor.name → ABI selector
   # Linea's executor has no OVM_L2_CROSS_DOMAIN_MESSENGER getter; null → the shared check is skipped.

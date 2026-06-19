@@ -14,9 +14,8 @@ config:
   - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"
   # feeDtoO = FeeCodec.encodeArbitrumL1toL2(maxSubmissionCost=0.001e18, maxGas=100_000, gasPriceBid=50_000_000)
   - &feeDtoO "0x00000000000000000003920acbffd00000000186a00000000002faf080"
-  # getMaxFees() derived: native = maxFee(0.125e18) + DtoO feeAmount(0.001005e18) = 0.126005e18, link = 0
+  # getMaxFees() derived: native = maxFee(0.125e18) + DtoO feeAmount(0.001005e18) = 0.126005e18 (LINK payment not supported)
   - &maxNativeFee 126005000000000000
-  - &maxLinkFee 0
   # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
   - &l2GovExecutorName "ArbitrumBridgeExecutor" # governanceExecutor.name → ABI selector
   - &lineaMessageService null # not a Linea executor; shared LINEA_MESSAGE_SERVICE check is skipped here

@@ -33,23 +33,25 @@ export function encodeReportPayload(targetAddress: string): Hex {
   );
 }
 
-// ─── shouldSync (due-ness) ──────────────────────────────────────────────────
+// ─── shouldSyncAmount (due-ness + amount) ────────────────────────────────────
 
-/** Encodes the shouldSync() call data (no arguments). */
-export function encodeShouldSyncCall(): Hex {
-  return encodeFunctionData({ abi: SyncTriggerABI, functionName: "shouldSync" });
+/** Encodes the shouldSyncAmount() call data (no arguments). */
+export function encodeShouldSyncAmountCall(): Hex {
+  return encodeFunctionData({ abi: SyncTriggerABI, functionName: "shouldSyncAmount" });
 }
 
 /**
- * Decodes shouldSync() — whether a sync is DUE (the `delay` rate-limit has elapsed AND the pool holds
- * at least `minAmount` WETH). Due-ness only; executability is a separate predicate, see {decodeCanSyncResult}.
+ * Decodes shouldSyncAmount() — the WETH amount a sync would move RIGHT NOW (capped at `maxAmount`), or
+ * 0 when a sync is not DUE (the `delay` rate-limit has not elapsed, or the pool holds less than
+ * `minAmount`). A nonzero return is both the due-ness signal AND the amount, so one read serves both.
+ * Executability is a separate predicate, see {decodeCanSyncResult}.
  */
-export function decodeShouldSyncResult(data: `0x${string}`): boolean {
+export function decodeShouldSyncAmountResult(data: `0x${string}`): bigint {
   return decodeFunctionResult({
     abi: SyncTriggerABI,
-    functionName: "shouldSync",
+    functionName: "shouldSyncAmount",
     data,
-  }) as boolean;
+  }) as bigint;
 }
 
 // ─── canSync (executability) ────────────────────────────────────────────────
@@ -72,28 +74,9 @@ export function decodeCanSyncResult(data: `0x${string}`): boolean {
   }) as boolean;
 }
 
-// ─── getAmountToSync (telemetry) ────────────────────────────────────────────
-
-/** Encodes the getAmountToSync() call data (no arguments). */
-export function encodeAmountToSyncCall(): Hex {
-  return encodeFunctionData({ abi: SyncTriggerABI, functionName: "getAmountToSync" });
-}
-
-/**
- * Decodes getAmountToSync() — the WETH amount a sync would move (capped at `maxAmount`), independent of
- * due-ness/executability. Used only for logging: the report carries no amount, triggerSync recomputes it.
- */
-export function decodeAmountToSyncResult(data: `0x${string}`): bigint {
-  return decodeFunctionResult({
-    abi: SyncTriggerABI,
-    functionName: "getAmountToSync",
-    data,
-  }) as bigint;
-}
-
 // ─── routing ────────────────────────────────────────────────────────────────
 
-/** Terminal routing of a cron tick, derived purely from the shouldSync()/canSync() predicates. */
+/** Terminal routing of a cron tick, derived purely from the shouldSyncAmount()/canSync() predicates. */
 export type SyncAction = "execute" | "blocked" | "no-action";
 
 /**

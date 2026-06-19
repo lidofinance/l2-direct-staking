@@ -35,7 +35,6 @@ library ArbitrumMigrationConstants {
 
     // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
-    bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
     // FeeOtoD gasLimit ceiling = Arbitrum's FeeQuoter maxPerMsgGasLimit (docs/fees.md §lane caps,
     // verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this — config-time guard

@@ -220,7 +220,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     ///         the `<net>.inputs.yaml` `config:` fee anchors stay in lockstep with the Solidity source of
     ///         truth, and used when authoring those anchors. Pure computation — needs no RPC or broadcast.
     ///         The actor addresses do not affect any fee field, so dummy non-zero placeholders are passed.
-    /// @dev The native/LINK split is shared with `SyncTrigger.getMaxFees()` via the inherited `_maxFees`
+    /// @dev The native fee total is shared with `SyncTrigger.getMaxFees()` via the inherited `_maxFees`
     ///      mirror (byte-identical to `SyncTrigger._maxFees`), so this oracle and the contract cannot drift
     ///      on fee-denomination semantics. Mirrors `L2UpgradeActions` feeOtoD encoding.
     function runPrintFeeParams() public view {
@@ -229,12 +229,11 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         bytes memory feeOtoD = _encodeFeeOtoD(cfg);
         bytes memory feeDtoO = cfg.feeDtoO;
 
-        (uint256 maxNativeFee, uint256 maxLinkFee) = _maxFees(feeOtoD, feeDtoO);
+        uint256 maxNativeFee = _maxFees(feeOtoD, feeDtoO);
 
         console2.log("FEE_OTO_D=%s", vm.toString(feeOtoD));
         console2.log("FEE_DTO_O=%s", vm.toString(feeDtoO));
         console2.log("MAX_NATIVE_FEE=%s", vm.toString(maxNativeFee));
-        console2.log("MAX_LINK_FEE=%s", vm.toString(maxLinkFee));
         // The FeeOtoD gasLimit ceiling (SyncTrigger.getMaxGasLimit) — cross-checked vs the &maxGasLimit
         // .inputs anchor by verify-constants-sync, the same Solidity→.inputs guard as the fee blobs.
         console2.log("MAX_GAS_LIMIT=%s", vm.toString(uint256(cfg.maxGasLimit)));

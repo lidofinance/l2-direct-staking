@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {IReceiver} from "src/cre/interfaces/IReceiver.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -470,6 +471,26 @@ contract CREReceiverTest is Test {
     function test_withdrawETH_revertsOnInsufficientBalance() public {
         vm.expectRevert(CREReceiver.ETHTransferFailed.selector);
         receiver.withdrawETH(payable(makeAddr("recipient")), 1 ether);
+    }
+
+    function test_withdrawETH_zeroAmountIsNoop() public {
+        // a zero amount is a no-op: nothing transferred, and (crucially) no misleading ETHWithdrawn(to, 0)
+        // for indexers to chase. Mirrors SyncTrigger.sweep's amount==0 short-circuit.
+        vm.deal(address(receiver), 2 ether);
+        address payable recipient = payable(makeAddr("recipient"));
+        vm.recordLogs();
+        receiver.withdrawETH(recipient, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 0, "no event for a zero-amount no-op");
+        assertEq(recipient.balance, 0, "nothing transferred");
+        assertEq(address(receiver).balance, 2 ether, "receiver balance untouched");
+    }
+
+    function test_withdrawETH_revertsOnZeroRecipientEvenWhenZeroAmount() public {
+        // validation-first: the recipient guard runs before the amount==0 short-circuit, so address(0)
+        // is never valid regardless of amount.
+        vm.expectRevert(CREReceiver.InvalidRecipientAddress.selector);
+        receiver.withdrawETH(payable(address(0)), 0);
     }
 
     // ─── Reentrancy ────────────────────────────────────────────────────

@@ -14,9 +14,8 @@ config:
   - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"
   # feeDtoO = FeeCodec.encodeBaseL1toL2(originL2Gas=100_000)  — OP-stack feeAmount is always 0
   - &feeDtoO "0x0000000000000000000000000000000000000186a0"
-  # getMaxFees() derived from the blobs: native = maxFee + DtoO(0) = 0.125e18, link = 0
+  # getMaxFees() derived from the blobs: native = maxFee + DtoO(0) = 0.125e18 (LINK payment not supported)
   - &maxNativeFee 125000000000000000
-  - &maxLinkFee 0
   # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
   - &l2GovExecutorName "OptimismBridgeExecutor" # governanceExecutor.name → ABI selector (OP-stack)
   - &lineaMessageService null # not a Linea executor; shared LINEA_MESSAGE_SERVICE check is skipped here
