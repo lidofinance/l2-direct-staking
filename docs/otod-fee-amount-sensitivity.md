@@ -135,7 +135,8 @@ margin to the ~250 WETH breakeven. It becomes reachable only if a config change 
   `premium(maxAmount) + baseFee + gasTerm < maxFee` — i.e. on those lanes hold `maxAmount`
   below ~250 WETH at `maxFee = 0.125 ETH` (refs A-1, E-1, E-4, L-5). The current setting
   (100 WETH / 0.125 ETH) clears it with ~2.5× margin; **raising `maxAmount` toward 250 WETH
-  or lowering `maxFee` erodes it**. Arbitrum/Base carry no such coupling (≈0 bps, E-2/E-3) —
+  or lowering `maxFee` erodes it** (e.g. `maxFee = 0.05 ETH` drops the OP/Linea breakeven to ~99 WETH —
+  below the 100 WETH cap, so full-size syncs would revert). Arbitrum/Base carry no such coupling (≈0 bps, E-2/E-3) —
   `maxAmount` tuning there does not move the OtoD fee.
 - **D-2 (read the `maxFee` alert as two-driver on OP/Linea).** The **monitoring owner** SHOULD
   treat the §5 `actual fee / maxFee` alert as capturing **amount-driven** growth on

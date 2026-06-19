@@ -365,14 +365,49 @@ Excess over the actual fee is refunded intra-transaction (see [Cost framing](#co
 costs nothing per sync. The consequences are structural instead: `triggerSync` forwards
 `maxFeeOtoD + feeAmountDtoO` of native ETH from the SyncTrigger's own balance (`src/SyncTrigger.sol:247`),
 so `maxFee` sets (a) the **float** the trigger must hold to sync at all, and (b) the **worst-case spend a
-single sync can authorize**. The current 0.125 ETH is already ~25× the measured ~0.005 ETH actual fee —
-protective against spikes. Raising it "for safety" (say to 12.5 ETH) means a CCIP fee-token mispricing or
+single sync can authorize**. At today's quiet L1 a small sync quotes only ~0.001–0.005 ETH, which makes
+0.125 *look* like ~25–125× overkill — but that ratio is an artifact of a gas trough and a small amount; the
+operative headroom is far tighter ([Why 0.125 and not lower](#why-0125-and-not-lower-eg-005) below).
+Raising it "for safety" (say to 12.5 ETH) means a CCIP fee-token mispricing or
 gas-price spike gets *paid silently* instead of reverting with `CCIPSenderExceedsMaxFee`
 (`CCIPSenderUpgradeable.sol:82`) — and given the CREReceiver's nullary-call lock
 (`src/cre/CREReceiver.sol:128` — a compromised forwarder can only fire argument-less, rate-limited
 `triggerSync()` calls), the fee caps are exactly what bounds the damage of each
 spurious-but-authorized sync. `maxFee` is the only lever where
 "too high" weakens a *guard* rather than wasting ETH.
+
+#### Why 0.125 and not lower (e.g. 0.05)?
+
+Because `maxFee` is a *refunded revert bound, not a cost*, lowering it buys **zero per-sync ETH** — the
+actual fee paid is the live `getFee()` quote either way ([Cost framing](#cost-framing)). The only gains are
+a thinner float requirement and a tighter slippage guard; the price is sync availability. Two
+independently-measured drivers set the floor under `maxFee`, and **0.05 ETH sits below both.** Measured
+2026-06-19, L1 base fee at a **0.22 gwei** trough (reproduce with `just quote-ccip-fee-by-amount`):
+
+| Lane | fee @ 1 WETH | fee @ 100 WETH (`maxAmount`) | premium | breakeven vs 0.125 |
+|---|---|---|---|---|
+| Optimism | ~0.00119 ETH | **~0.05069 ETH** (40.6%) | 5.0 bps, uncapped | ~250 WETH |
+| Linea | ~0.00132 ETH | **~0.05049 ETH** (40.4%) | 5.0 bps, uncapped | ~250 WETH |
+| Arbitrum | ~0.00144 ETH | ~0.00144 ETH (1.15%) | ~0 (flat) | never |
+| Base | ~0.00082 ETH | ~0.00082 ETH (0.66%) | ~0 (flat) | never |
+
+1. **Amount premium (Optimism/Linea).** Those lanes charge 5 bps on the bridged value, CCIP-uncapped, so a
+   max-size **100 WETH** sync already costs **~0.0505–0.0507 ETH** — *above* 0.05. A 0.05 cap would revert
+   full-size OP/Linea syncs (`CCIPSenderExceedsMaxFee`) **at today's gas, not just on a spike** — the
+   breakeven falls from ~250 WETH to ~99 WETH, below the 100 WETH per-sync cap (see
+   [amount-sensitivity D-1](otod-fee-amount-sensitivity.md)).
+2. **Gas envelope (all four lanes).** The quote scales ~linearly with L1 gas (`gasLimit × destChainGasPrice`,
+   [billing model](#glamsterdam-fee-headroom-bump-may-2026)). The small readings above are a **0.22 gwei**
+   snapshot — the figures in this doc swing 0.001 → 0.005 ETH with gas alone. At 0.125 the flat lanes
+   tolerate ~150× the current trough before a small sync reverts; **at 0.05, only ~60× ≈ an L1 base fee of
+   ~13 gwei**, an ordinary busy day. That is exactly the buffer the
+   [Glamsterdam bump](#glamsterdam-fee-headroom-bump-may-2026) added.
+
+So a uniform 0.05 is not free tightening: it would brick OP/Linea max-size syncs now (forcing `maxAmount`
+on those lanes down to ~40 WETH too) and shrink the flat-lane gas buffer — all for no per-sync saving. The
+genuine slack is real but small (Arbitrum/Base are flat ~0.001 ETH), and trimming only those two lanes
+still erodes their spike margin. **Size `maxFee` against the *envelope* — worst-case amount × plausible gas
+spike — not against a single quiet reading.**
 
 **Funding the float.** The SyncTrigger is the fee **treasury**, not a pass-through: the CRE forwarder
 call carries no value, so every sync is paid from the trigger's own balance and nothing refills it
@@ -638,20 +673,22 @@ Two consequences for how the doc should be read:
   relaxing [D-1](otod-fee-amount-sensitivity.md) there too. **Track the OnRamp `typeAndVersion`, not
   the lane name.**
 
-### Finding 3 — `maxFee` headroom is borne out
+### Finding 3 — `maxFee` headroom is borne out (but history under-samples the worst case)
 
-The 0.125 ETH `maxFee` has never been close. The two historical high-water marks have different
-drivers, both far under it:
+No *historical* sync has come close to the 0.125 ETH `maxFee` — but that is because the largest real sync
+to date (38.6 WETH) was far below the 100 WETH per-sync cap, **not** because the cap is oversized. The two
+high-water marks have different drivers, both well under it:
 
 | High-water driver | Fee | % of `maxFee` |
 |---|---|---|
 | Largest amount ever synced — 38.6 WETH (Jan–Feb 2026) | ≈ 0.0195 ETH | ≈ 15.6% |
 | Largest L1 gas spike — Base, 2025-01-24, 10 WETH | ≈ 0.0228 ETH | ≈ 18.2% |
 
-The largest amount ever synced (**38.6 WETH**) is well below the 100 WETH cap, so the
-[amount-sensitivity](otod-fee-amount-sensitivity.md) "~40% of `maxFee` at the 100 WETH cap /
-breakeven ~250 WETH" projection has never been stress-tested in production — but the 5 bps slope it
-rests on is confirmed.
+The worst case the cap is actually sized for is a **100 WETH** sync on Optimism/Linea — ~40% of `maxFee` at
+the current setting, breakeven ~250 WETH ([amount-sensitivity](otod-fee-amount-sensitivity.md)). That has
+never been stress-tested in production (the largest real sync was 38.6 WETH), but the 5 bps slope it rests
+on is confirmed, so it is the forward-looking bound — which is also why the cap cannot simply be lowered
+([Why 0.125 and not lower](#why-0125-and-not-lower-eg-005)).
 
 ### Operational deltas, history → now
 
