@@ -283,7 +283,7 @@ contract L2UpgradeActions {
         // precondition. The constructor rejects INVALID values (out-of-range gasLimit, zero delay, wrong
         // fee length), but a wrong-but-VALID MigrationConstants typo (e.g. a gasLimit of 200_000 instead
         // of 1_000_000) is stored without reverting, so without these reads the deploy looks green and the
-        // defect only surfaces if the operator separately runs verifyStage1 — or, worse, after go-live.
+        // defect only surfaces if the operator separately runs verifyCanaryStage1 — or, worse, after go-live.
         _requireL2PostCondition(st.DEST_CHAIN_SELECTOR() == cfg.destChainSelector, "syncTrigger DEST_CHAIN_SELECTOR");
         _requireL2PostCondition(st.WNATIVE() == cfg.tokenIn, "syncTrigger WNATIVE");
         _requireL2PostCondition(st.getDelay() == cfg.minSyncDelay, "syncTrigger delay");
@@ -312,61 +312,6 @@ contract L2UpgradeActions {
         // live sync draws it down (in the canary flow SYNC_ROLE is granted early, at activateForTesting, so
         // a sync CAN run before the seal), keeping this bound true at every site that runs this assert.
         _requireL2PostCondition(syncTrigger.balance >= cfg.syncTriggerInitialFloat, "syncTrigger fee float");
-    }
-
-    /**
-     * @notice Read-only verification that Stage 1 deploy is complete and correct, and Stage 2 has NOT yet run.
-     * @dev Reverts with a descriptive key on any mismatch. Callable by anyone after `runDeploy` and before `runMigrate`.
-     *      Broader than `_assertSyncInfrastructure` (which is enforced inside the deploy broadcast):
-     *      also checks OraclePool immutables, SyncTrigger configuration, and Stage-2-hasn't-run guards.
-     */
-    function verifyStage1(
-        L2UpgradeConfig memory cfg,
-        address oraclePool,
-        address syncTrigger,
-        address creReceiverAddr,
-        address creForwarder,
-        address expectedAuthor
-    ) public view {
-        _requireNonZeroL2(oraclePool);
-        _requireNonZeroL2(syncTrigger);
-        _requireNonZeroL2(creReceiverAddr);
-
-        // Fail-fast guardrails: surface "Stage 2 already ran" before the deploy-correctness reads below,
-        // since verifying a post-Stage-2 state against a pre-Stage-2 expectation is meaningless.
-        _requireL2PostCondition(
-            ICustomSender(cfg.customSender).getOraclePool() != oraclePool,
-            "stage 2 already ran: CustomSender.getOraclePool() already points at the new pool"
-        );
-        _requireL2PostCondition(
-            !IAccessControl(cfg.customSender).hasRole(SYNC_ROLE, syncTrigger),
-            "stage 2 already ran: SYNC_ROLE already granted to the new SyncTrigger"
-        );
-        // Pool/trigger-INDEPENDENT tripwire: the two guards above key on the specific (pool, trigger)
-        // passed in, so if runDeploy ran twice and Stage 2 completed against a DIFFERENT pair, verifying
-        // the orphaned first deployment would slip past them. The DEFAULT_ADMIN_ROLE handover is global
-        // to the CustomSender — pre-Stage-2 the executor does NOT yet hold it — so this catches a
-        // completed Stage 2 regardless of which pool/trigger it targeted. (initialOwner != executor by
-        // construction, so the executor cannot already hold admin pre-migration.)
-        _requireL2PostCondition(
-            !IAccessControl(cfg.customSender).hasRole(DEFAULT_ADMIN_ROLE, cfg.governanceExecutor),
-            "stage 2 already ran: governanceExecutor already holds DEFAULT_ADMIN_ROLE"
-        );
-
-        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
-
-        IOraclePool pool = IOraclePool(oraclePool);
-        _requireL2PostCondition(pool.SENDER() == cfg.customSender, "oraclePool SENDER");
-        _requireL2PostCondition(pool.TOKEN_IN() == cfg.tokenIn, "oraclePool TOKEN_IN");
-        _requireL2PostCondition(pool.TOKEN_OUT() == cfg.tokenOut, "oraclePool TOKEN_OUT");
-        _requireL2PostCondition(pool.getOracle() == cfg.priceOracle, "oraclePool oracle");
-        _requireL2PostCondition(pool.getFee() == cfg.fee, "oraclePool fee");
-        _requireL2PostCondition(Ownable(oraclePool).owner() == cfg.liquidityOwner, "oraclePool owner");
-        _requireL2PostCondition(!PausableImmutableOraclePool(oraclePool).paused(), "oraclePool paused");
-
-        // SyncTrigger wiring + operational params (SENDER/forwarder/owner, DEST_CHAIN_SELECTOR, WNATIVE,
-        // delay, amounts, feeDtoO, feeOtoD, maxGasLimit) and the CREReceiver checks are asserted inside
-        // _assertSyncInfrastructure above, so they are not repeated here.
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {
@@ -451,33 +396,7 @@ contract L2UpgradeActions {
         maxNativeFee = maxFeeOtoD + maxFeeDtoO;
     }
 
-    function executeMigrationSteps(
-        L2UpgradeConfig memory cfg,
-        address newPool,
-        address newSyncTrigger,
-        address creReceiver,
-        address creForwarder
-    ) public {
-        // refuse to run Stage 2 against a half-configured or mis-wired Stage 1. This re-asserts
-        // the full sync-infrastructure wiring (SyncTrigger SENDER/forwarder/owner, CREReceiver
-        // forwarder/expectedAuthor/allow-list/owner, fee float) BEFORE any irreversible write below
-        // (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin handover). It reads only
-        // SyncTrigger/CREReceiver state that Stage 2 never mutates, so it is safe as a precondition.
-        // Also subsumes the SENDER/forwarder wiring check before SYNC_ROLE is granted.
-        //
-        // expectedAuthor is pinned to cfg.liquidityOwner here, matching Stage 1: _deployAll always
-        // constructs the CREReceiver with expectedAuthor == cfg.liquidityOwner (the LOL Safe / CRE
-        // workflow owner — ADR-0001, DOC.md §3.2). If a future caller deploys Stage 1 with a DIFFERENT
-        // expectedAuthor, this precondition reverts ("creReceiver expectedAuthor") — a loud, safe block,
-        // not a silent mismatch — so the two must be kept consistent.
-        _assertSyncInfrastructure(cfg, newSyncTrigger, creReceiver, creForwarder, cfg.liquidityOwner);
-
-        setOraclePool(cfg.customSender, newPool);
-        grantSyncRole(cfg.customSender, newSyncTrigger);
-        _sealAdminAndProxy(cfg, newPool, newSyncTrigger);
-    }
-
-    /// @dev Reads back on-chain state after `executeMigrationSteps` to ensure every write landed
+    /// @dev Reads back on-chain state after the governance seal to ensure every write landed
     ///      and every revoke took effect. A partial success from a prior step will cause the
     ///      broadcast itself to revert rather than silently leaving the system half-migrated.
     function _assertMigrationSteps(
@@ -507,10 +426,9 @@ contract L2UpgradeActions {
         _requireL2PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.governanceExecutor, "proxyAdmin owner");
     }
 
-    /// @dev The irreversible governance-seal tail shared by the linear migration (executeMigrationSteps)
-    ///      and the canary seal (finalizeGovernanceSeal): revoke the old automation(s) SYNC_ROLE, migrate
-    ///      CustomSender admin to the governance executor, hand the L2 ProxyAdmin over, then assert the end
-    ///      state. Kept in ONE place so the two seal paths cannot drift.
+    /// @dev The irreversible governance-seal tail invoked by the canary seal (finalizeGovernanceSeal):
+    ///      revoke the old automation(s) SYNC_ROLE, migrate CustomSender admin to the governance executor,
+    ///      hand the L2 ProxyAdmin over, then assert the end state.
     function _sealAdminAndProxy(L2UpgradeConfig memory cfg, address newPool, address newSyncTrigger) private {
         if (cfg.oldChainlinkAutomation != address(0)) {
             revokeSyncRole(cfg.customSender, cfg.oldChainlinkAutomation);

@@ -10,10 +10,10 @@
 # Canonical source for addresses: script/l1/L1MigrationConstants.sol and the per-net
 # script/<net>/<Net>MigrationConstants.sol. `just verify-constants-sync` cross-checks.
 
-# Deploy parameters live in the sibling l1.inputs.yaml (config: knobs + externals: third-party
-# facts); our deployed L1 addresses live in l1.deployed.yaml. Both are auto-discovered siblings,
-# concatenated anchors-first, so the *aliases below resolve. l1.deployed.yaml is hand-authored
-# and STATIC — the L1 Stage-2 step only migrates ownership of pre-existing contracts; it deploys nothing new.
+# All parameters live in the sibling l1.inputs.yaml (config: knobs + externals: third-party facts),
+# auto-discovered and concatenated anchors-first so the *aliases below resolve. The L1 Stage-2 step
+# only migrates OWNERSHIP of pre-existing contracts; it deploys nothing new — so the receiver, its
+# implementation, and the ProxyAdmin are fixed externals (in l1.inputs.yaml), not deploy outputs.
 
 roles:
   - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -21,6 +21,13 @@ roles:
 misc:
   - &EIP1967_IMPLEMENTATION_SLOT "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
   - &EIP1967_ADMIN_SLOT "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
+
+# This migration deploys nothing of its own on L1 (it only re-owns the pre-existing upstream
+# contracts, which are externals in l1.inputs.yaml). The empty section satisfies the schema's
+# required `deployed:` key.
+deployed:
+  l1: []
+  l2: []
 
 l1:
   rpcUrl: L1_RPC_URL

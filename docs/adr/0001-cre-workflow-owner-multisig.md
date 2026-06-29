@@ -44,8 +44,10 @@ The strict distinctions that frame the decision (A.7): the failure kinds **lost*
 **Register the `sync-automation` workflow under the LOL multisig (Safe) — the same Safe that already owns
 each `CREReceiver` — and pin `expectedAuthor` to that Safe address on all four L2s.**
 
-- The Stage-1 deploy scripts pin `CREReceiver._expectedAuthor = cfg.liquidityOwner` (the LOL multisig),
-  *not* the Lido Deployer EOA (`script/shared/L2UpgradeScriptBase.s.sol::_deployAll`).
+- After the canary handoff, `CREReceiver._expectedAuthor` is pinned to `cfg.liquidityOwner` (the LOL
+  multisig), *not* the Lido Deployer EOA (`handoffToLiquidityOwner`,
+  `script/shared/L2UpgradeActions.s.sol`). During the canary it is transiently the deployer, so the
+  deployer can drive the pre-handoff test sync.
 - The workflow is registered with `cre workflow deploy … --unsigned`
   (`workflow-owner-address: ${CRE_WORKFLOW_OWNER}` in `cre-workflows/project.yaml`,
   `CRE_WORKFLOW_OWNER` = the network's LOL multisig). `--unsigned` makes the CLI emit raw

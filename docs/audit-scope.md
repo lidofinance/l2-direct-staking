@@ -258,8 +258,8 @@ The migration is **not atomic**: it is a sequence of separate transactions run *
 irreversible write with on-chain assertions and keep the irreversible step **last**. The new
 contracts are deployed **deployer-owned** and a live sync is tested *before* any handoff — the full
 state machine (`0→1→2→3→4` with a `1→0` rollback) is in
-[docs/mainnet-simulated-cre-test.md](mainnet-simulated-cre-test.md). Combining stages in one broadcast
-is blocked on all four mainnets unless `ALLOW_UNSAFE_COMBINED_RUN=1`.
+[docs/mainnet-simulated-cre-test.md](mainnet-simulated-cre-test.md). Each stage is a separate broadcast
+by its own signer — there is no combined deploy+migrate entrypoint.
 
 1. **0→1 deploy — `runDeployTest()`** (Lido Deployer). Deploy `OraclePool` / `SyncTrigger` /
    `CREReceiver` **owned by the deployer**, with the deployer as the `CREReceiver` forwarder **and**

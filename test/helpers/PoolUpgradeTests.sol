@@ -552,29 +552,24 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         syncTrigger.triggerSync();
     }
 
-    /// @dev Stage 2 must refuse a mis-wired or half-configured Stage 1 BEFORE any
-    ///      irreversible write (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin
-    ///      handover). Here Stage 1 is deployed correctly, but Stage 2 is handed a creReceiver the
-    ///      trigger's forwarder does not point at — the precondition fails and nothing is mutated.
-    function test_executeMigrationStepsRevertsOnMiswiredStage1() public {
-        vm.selectFork(l2Fork);
+    /// @dev The canary governance seal must refuse a mis-wired Stage 1 BEFORE any irreversible write
+    ///      (old-automation revoke, admin revoke, ProxyAdmin handover). Here the canary is deployed +
+    ///      activated correctly, but finalize is handed a creReceiver the trigger's forwarder does not
+    ///      point at — the opening {_assertSyncInfrastructure} interlock fails and nothing is sealed.
+    function test_canaryFinalizeRevertsOnMiswiredStage1() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,) = _deployCanaryL2();
+
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        address realForwarder = makeAddr("creForwarder");
 
-        PausableImmutableOraclePool newPool = _deployL2Pool(cfg);
-
-        address creForwarder = makeAddr("creForwarder");
-        vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
-        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
-        (address syncTrigger,) =
-            deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
-        vm.stopPrank();
-
-        // Call via `this.` so executeMigrationSteps runs as a single external call and the
-        // precondition revert is caught atomically (expectRevert latches onto the next external call).
+        // Call via `this.` so finalizeGovernanceSeal runs as a single external call and the interlock
+        // revert is caught atomically (expectRevert latches onto the next external call). The trigger's
+        // forwarder points at the real (deployer-wired) CREReceiver, so the mismatched wrongReceiver trips
+        // "syncTrigger forwarder" before the irreversible seal in {_sealAdminAndProxy}.
         address wrongReceiver = makeAddr("wrongReceiver");
         vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger forwarder"));
-        this.executeMigrationSteps(cfg, address(newPool), syncTrigger, wrongReceiver, creForwarder);
+        this.finalizeGovernanceSeal(cfg, address(newPool), address(syncTrigger), wrongReceiver, realForwarder);
     }
 
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
@@ -894,6 +889,37 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
         assertEq(Ownable(L2_PROXY_ADMIN).owner(), LIDO_L2_GOVERNANCE_EXECUTOR, "L2 ProxyAdmin = governance executor");
         _verifyOldAutomationsRevoked();
+    }
+
+    /// @notice Behavioral canary acceptance against the REAL on-chain deployed addresses when supplied via
+    ///         env (else a fresh deploy): bind to the deployer-owned canary, seed WETH above the on-chain
+    ///         min, wait the on-chain delay, drive a sync via CREReceiver.onReport as the deployer, and
+    ///         assert the pool WETH is pulled. The non-destructive, keyless, CI-runnable fork sibling of the
+    ///         on-chain `simulate-sync` real-broadcast path. Driven by `just test-<net>-canary-acceptance`.
+    function test_canarySyncOnDeployedAddresses() public {
+        (PausableImmutableOraclePool pool, SyncTrigger trigger, CREReceiver receiver, address deployer) =
+            _bindOrDeployCanaryL2();
+
+        // Seed above the on-chain canary min (deal SETS the balance, so the drain-to-0 assert is
+        // deterministic even against a live pool that already holds WETH); the seed is far below any lane
+        // maxAmount, so the full seed syncs in one shot.
+        (uint128 minA,) = trigger.getAmounts();
+        uint256 seed = uint256(minA) + 0.05 ether;
+        deal(L2_WETH, address(pool), seed);
+
+        // Warp past the on-chain delay (relative to now, +1) so a possibly-recent on-chain lastExecution
+        // cannot leave the sync un-due.
+        vm.warp(block.timestamp + trigger.getDelay() + 1);
+        assertGt(trigger.shouldSyncAmount(), 0, "canary: sync should be due for the seeded WETH");
+
+        // Deployer is the configured forwarder AND author; craft the Keystone report and call onReport
+        // (byte-identical to runSimulateSync / test_canaryDeployerSimulatedSyncAndHandoff).
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), deployer);
+        bytes memory report = abi.encode(address(trigger), abi.encodePacked(SyncTrigger.triggerSync.selector));
+        vm.prank(deployer);
+        receiver.onReport(metadata, report);
+
+        assertEq(IERC20(L2_WETH).balanceOf(address(pool)), 0, "canary sync should pull the seeded pool WETH");
     }
 
     /// @notice 1→0 rollback: after activation, the Initial Owner repoints CustomSender at the old pool and

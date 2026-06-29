@@ -45,11 +45,13 @@ Each recipe is one broadcast by one actor: `just -E .env.<network> <recipe>`.
 ### 0 → 1 — deploy + activate (repeat per network ×4)
 - Pre-reqs: Deployer funded with ETH (fees + float + test WETH); `preflight-check`, `preflight-check-l1`, `verify-constants-sync` green.
 - **Deployer:** `deploy-test` ⇒ `runDeployTest()` — deploy the three contracts deployer-owned, `CREReceiver` forwarder + author = deployer, `SyncTrigger` test `delay`/`minAmount` + funded float. Then `verify-test` ⇒ `runVerifyTest()`.
+- **Deployer (off the critical path):** `verify-sources` — publish the three contracts' Solidity source to the lane explorer (Etherscan v2; one `ETHERSCAN_API_KEY` covers all 4 lanes). Re-runnable + idempotent and recovers the **actual** on-chain constructor args via `--guess-constructor-args` (so it matches the deployer-owned/test-valued canary build); the same contracts persist through `handoff`, so this also verifies the production deploy. Changes no on-chain state.
 - **Aphyla:** `activate` ⇒ `runActivate()` — `setOraclePool(newPool)` + `grantRole(SYNC_ROLE, syncTrigger)`. Leaves admin + old automation intact. *(Reversible.)*
 
 ### Stage 1 — canary testing (Deployer)
 - `seed-test-weth` — deposit ETH→WETH and transfer ≥ test `minAmount` to the pool.
 - `simulate-sync` ⇒ `runSimulateSync()` — craft Keystone `metadata` (workflowOwner = deployer) + `report` (`abi.encode(syncTrigger, triggerSync.selector)`) and call `CREReceiver.onReport`. Runs `onReport → triggerSync → CustomSender.sync` (fee fronted from the SyncTrigger float — no value on the call, exactly like production). Validate `CallExecuted` + `Sync` + wstETH returns to the pool.
+- **Non-destructive fork rehearsal (keyless, CI):** `just -E .env.<net> test-<net>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an **in-process fork** of the live chain (`test_canarySyncOnDeployedAddresses`). It binds to the real on-chain canary addresses from `config/state/l2-<net>.deployed.yaml` — auto-detected as deployer-owned via `verifyCanaryStage1` — and **skips the deploy**; with no `.deployed.yaml` it falls back to a fresh on-fork deploy (so the same recipe runs pre- and post-`deploy-test`). Costs no gas, needs no key, mutates no real state: the CI-runnable sibling of `simulate-sync` (which broadcasts for real). Point its RPC at a mainnet upstream; it also forks L1, so `L1_RPC_URL` is required. Refuses to run (loud `require`) if the supplied addresses are deployed but past the canary stage (handed off / sealed).
 
 ### 1 → 0 — roll back (Aphyla)
 - `rollback` ⇒ `runRollback()` — `setOraclePool(oldPool)` + `revokeRole(SYNC_ROLE, syncTrigger)`. The old automation was never revoked, so the predecessor system is fully restored.

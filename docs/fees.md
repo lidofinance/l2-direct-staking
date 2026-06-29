@@ -262,8 +262,8 @@ Order-of-magnitude on the `gasLimit` bump: at the [measured fee slopes](#consequ
 
 - Constants live in `script/<net>/<Net>MigrationConstants.sol` (`L2_SYNC_DESTINATION_MAX_FEE`, `L2_SYNC_DESTINATION_GAS_LIMIT`).
 - New SyncTrigger deploys pick up the values via the `SyncTrigger` constructor (the `feeOtoD` arg that `L2UpgradeActions.deploySyncTrigger` builds from these constants).
-- For SyncTriggers already deployed before the bump, the lever is owner-only `setFeeOtoD` (the LOL multisig; per [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state)); the source-of-truth bytes are the constants in `script/<net>/<Net>MigrationConstants.sol`, which `verify-stage1` keccak-compares against `SyncTrigger`'s stored blobs (`script/shared/L2UpgradeActions.s.sol`), so any future bump must update those constants in lockstep with the on-chain change.
-- The byte-for-byte fee encodings are derived from those constants by `FeeCodec` in `lib/chainlink-csr` (`encodeCCIP` for FeeOtoD, the per-network `encode*L1toL2` for FeeDtoO) and pinned by the `verify-stage1` keccak check above. state-mate also re-checks them post-migration: the shared wiring `config/state/l2.yaml` asserts `getFeeOtoD` / `getFeeDtoO` / `getMaxFees` against the per-lane `config/state/l2-<net>.inputs.yaml` anchors, which `verify-constants-sync` cross-checks against `FeeCodec(constants)` (see [DOC.md §5.2](../DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way)). Refund mechanics, failure modes, and per-network differences are in the [Failure modes and recovery](#failure-modes-and-recovery) and [L1→L2 vs L2→L1](#l1l2-vs-l2l1--why-the-two-legs-differ) sections above.
+- For SyncTriggers already deployed before the bump, the lever is owner-only `setFeeOtoD` (the LOL multisig; per [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state)); the source-of-truth bytes are the constants in `script/<net>/<Net>MigrationConstants.sol`, which `verify-test` (`runVerifyTest`) keccak-compares against `SyncTrigger`'s stored blobs (`script/shared/L2UpgradeActions.s.sol`), so any future bump must update those constants in lockstep with the on-chain change.
+- The byte-for-byte fee encodings are derived from those constants by `FeeCodec` in `lib/chainlink-csr` (`encodeCCIP` for FeeOtoD, the per-network `encode*L1toL2` for FeeDtoO) and pinned by the `verify-test` keccak check above. state-mate also re-checks them post-migration: the shared wiring `config/state/l2.yaml` asserts `getFeeOtoD` / `getFeeDtoO` / `getMaxFees` against the per-lane `config/state/l2-<net>.inputs.yaml` anchors, which `verify-constants-sync` cross-checks against `FeeCodec(constants)` (see [DOC.md §5.2](../DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way)). Refund mechanics, failure modes, and per-network differences are in the [Failure modes and recovery](#failure-modes-and-recovery) and [L1→L2 vs L2→L1](#l1l2-vs-l2l1--why-the-two-legs-differ) sections above.
 - **After any post-deploy `setFeeDtoO`, re-validate off-chain — the on-chain check won't catch a
   lane-mismatched blob.** `setFeeDtoO` enforces only the generic `len>=17`, so update the lane's
   `config/state/l2-<net>.inputs.yaml` `feeDtoO` anchor (and the matching `<Net>MigrationConstants.sol`
@@ -425,11 +425,11 @@ automatically. The mechanics:
   (`sweep()` is owner-only = LOL multisig, `src/SyncTrigger.sol:288` — a Safe transaction). So
   size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
   "fill it up", and refill from the [§5 alert](monitoring.md#5-capacity--headroom--medium).
-- **Initial funding is part of `deploy-stage1` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
+- **Initial funding is part of `deploy-test` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
   the amount is pinned as `L2_SYNC_TRIGGER_INITIAL_FLOAT` in each network's `MigrationConstants` (0.5 ETH),
-  sent from the Lido Deployer wallet during the Stage-1 broadcast. The script reverts with
+  sent from the Lido Deployer wallet during the canary deploy broadcast. The script reverts with
   `L2UpgradeFloatBelowFloor` if the constant doesn't cover one worst-case sync (`maxFee + feeDtoO`), and
-  both the in-broadcast assert and `verify-stage1` read the balance back. Fork-test coverage:
+  both the in-broadcast assert and `verify-test` read the balance back. Fork-test coverage:
   `test_productionDeployFundsSyncTriggerFloatForFirstSync` runs the first sync on the script-funded float
   alone — no test-side `vm.deal`.
 - LINK fee payment is **not supported**: both fee setters reject `payInLink == true`, the constructor
@@ -552,7 +552,7 @@ in the table after it describes the *reactive* case where the limit was already 
    so this is a LOL multisig transaction, not a full governance round-trip: **coordinate signers** and front-run it from the
    80% alert, not from the breach.
 4. **Lockstep the oracle**: update the fee constants in `script/<net>/<Net>MigrationConstants.sol` — the
-   bytes `verify-stage1` keccak-checks against the on-chain blobs (per [Operational handoff](#operational-handoff)) —
+   bytes `verify-test` keccak-checks against the on-chain blobs (per [Operational handoff](#operational-handoff)) —
    **and** the matching `config/state/l2-<net>.inputs.yaml` `feeOtoD` / `feeDtoO` anchors, which the live
    state-mate run now pins (`getFeeOtoD` / `getFeeDtoO`) and `verify-constants-sync` cross-checks against
    `FeeCodec(constants)`. Keep all three in lockstep with the on-chain change.

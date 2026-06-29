@@ -33,8 +33,9 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
   L1_RPC_URL=https://...                 # Ethereum mainnet (same in all 4 files)
   L2_RPC_URL=https://...                 # this L2's RPC
   L2_NETWORK=linea                       # optimism|arbitrum|base|linea
-  L2_LIDO_DEPLOYER_PRIVATE_KEY=0x...     # Stage 1 signer
-  INITIAL_OWNER_PRIVATE_KEY=0x...        # Stage 2 signer (cold key)
+  L2_LIDO_DEPLOYER_PRIVATE_KEY=0x...     # Lido Deployer — signs deploy-test + handoff
+  INITIAL_OWNER_PRIVATE_KEY=0x...        # Initial Owner (cold key) — signs activate + finalize
+  ETHERSCAN_API_KEY=...                  # etherscan.io v2 key (one key, all 4 lanes) — for `verify-sources`
   # Pinned per network in <Lane>MigrationConstants.sol and read directly by the forge scripts — NOT env
   # vars (verified by `just verify-constants-sync`): the L2 governance executor, the predecessor OraclePool
   # (rollback target), the CRE forwarder, and the Lido DAO Agent. See the table below for their values.
@@ -140,7 +141,7 @@ pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 
 ### Sequence overview (all stages)
 
-The full migration as ordered transactions per signer — companion to the Stage 1 / Stage 2 / L1 / seed steps detailed below.
+The full migration as ordered transactions per signer — companion to the canary-deploy / handoff / finalize / L1 / seed steps detailed below.
 
 ```mermaid
 %%{init: {"sequence": {"diagramMarginX": 8, "diagramMarginY": 8, "actorMargin": 24, "width": 90, "height": 56, "boxMargin": 6, "boxTextMargin": 4, "noteMargin": 6, "messageMargin": 12}}}%%
@@ -255,6 +256,9 @@ just -E .env.<network> activate             # Initial Owner: setOraclePool(new) 
 #   REVERSIBLE — admin + the legacy automation's SYNC_ROLE are left intact (so `rollback` is clean).
 just -E .env.<network> verify-test          # verify (in-description): infra deployer-owned, pool repointed,
 #   SYNC_ROLE granted, Initial Owner still admin, float funded. Run before simulate-sync (asserts full float).
+just -E .env.<network> verify-sources       # publish pool+trigger+receiver SOURCE to the lane explorer
+#   (Etherscan v2; needs ETHERSCAN_API_KEY). Off the critical path, re-runnable + idempotent; reads the actual
+#   on-chain constructor args, and the same contracts persist to production, so this covers the prod deploy too.
 ```
 
 ### Stage 1 — canary sync test — Duty: **Lido Deployer**, per network
@@ -265,6 +269,8 @@ just -E .env.<network> seed-test-weth       # deposit ETH→WETH + transfer ≥ 
 just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly (deployer = forwarder + author):
 #   onReport → triggerSync → CustomSender.sync; fee fronted from the trigger float (no value on the call).
 ```
+
+> **Non-destructive fork rehearsal (keyless, CI).** `just -E .env.<network> test-<network>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an in-process fork of the live chain, binding to the real on-chain canary from `config/state/l2-<network>.deployed.yaml` (auto-detected deployer-owned via `verifyCanaryStage1` — **skips the deploy**; falls back to a fresh on-fork deploy if absent). Costs no gas, mutates no real state — the CI sibling of `simulate-sync`. Point its RPC at a mainnet upstream; `L1_RPC_URL` required. See [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md).
 
 > **Rollback (1→0).** If the test is unsatisfactory: `just -E .env.<network> rollback` (Initial Owner) repoints `CustomSender` at the pinned predecessor OraclePool and revokes the new trigger's `SYNC_ROLE`. The legacy automation was never touched, so the predecessor system is fully restored. Reversibility is **control-plane only** — wstETH already synced to L1 + in-flight CCIP messages cannot be undone (the wstETH is `sweep`-recoverable from the test pool). Offered **only from Stage 1**; after handoff the contracts are LOL's.
 
@@ -297,7 +303,7 @@ just -E .env.<any-network> migrate-l1       # ONCE: L1 Receiver admin + L1 Proxy
 ```
 Requires **G3**. ⚠️ **The L1 seal is the action that ends external control of the shared receiver — run it LAST and keep the "all L2s sealed → L1 sealed" window short.** Until it lands, the external Initial Owner retains upgrade power over the receiver that serves every chain (see `DOC.md` §6.4). The Initial Owner's external-admin window now also spans the canary test (Stages 1–2) per lane — bound it.
 
-**Def — transaction count:** the canary adds per-lane test/handoff txs over the old two-shot flow: ~5 deploy + 1 activate + 1 simulated-sync (+ a WETH seed) in Stage 1, ~6 in `handoff`, then 4 in `finalize` (5 for Linea), plus 3 on L1. The exact count is not load-bearing — the **gates**, not a tx tally, decide admissibility.
+**Def — transaction count:** per lane the canary runs ~5 deploy + 1 activate + 1 simulated-sync (+ a WETH seed) in Stage 1, ~6 in `handoff`, then 4 in `finalize` (5 for Linea), plus 3 on L1. The exact count is not load-bearing — the **gates**, not a tx tally, decide admissibility.
 
 ---
 

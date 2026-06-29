@@ -12,32 +12,29 @@ import {CREReceiver} from "src/cre/CREReceiver.sol";
 /**
  * @notice Shared broadcast script for L2 upgrade operations.
  *
- * The migration is split into two stages, each executed by a distinct actor:
+ * The migration runs as a canary state machine — the three contracts are deployed owned by the Lido
+ * Deployer (with the deployer wired as the CREReceiver forwarder + author so a real sync can be driven),
+ * proven end-to-end, then handed to the LOL multisig and sealed to governance:
  *
- *   Stage 1 — runDeploy()   Actor: Lido Deployer
- *   Stage 2 — runMigrate()  Actor: Initial Owner
+ *   Stage 0→1 — runDeployTest()  Actor: Lido Deployer  (deploy deployer-owned, test delay/min-amount)
+ *   Stage 0→1 — runActivate()    Actor: Initial Owner  (reversible: repoint pool + grant SYNC_ROLE)
+ *   Stage  1  — runSimulateSync() Actor: Lido Deployer  (drive CREReceiver.onReport directly)
+ *   Stage 1→0 — runRollback()    Actor: Initial Owner  (undo activate — repoint old pool + revoke role)
+ *   Stage 1→2 — runHandoff()     Actor: Lido Deployer  (restore production config, transfer to LOL)
+ *   Stage 2→3 — runFinalize()    Actor: Initial Owner  (irreversible: revoke old automation, seal admin)
  *
- * Convenience:
- *   run()                        — chains Stage 1 + Stage 2 (requires both keys)
- *   runWithUnlockedInitialOwner() — same, but impersonates Initial Owner on anvil
+ * Each broadcast step has a read-only verifier (runVerifyTest / runVerifyStage2) and an anvil-rehearsal
+ * `*Unlocked` twin that impersonates the Initial Owner.
  *
  * The governance executor, predecessor OraclePool, and CRE forwarder are sourced ONLY from the per-network
  * constants (_expectedGovernanceExecutor / _expectedOldOraclePool / _expectedCREForwarder, cross-checked to
  * the .inputs.yaml anchors by verify-constants-sync) — never from env.
  *
- * Required env per stage:
- *
- *   runDeploy:
- *     - L2_LIDO_DEPLOYER_PRIVATE_KEY
- *     - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
- *
- *   runMigrate:
- *     - INITIAL_OWNER_PRIVATE_KEY
- *     - L2_ORACLE_POOL (output of runDeploy)
- *     - L2_SYNC_TRIGGER (output of runDeploy)
- *     - L2_CRE_RECEIVER (output of runDeploy)
- *     - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
- *
+ * Required env:
+ *   - L2_LIDO_DEPLOYER_PRIVATE_KEY (deployer-actor steps)
+ *   - INITIAL_OWNER_PRIVATE_KEY (initial-owner-actor steps; *Unlocked twins impersonate instead)
+ *   - L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER (output of runDeployTest; consumed by later steps)
+ *   - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
  */
 abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     // ── Network hooks ────────────────────────────────────────────────
@@ -148,66 +145,6 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     function _oldOraclePool() internal pure returns (address oldOraclePool) {
         oldOraclePool = _expectedOldOraclePool();
         if (oldOraclePool == address(0)) revert L2UpgradeOldOraclePoolNotPinned();
-    }
-
-    // ── Deploy helper ────────────────────────────────────────────────
-
-    function _deployAll(L2UpgradeConfig memory cfg, address creForwarder)
-        internal
-        returns (address oraclePool, address syncTrigger, address creReceiverAddr)
-    {
-        oraclePool = address(deployPool(cfg));
-        // The CRE workflow is registered under the LOL multisig (Safe) via `cre workflow deploy
-        // --unsigned`, executed from the Safe — so the workflow owner recorded in
-        // `metadata.workflowOwner` is the Safe (= `cfg.liquidityOwner`). We pin `_expectedAuthor` to
-        // that Safe address, the same entity that owns the CREReceiver. The Lido Deployer EOA only
-        // broadcasts this Stage-1 deploy (transiently owning the CREReceiver until it is handed to the
-        // Safe); it is NOT the workflow owner. See ADR-0001 and DOC.md §3.2.
-        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
-    }
-
-    // ── Stage 1: Lido Deployer ───────────────────────────────────────
-
-    /// @notice Deploy new OraclePool + CREReceiver + a fully-configured SyncTrigger (owned by the LOL multisig from construction). Actor: Lido Deployer.
-    function runDeploy() public returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
-        assertL2ChainId(_expectedChainId());
-
-        uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
-        address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = _governanceExecutor();
-        address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _creForwarder();
-
-        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-
-        vm.startBroadcast(lidoDeployerPrivateKey);
-        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder);
-        vm.stopBroadcast();
-    }
-
-    // ── Stage 1 verification (read-only, between Stage 1 and Stage 2) ─
-
-    /// @notice Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run. Actor: anyone.
-    /// @dev Required env: L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER
-    ///      (the CRE forwarder is pinned per network in code, not env).
-    ///      The CREReceiver.expectedAuthor pin is the LOL multisig (= liquidity owner / CRE workflow owner),
-    ///      sourced from L2_LIQUIDITY_OWNER (or the network's default LOL multisig) — not the broadcasting EOA.
-    function runVerifyStage1() public view {
-        assertL2ChainId(_expectedChainId());
-
-        address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = _governanceExecutor();
-        address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _creForwarder();
-        // The CRE workflow owner pinned as expectedAuthor is the LOL multisig (Safe), the same
-        // address that owns the CREReceiver — see ADR-0001 / DOC.md §3.2.
-        address expectedAuthor = liquidityOwner;
-        address oraclePool = vm.envAddress("L2_ORACLE_POOL");
-        address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        address creReceiverAddr = vm.envAddress("L2_CRE_RECEIVER");
-
-        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-        verifyStage1(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor);
     }
 
     // ── Canary test flow (deployer-simulated CRE) ────────────────────
@@ -422,109 +359,4 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         console2.log("INITIAL_FLOAT=%s", vm.toString(uint256(cfg.syncTriggerInitialFloat)));
     }
 
-    // ── Stage 2: Initial Owner ───────────────────────────────────────
-
-    /// @notice Migrate admin roles on existing contracts to final owners. Actor: Initial Owner.
-    function runMigrate() public virtual {
-        uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
-        _runMigrateBody(vm.addr(initialOwnerPrivateKey), initialOwnerPrivateKey);
-    }
-
-    /// @notice Same as runMigrate but impersonates Initial Owner (anvil only).
-    function runMigrateUnlocked() public virtual {
-        _runMigrateBody(_envInitialOwnerAddress(), 0);
-    }
-
-    /// @dev Shared Stage-2 body for both the production broadcast (a nonzero `initialOwnerPrivateKey`
-    ///      signs) and the anvil rehearsal (`initialOwnerPrivateKey == 0` impersonates `initialOwner`).
-    ///      Keeping one body guarantees the rehearsal exercises exactly the env reads and preconditions
-    ///      the production migrate does — they cannot drift apart.
-    function _runMigrateBody(address initialOwner, uint256 initialOwnerPrivateKey) internal {
-        assertL2ChainId(_expectedChainId());
-
-        address governanceExecutor = _governanceExecutor();
-        address liquidityOwner = _envLiquidityOwnerAddress();
-        address oraclePool = vm.envAddress("L2_ORACLE_POOL");
-        address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
-        // needed by executeMigrationSteps' Stage-1-completeness precondition.
-        address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
-        address creForwarder = _creForwarder();
-
-        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-
-        // A nonzero key signs the production broadcast; 0 is the anvil-rehearsal sentinel (impersonate
-        // the Initial Owner address). vm.addr(0) is never a valid signer, so the paths cannot collide.
-        if (initialOwnerPrivateKey != 0) {
-            vm.startBroadcast(initialOwnerPrivateKey);
-        } else {
-            vm.startBroadcast(initialOwner);
-        }
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiver, creForwarder);
-        vm.stopBroadcast();
-    }
-
-    // ── Convenience: Stage 1 + Stage 2 ──────────────────────────────
-
-    error L2UpgradeSingleRunUnsafe(uint256 chainId);
-
-    /// @dev L2 mainnet chain-IDs: Optimism (10), Arbitrum (42161), Base (8453), Linea (59144).
-    ///      Stages 1 and 2 are run by different actors in production; chaining them in one broadcast
-    ///      requires both keys co-located, which defeats the separation. Override with
-    ///      `ALLOW_UNSAFE_COMBINED_RUN=1` (acceptable only for fork / testnet).
-    function _isProductionL2ChainId(uint256 id) private pure returns (bool) {
-        return id == 10 || id == 42161 || id == 8453 || id == 59144;
-    }
-
-    function _guardCombinedRun() internal view {
-        assertL2ChainId(_expectedChainId());
-        if (!_isProductionL2ChainId(block.chainid)) return;
-        if (vm.envOr("ALLOW_UNSAFE_COMBINED_RUN", uint256(0)) == 1) return;
-        revert L2UpgradeSingleRunUnsafe(block.chainid);
-    }
-
-    /// @notice Deploy + migrate in one call (requires both deployer and initial owner keys).
-    /// @dev Blocked on mainnet unless `ALLOW_UNSAFE_COMBINED_RUN=1` is explicitly set. Stages 1 and 2
-    ///      are run by different actors (Lido Deployer vs Initial Owner) in production; chaining them
-    ///      in one broadcast requires both keys to be co-located, which defeats the separation.
-    function run() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
-        _guardCombinedRun();
-
-        uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
-        uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
-        address initialOwner = vm.addr(initialOwnerPrivateKey);
-        address governanceExecutor = _governanceExecutor();
-        address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _creForwarder();
-
-        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-
-        vm.startBroadcast(lidoDeployerPrivateKey);
-        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder);
-        vm.stopBroadcast();
-
-        vm.startBroadcast(initialOwnerPrivateKey);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder);
-        vm.stopBroadcast();
-    }
-
-    /// @notice Deploy + migrate with impersonated initial owner (anvil only).
-    function runWithUnlockedInitialOwner() external returns (address oraclePool, address syncTrigger, address creReceiverAddr) {
-        _guardCombinedRun();
-
-        uint256 lidoDeployerPrivateKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
-        address initialOwner = _envInitialOwnerAddress();
-        address governanceExecutor = _governanceExecutor();
-        address liquidityOwner = _envLiquidityOwnerAddress();
-        address creForwarder = _creForwarder();
-
-        L2UpgradeConfig memory cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-
-        vm.startBroadcast(lidoDeployerPrivateKey);
-        (oraclePool, syncTrigger, creReceiverAddr) = _deployAll(cfg, creForwarder);
-        vm.stopBroadcast();
-
-        vm.startBroadcast(initialOwner);
-        executeMigrationSteps(cfg, oraclePool, syncTrigger, creReceiverAddr, creForwarder);
-        vm.stopBroadcast();
-    }
 }

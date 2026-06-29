@@ -1,6 +1,14 @@
 # https://just.systems
 
+# Load multiple dotenv files: shared `.env` (secrets/keys) PLUS the per-network
+# `.env.${NETWORK}` overlay (https://github.com/casey/just/issues/1748). List values
+# for dotenv settings require `set lists`, which is gated behind `set unstable`.
+# Select the overlay with e.g. `NETWORK=optimism just <recipe>`; when NETWORK is
+# unset the path degrades to `.env.` (a missing file just silently skips).
+set unstable
+set lists := true
 set dotenv-load
+set dotenv-filename := [".env", x'.env.${NETWORK:-}']
 
 # Default recipe: list all available recipes (runs on bare `just`).
 default:
@@ -58,29 +66,24 @@ setup:
 #      account exists or can pay gas, so an unfunded signer otherwise only fails mid-broadcast.
 #      Advisory only (WARN/PASS/INFO, never fatal): zero balance / below the recommended buffer
 #      (L2_DEPLOYER_MIN_BALANCE_ETH, default 0.01) WARN; skipped when no signer key is in the env,
-#      so preflight stays usable as a pure read-only lane gate (just RPC_<NET>, no keys).
+#      so preflight stays usable as a pure read-only lane gate (just L2_RPC_URL, no keys).
 #
 # The 12 h window matches L2_SYNC_DELAY (minSyncDelay) configured on each
 # network's SyncAutomation / SyncTrigger; past 12 h since the last sync, the
 # upkeep can't have fired again and any in-flight CCIP+bridge round-trip has
 # had time to settle (real CCIP latency is normally minutes-to-low-hours).
 #
-# Required env: L2_NETWORK + one of:
-#   RPC_<NET>  (shell export: RPC_OPTIMISM / RPC_ARBITRUM / RPC_BASE / RPC_LINEA)
-#   L2_RPC_URL (legacy, loaded from .env.<network>)
+# Required env (loaded from the .env.<network> overlay selected via NETWORK=<network>):
 #   L2_NETWORK ∈ {optimism, arbitrum, base, linea}
+#   L2_RPC_URL
 #
-# Usage: just preflight-check              (with RPC_<NET> in env)
-#        just -E .env.<network> preflight-check  (legacy .env file)
+# Usage: NETWORK=<network> just preflight-check  (loads .env + .env.<network>)
 preflight-check:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    # Resolve L2 RPC: prefer RPC_<NET> (shell env), fall back to L2_RPC_URL (legacy .env file).
-    _net_upper=$(echo "$L2_NETWORK" | tr '[:lower:]' '[:upper:]')
-    _rpc_var="RPC_${_net_upper}"
-    L2_RPC_URL="${!_rpc_var:-${L2_RPC_URL:-}}"
-    : "${L2_RPC_URL:?Set ${_rpc_var} (or legacy L2_RPC_URL) for $L2_NETWORK}"
+    # L2 RPC comes from L2_RPC_URL, defined by the selected .env.<network> overlay.
+    : "${L2_RPC_URL:?Set L2_RPC_URL in .env.$L2_NETWORK}"
 
     case "$L2_NETWORK" in
       optimism) EXPECTED_CHAIN_ID=10    ; SENDER=0x328de900860816d29D1367F6903a24D8ed40C997 ; POOL=0x6F357d53d6bE3238180316BA5F8f11467e164588 ; OLD_SYNC=0x3776CC14ce997827F7A87091018Daa1739dc2790 ; WETH=0x4200000000000000000000000000000000000006 ; WSTETH=0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb ;;
@@ -141,13 +144,13 @@ preflight-check:
     if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
       die "chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID for $L2_NETWORK"
     fi
-    # RPC_<NET> shares its name with the fork-test env (local anvil forks of these networks);
-    # a fork preserves the upstream chain id, so the check above cannot tell fork from live.
-    # A stale head block means a fork or badly lagging node — refuse to gate the migration on it.
+    # L2_RPC_URL may point at a local anvil fork (the fork-test env); a fork preserves the
+    # upstream chain id, so the check above cannot tell fork from live. A stale head block means
+    # a fork or badly lagging node — refuse to gate the migration on it.
     head_ts=$(parse_cast_num "$(cast block latest --field timestamp --rpc-url "$L2_RPC_URL")")
     head_age=$(( $(date +%s) - head_ts ))
     if (( head_age > 600 )); then
-      die "RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live $L2_NETWORK (check \$${_rpc_var})"
+      die "RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live $L2_NETWORK (check \$L2_RPC_URL)"
     fi
     pass "chain-id = $actual_chain_id (head block ${head_age}s old)"
 
@@ -317,11 +320,11 @@ preflight-check:
     fi
 
     step "[7/7] CHECK Stage signing account(s) set up and funded for gas on $L2_NETWORK"
-    # Preflight doubles as a read-only lane gate (run with only RPC_<NET>, no keys), so this step
+    # Preflight doubles as a read-only lane gate (run with only L2_RPC_URL, no keys), so this step
     # vets whichever signer key is actually present in the env — the Stage-1 deployer and the
-    # Stage-2 / L1-migration Initial Owner are different cold keys. With `just -E .env.<network>
-    # preflight-check` the .env file's keys are loaded, so the signer for the stage you're about to
-    # run gets checked here, before forge spends gas. Advisory only (never `die`): funding/stage
+    # Stage-2 / L1-migration Initial Owner are different cold keys. With `NETWORK=<network> just
+    # preflight-check` the .env.<network> file's keys are loaded, so the signer for the stage you're
+    # about to run gets checked here, before forge spends gas. Advisory only (never `die`): funding/stage
     # context is ambiguous from preflight's vantage (e.g. a deployer that already ran Stage 1 may
     # legitimately be near-empty when you're now running Stage 2), so a low/zero balance WARNs
     # loudly rather than aborting — forge itself still hard-fails an underfunded broadcast.
@@ -546,7 +549,7 @@ verify-constants-sync:
 
     # Same as expect_eq, but for anchors that live ONLY in a <stem>.deployed.yaml sibling. Those siblings
     # are deploy-time artifacts (no longer committed — see "fix: update state-mate config"): the per-lane
-    # l2-<net>.deployed.yaml is written by `just deploy-stage1`, the l1/extras ones are produced at
+    # l2-<net>.deployed.yaml is written by `just deploy-test`, the l1/extras ones are produced at
     # verification time. On a pre-deploy / audit checkout the file is legitimately absent, so SKIP rather
     # than report false drift. When the file IS present the check runs exactly like expect_eq — a genuine
     # rename/missing-anchor still FAILs.
@@ -715,13 +718,13 @@ verify-constants-sync:
 
     echo
     echo "[shared L1 yaml: $L1_YAML — L1 receiver, ProxyAdmin, immutables]"
-    # These three live only in the l1.deployed.yaml sibling (a deploy/verify-time artifact). The
-    # receiver + ProxyAdmin addresses are additionally cross-checked against Solidity via the justfile
-    # hardcodes below, so deferring them here when the sibling is absent loses no coverage for those two.
-    l1_deployed="config/state/l1.deployed.yaml"
-    expect_eq_deferred "l1LidoCustomReceiver → L1_LIDO_CUSTOM_RECEIVER"          "$sol_l1_recv"       "$(yml_anchor "$L1_YAML" l1LidoCustomReceiver)"      "$l1_deployed"
-    expect_eq_deferred "l1LidoCustomReceiverImpl → L1_LIDO_CUSTOM_RECEIVER_IMPL" "$sol_l1_recv_impl"  "$(yml_anchor "$L1_YAML" l1LidoCustomReceiverImpl)"  "$l1_deployed"
-    expect_eq_deferred "l1ProxyAdmin → L1_PROXY_ADMIN"                           "$sol_l1_proxy"      "$(yml_anchor "$L1_YAML" l1ProxyAdmin)"              "$l1_deployed"
+    # Receiver / impl / ProxyAdmin are PRE-EXISTING upstream contracts the L1 Stage-2 step only
+    # re-owns (it deploys nothing on L1), so they are fixed externals in l1.inputs.yaml — checked
+    # unconditionally (the receiver + ProxyAdmin are additionally cross-checked via the justfile
+    # hardcodes below).
+    expect_eq "l1LidoCustomReceiver → L1_LIDO_CUSTOM_RECEIVER"          "$sol_l1_recv"       "$(yml_anchor "$L1_YAML" l1LidoCustomReceiver)"
+    expect_eq "l1LidoCustomReceiverImpl → L1_LIDO_CUSTOM_RECEIVER_IMPL" "$sol_l1_recv_impl"  "$(yml_anchor "$L1_YAML" l1LidoCustomReceiverImpl)"
+    expect_eq "l1ProxyAdmin → L1_PROXY_ADMIN"                           "$sol_l1_proxy"      "$(yml_anchor "$L1_YAML" l1ProxyAdmin)"
     expect_eq "lidoDaoAgent → LIDO_DAO_AGENT"                                    "$sol_dao_agent"     "$(yml_anchor "$L1_YAML" lidoDaoAgent)"
     expect_eq "initialOwner → INITIAL_OWNER"                                     "$sol_initial_owner" "$(yml_anchor "$L1_YAML" initialOwner)"
     expect_eq "l1Weth → L1_WETH"                                                 "$sol_l1_weth"       "$(yml_anchor "$L1_YAML" l1Weth)"
@@ -749,7 +752,7 @@ verify-constants-sync:
     echo "===================================================================="
     if (( fail_count == 0 )); then
       echo "OK $pass_count duplicates in sync with Solidity."
-      (( skip_count > 0 )) && echo "   ($skip_count deferred — their .deployed.yaml sibling is absent; it is produced at deploy/verify time, e.g. 'just deploy-stage1')"
+      (( skip_count > 0 )) && echo "   ($skip_count deferred — their .deployed.yaml sibling is absent; it is produced at deploy/verify time, e.g. 'just deploy-test')"
     else
       echo "FAIL $fail_count drift(s) detected ($pass_count OK)."
       echo "     Fix the duplicate to match Solidity (canonical),"
@@ -964,27 +967,6 @@ verify-externals-coverage:
     fi
     echo "===================================================================="
 
-# Read-only verification that Stage 1 deploy is complete, correct, and Stage 2 has NOT yet run.
-# Run after `runDeploy` and before `runMigrate`. Callable by anyone (no private key needed).
-#
-# Usage: just -E .env.<network> verify-stage1
-#
-# Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL,
-#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, and
-#   L2_LIQUIDITY_OWNER (the LOL multisig pinned as CREReceiver.expectedAuthor; defaults to the
-#   network LOL multisig when unset). The governance executor and CRE Forwarder are pinned per network in code.
-verify-stage1:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
-    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-
-    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
-    forge script "$SCRIPT" --sig 'runVerifyStage1()' --rpc-url "$L2_RPC_URL"
-
 # Read-only verification that a CRE workflow is registered on the Chainlink WorkflowRegistry
 # (Ethereum mainnet) and owned by the LOL multisig (Safe). Run after `cre workflow deploy` (executed
 # from the Safe) for each network. Callable by anyone (no private key needed).
@@ -1022,7 +1004,7 @@ verify-cre-workflow:
       --sig 'run(bytes32)' "$CRE_WORKFLOW_ID" --rpc-url "$L1_RPC_URL"
 
 # Rewrite the CRE workflow config for the current network with the deployed SyncTrigger
-# + CREReceiver addresses. Run after Stage 1 (`runDeploy`) before `cre workflow deploy`.
+# + CREReceiver addresses. Run after the canary deploy (`deploy-test`) before `deploy-cre-workflow`.
 #
 # Usage: just -E .env.<network> update-cre-config
 #
@@ -1038,8 +1020,8 @@ update-cre-config:
     esac
 
     command -v jq >/dev/null 2>&1 || { echo "Missing required command: jq" >&2; exit 1; }
-    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it in .env.$L2_NETWORK from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-test output}"
 
     CONFIG="cre-workflows/sync-automation/config.deploy.$L2_NETWORK.json"
     [[ -f "$CONFIG" ]] || { echo "Missing config: $CONFIG" >&2; exit 1; }
@@ -1123,9 +1105,9 @@ deploy-test:
       echo "===================================================================="
 
       # Regenerate the committed state-mate `.deployed.yaml` sibling so the 3→4 `state-mate` step has a
-      # current target (the canary IS the production deploy path; parity with `deploy-stage1`). The canary
-      # redeploys the three contracts but reuses the existing CustomSender proxy/impl + ProxyAdmin, which
-      # are carried over; only the three Stage-1 outputs are refreshed from the broadcast JSON above.
+      # current target (the canary IS the production deploy path). The canary redeploys the three contracts
+      # but reuses the existing CustomSender proxy/impl + ProxyAdmin, which are carried over; only the three
+      # Stage-1 outputs are refreshed from the broadcast JSON above.
       deployed_file="config/state/l2-$L2_NETWORK.deployed.yaml"
       if [[ -f "$deployed_file" ]]; then
         preserved=()
@@ -1140,6 +1122,64 @@ deploy-test:
     else
       echo "WARN broadcast JSON not found at $bcast; record addresses from the forge log above." >&2
     fi
+
+# Publish the three deployed contracts' Solidity SOURCE to the lane's block explorer (Etherscan v2).
+# This is explorer source-publishing — NOT the on-chain state/config checks the other `verify-*`
+# recipes do (those compare live state against pinned constants; this only affects the explorer).
+#
+# Re-runnable and decoupled from `deploy-test`: it reads the deployed addresses from env and recovers
+# each contract's ACTUAL constructor args from chain via forge's --guess-constructor-args. The canary
+# deploys with deployer-owned infra + the overlay test values, so re-deriving args from constants
+# would NOT match the deployed bytecode — let forge read what was actually deployed. Compiler settings
+# (solc 0.8.34 / evm osaka / default optimizer) come from foundry.toml automatically, so the standard
+# JSON matches the deployed bytecode by construction — do not set a different FOUNDRY_PROFILE.
+#
+# If a lane's explorer endpoint ever regresses, add: --verifier-url 'https://api.etherscan.io/v2/api'
+# (Linea, chain 59144, is the most likely to need a re-run.) Verification is idempotent — safe to re-run.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL, L2_SYNC_TRIGGER,
+#   L2_CRE_RECEIVER, ETHERSCAN_API_KEY (an etherscan.io v2 key; one key covers all 4 lanes via --chain).
+#
+# Usage: just -E .env.<network> verify-sources
+verify-sources:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+    : "${ETHERSCAN_API_KEY:?ETHERSCAN_API_KEY is required; export an etherscan.io v2 API key before running}"
+    for c in cast forge; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
+
+    chain_id=$(cast chain-id --rpc-url "$L2_RPC_URL" | tr -d '\r\n')
+    echo "Publishing canary sources for $L2_NETWORK (chain $chain_id) to the Etherscan v2 explorer:"
+    echo "  PausableImmutableOraclePool $L2_ORACLE_POOL"
+    echo "  SyncTrigger                 $L2_SYNC_TRIGGER"
+    echo "  CREReceiver                 $L2_CRE_RECEIVER"
+
+    fail=0
+    verify() { # <label> <address> <path:Name>
+      echo
+      echo "→ $1  $3 @ $2"
+      if forge verify-contract "$2" "$3" \
+           --chain "$chain_id" --rpc-url "$L2_RPC_URL" \
+           --etherscan-api-key "$ETHERSCAN_API_KEY" \
+           --guess-constructor-args --watch; then
+        echo "   OK $1"
+      else
+        echo "   FAIL $1 — re-run after fixing (verification is idempotent)" >&2
+        fail=1
+      fi
+    }
+    verify pool     "$L2_ORACLE_POOL"  "lib/chainlink-csr/contracts/utils/PausableImmutableOraclePool.sol:PausableImmutableOraclePool"
+    verify trigger  "$L2_SYNC_TRIGGER" "src/SyncTrigger.sol:SyncTrigger"
+    verify receiver "$L2_CRE_RECEIVER" "src/cre/CREReceiver.sol:CREReceiver"
+    if [[ $fail -eq 0 ]]; then
+      echo
+      echo "All three sources verified on the $L2_NETWORK explorer."
+    fi
+    exit $fail
 
 # Stage 0→1 verify (read-only): canary infra deployed + deployer-owned, pool repointed, SYNC_ROLE
 # granted, seal not run. Run right after `activate`, before `simulate-sync` (it asserts the full float).
@@ -1319,64 +1359,6 @@ finalize:
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runFinalize()' --rpc-url "$L2_RPC_URL" --broadcast
 
-# ───────────────────────── Legacy one-shot flow (fork tests / fallback) ─────────────────────────
-
-# Stage 1 — deploy new OraclePool, SyncTrigger, CREReceiver (per network).
-# Actor: Lido Deployer. After forge broadcast, the recipe parses the broadcast
-# JSON and prints the three deployed addresses as export-ready KEY=VALUE lines
-# so the operator can copy them straight into .env.<network> for verify-stage1 /
-# update-cre-config / migrate-stage2.
-#
-# Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL,
-#   L2_LIDO_DEPLOYER_PRIVATE_KEY.
-#   (The governance executor and CRE Forwarder are pinned per network in code — see
-#    _expectedGovernanceExecutor / _expectedCREForwarder — not env vars.)
-# Optional env: L2_LIQUIDITY_OWNER (defaults to network LOL multisig).
-#
-# Usage: just -E .env.<network> deploy-stage1
-deploy-stage1:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
-    : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runDeploy(); export it before running}"
-    for c in jq yq cast; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
-
-    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
-    forge script "$SCRIPT" --sig 'runDeploy()' --rpc-url "$L2_RPC_URL" --broadcast
-
-    chain_id=$(cast chain-id --rpc-url "$L2_RPC_URL" | tr -d '\r\n')
-    bcast="broadcast/$(basename "${SCRIPT%:*}")/${chain_id}/runDeploy-latest.json"
-    if [[ -f "$bcast" ]]; then
-      pool=$(jq -r '[.transactions[] | select(.contractName == "PausableImmutableOraclePool")][0].contractAddress' "$bcast")
-      trigger=$(jq -r '[.transactions[] | select(.contractName == "SyncTrigger")][0].contractAddress' "$bcast")
-      receiver=$(jq -r '[.transactions[] | select(.contractName == "CREReceiver")][0].contractAddress' "$bcast")
-      echo
-      echo "===================================================================="
-      echo "Stage 1 deployed for $L2_NETWORK — copy these into .env.$L2_NETWORK:"
-      echo "  export L2_ORACLE_POOL=$(cast to-check-sum-address "$pool")"
-      echo "  export L2_SYNC_TRIGGER=$(cast to-check-sum-address "$trigger")"
-      echo "  export L2_CRE_RECEIVER=$(cast to-check-sum-address "$receiver")"
-      echo "===================================================================="
-
-      # Regenerate the committed state-mate `.deployed.yaml` sibling. The pre-existing addresses
-      # (CustomSender proxy/impl + ProxyAdmin) are stable and carried over from the existing file;
-      # only the three Stage-1 outputs are refreshed from the broadcast JSON above.
-      deployed_file="config/state/l2-$L2_NETWORK.deployed.yaml"
-      if [[ -f "$deployed_file" ]]; then
-        preserved=()
-        for anchor in l2CustomSender l2CustomSenderImpl l2ProxyAdmin; do
-          preserved+=("$(yq ".. | select(anchor == \"$anchor\")" "$deployed_file" 2>/dev/null | tr -d '"' | head -n1)")
-        done
-        bash script/shared/write-deployed-yaml.sh "$deployed_file" "${preserved[@]}" "$pool" "$trigger" "$receiver"
-        echo "  → updated $deployed_file — review the diff and commit it alongside the migration."
-      else
-        echo "WARN $deployed_file not found; skipping .deployed.yaml generation." >&2
-      fi
-    else
-      echo "WARN broadcast JSON not found at $bcast; record addresses from the forge log above." >&2
-    fi
-
 # Deploy the CRE workflow for <network> via the `cre` CLI, OWNED BY THE LOL MULTISIG (Safe).
 # Run after `update-cre-config` has populated the deploy config with the live SyncTrigger and
 # CREReceiver addresses.
@@ -1399,7 +1381,7 @@ deploy-cre-workflow:
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
     : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK (used to read CREReceiver.getExpectedAuthor())}"
-    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-test output}"
 
     case "$L2_NETWORK" in
       optimism|arbitrum|base|linea) ;;
@@ -1443,37 +1425,6 @@ deploy-cre-workflow:
     echo "The Safe address becomes the workflow owner == CREReceiver.expectedAuthor."
     echo "Then record CRE_WORKFLOW_ID= in .env.$L2_NETWORK and run 'just -E .env.$L2_NETWORK verify-cre-workflow'."
     echo "===================================================================="
-
-# Stage 2 — migrate L2 admin (per network). Atomically: setOraclePool(new pool);
-# grant SYNC_ROLE to new SyncTrigger and revoke from legacy automation(s);
-# rotate DEFAULT_ADMIN on CustomSender from Initial Owner to L2 Governance Executor;
-# transfer L2 ProxyAdmin ownership to L2 Governance Executor.
-# Actor: Initial Owner (cold key).
-#
-# Usage: just -E .env.<network> migrate-stage2
-#
-# Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL,
-#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, INITIAL_OWNER_PRIVATE_KEY.
-#   (The CRE Forwarder is pinned per network in code — see _expectedCREForwarder.)
-# Optional env: L2_LIQUIDITY_OWNER (defaults to network LOL multisig).
-# (runMigrate() reads L2_CRE_RECEIVER for executeMigrationSteps' Stage-1-completeness precondition.)
-migrate-stage2:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
-    : "${INITIAL_OWNER_PRIVATE_KEY:?required for runMigrate(); export it before running}"
-    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required by runMigrate(); populate it in .env.$L2_NETWORK from deploy-stage1 output}"
-
-    for addr in "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"; do
-      [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ && "$addr" != "0x0000000000000000000000000000000000000000" ]] \
-        || { echo "Bad address: $addr (expected 0x + 40 hex chars, non-zero)" >&2; exit 1; }
-    done
-
-    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
-    forge script "$SCRIPT" --sig 'runMigrate()' --rpc-url "$L2_RPC_URL" --broadcast
 
 # L1 admin migration (runs ONCE — shared across all networks). Grants DEFAULT_ADMIN
 # on the L1 LidoCustomReceiver to the Lido DAO Agent and revokes from the Initial
@@ -1819,7 +1770,7 @@ quote-ccip-fee-by-amount:
 #
 # Honest degradation (no false "OK"): a reverted/empty read prints WARN/SKIP, never OK. Deployed
 # addresses (SyncTrigger/CREReceiver/OraclePool) come from config/state/l2-<net>.deployed.yaml when
-# present, else those rows SKIP with a "run after deploy-stage1" note — but CustomSender + the new pool
+# present, else those rows SKIP with a "run after deploy-test" note — but CustomSender + the new pool
 # are still derived LIVE (oldPool.SENDER() → getOraclePool()) and cross-checked against the file, so a
 # stale/contaminated .deployed.yaml is caught, not trusted.
 #
@@ -2010,7 +1961,7 @@ postflight-monitor:
 
       # ── SyncTrigger-centric rows (need the deployed trigger address) ──
       if ! is_addr "$DEP_TRIG"; then
-        SKIP "§1/§3/§5 SyncTrigger+CREReceiver rows — config/state/l2-${net}.deployed.yaml absent (run after deploy-stage1)"
+        SKIP "§1/§3/§5 SyncTrigger+CREReceiver rows — config/state/l2-${net}.deployed.yaml absent (run after deploy-test)"
       else
         TRIG="$DEP_TRIG"
         if is_addr "$SENDER"; then
@@ -2107,12 +2058,12 @@ postflight-monitor:
 # CustomSender.fastStake, and verify the staker actually received wstETH — a tiny end-to-end proof that
 # the migrated pool services fastStake, before the LOL multisig seeds full liquidity and announces go-live.
 #
-# MUST run AFTER migrate-stage2: fastStake routes through CustomSender.getOraclePool(), which only points
-# at the new pool post-migration. The recipe HARD-ABORTS unless the sender points at the target new pool
+# MUST run AFTER `activate`: fastStake routes through CustomSender.getOraclePool(), which only points
+# at the new pool once the canary activation has repointed it. The recipe HARD-ABORTS unless the sender points at the target new pool
 # (else it would seed the new pool but stake into the old one). The pool is a WETH->wstETH swap venue —
 # OraclePool.swap pays the staker out of the pool's wstETH reserve and reverts OraclePoolInsufficientTokenOut
 # if it is empty — so "fund the pool" means seeding wstETH, NOT ETH, and is distinct from the SyncTrigger
-# ETH float funded at deploy-stage1.
+# ETH float funded at deploy-test.
 #
 # DRY RUN BY DEFAULT: prints resolved values, runs every read-only precondition, prints the planned amounts
 # and SENDS NOTHING. Re-run with SMOKE_CONFIRM=yes to actually move funds (wstETH seed tx + fastStake tx).
@@ -2125,7 +2076,7 @@ postflight-monitor:
 #
 # Required env: L2_NETWORK; RPC_<NET> (or legacy L2_RPC_URL); L2_SMOKE_PRIVATE_KEY (the canary signer —
 #   must already hold a little wstETH to seed AND native ETH for the dust stake + gas).
-# New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-stage1) win; when unset they
+# New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-test) win; when unset they
 #   fall back to the l2OraclePool / l2CustomSender anchors in config/state/l2-<net>.deployed.yaml. Tokens,
 #   chain-id and the old pool come from config/state/l2-<net>.inputs.yaml (no new hardcodes here, so
 #   verify-constants-sync is unaffected).
@@ -2169,7 +2120,7 @@ smoke-stake:
     WETH="$(yq1 "$sm_inputs" l2Weth)"
     WSTETH="$(yq1 "$sm_inputs" l2Wsteth)"
     OLD_POOL="$(yq1 "$sm_inputs" l2OldOraclePool)"
-    # New pool + sender: env (printed by deploy-stage1) wins; else the .deployed.yaml anchors.
+    # New pool + sender: env (printed by deploy-test) wins; else the .deployed.yaml anchors.
     POOL="${L2_ORACLE_POOL:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2OraclePool || true )}"
     SENDER="${L2_CUSTOM_SENDER:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2CustomSender || true )}"
 
@@ -2215,12 +2166,12 @@ smoke-stake:
     echo "      PASS chain-id=$actual_chain_id (head ${head_age}s old)"
 
     # ── [2/4] Migration done: sender points at the NEW pool ──
-    echo "[2/4] CHECK CustomSender.getOraclePool() == new pool (migrate-stage2 done)"
+    echo "[2/4] CHECK CustomSender.getOraclePool() == new pool (activate done)"
     live_pool="$(parse_num "$(cast call "$SENDER" 'getOraclePool()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
     is_addr "$live_pool" || die "CustomSender.getOraclePool() unreadable at $SENDER (wrong sender address / RPC?)"
     if ! eqa "$live_pool" "$POOL"; then
       if is_addr "$OLD_POOL" && eqa "$live_pool" "$OLD_POOL"; then
-        die "CustomSender still points at the OLD pool ($live_pool) — run migrate-stage2 first (fastStake would hit the old pool)"
+        die "CustomSender still points at the OLD pool ($live_pool) — run activate first (fastStake would hit the old pool)"
       fi
       die "CustomSender.getOraclePool()=$live_pool != target new pool $POOL — refusing (would seed one pool, stake into another)"
     fi
@@ -2594,49 +2545,50 @@ _optimism-state-migrate rpc_url='':
     RPC_URL="$(resolve_rpc_url)"
     L2_LIQUIDITY_OWNER_RESOLVED="${L2_LIQUIDITY_OWNER:-$L2_GOVERNANCE_EXECUTOR}"
 
-    if [[ -n "${INITIAL_OWNER_PRIVATE_KEY:-}" ]]; then
-      INITIAL_OWNER_ADDRESS="$(address_from_private_key "$INITIAL_OWNER_PRIVATE_KEY")"
-      UPGRADE_SCRIPT_SIG="run()"
-      FORGE_UNLOCKED_ARGS=()
-    elif [[ -n "${L2_INITIAL_OWNER_PRIVATE_KEY:-}" ]]; then
-      INITIAL_OWNER_ADDRESS="$(address_from_private_key "$L2_INITIAL_OWNER_PRIVATE_KEY")"
-      UPGRADE_SCRIPT_SIG="run()"
-      FORGE_UNLOCKED_ARGS=()
+    # Initial-Owner-actor steps (activate, finalize): sign with the cold key when present, else
+    # impersonate on anvil. Deployer-actor steps (deploy-test, handoff) always sign with the deployer key.
+    OWNER_KEY="${INITIAL_OWNER_PRIVATE_KEY:-${L2_INITIAL_OWNER_PRIVATE_KEY:-}}"
+    if [[ -n "$OWNER_KEY" ]]; then
+      INITIAL_OWNER_ADDRESS="$(address_from_private_key "$OWNER_KEY")"
+      ACTIVATE_SIG="runActivate()"; FINALIZE_SIG="runFinalize()"
+      OWNER_FORGE_ARGS=()
     else
       INITIAL_OWNER_ADDRESS="${INITIAL_OWNER:-${L2_INITIAL_OWNER:-$INITIAL_OWNER_DEFAULT}}"
-      export INITIAL_OWNER="$INITIAL_OWNER_ADDRESS"
-      UPGRADE_SCRIPT_SIG="runWithUnlockedInitialOwner()"
-      FORGE_UNLOCKED_ARGS=(--unlocked --sender "$INITIAL_OWNER_ADDRESS")
+      ACTIVATE_SIG="runActivateUnlocked()"; FINALIZE_SIG="runFinalizeUnlocked()"
+      OWNER_FORGE_ARGS=(--unlocked --sender "$INITIAL_OWNER_ADDRESS")
     fi
+    export INITIAL_OWNER="$INITIAL_OWNER_ADDRESS"
 
     L2_LIDO_DEPLOYER_ADDRESS="$(address_from_private_key "$L2_LIDO_DEPLOYER_PRIVATE_KEY")"
     cast rpc --rpc-url "$RPC_URL" anvil_setBalance "$INITIAL_OWNER_ADDRESS" "$ANVIL_SIGNER_BALANCE_HEX" >/dev/null 2>&1 || true
     cast rpc --rpc-url "$RPC_URL" anvil_setBalance "$L2_LIDO_DEPLOYER_ADDRESS" "$ANVIL_SIGNER_BALANCE_HEX" >/dev/null 2>&1 || true
 
-    if [[ "$UPGRADE_SCRIPT_SIG" == "runWithUnlockedInitialOwner()" ]]; then
-      if ! cast rpc --rpc-url "$RPC_URL" anvil_impersonateAccount "$INITIAL_OWNER_ADDRESS" >/dev/null 2>&1; then
-        die "runWithUnlockedInitialOwner() requires an anvil-compatible RPC. Set INITIAL_OWNER_PRIVATE_KEY for arbitrary RPC endpoints."
-      fi
+    if [[ ${#OWNER_FORGE_ARGS[@]} -gt 0 ]]; then
+      cast rpc --rpc-url "$RPC_URL" anvil_impersonateAccount "$INITIAL_OWNER_ADDRESS" >/dev/null 2>&1 \
+        || die "Impersonating the Initial Owner requires an anvil-compatible RPC. Set INITIAL_OWNER_PRIVATE_KEY for arbitrary RPC endpoints."
     fi
 
-    DEPLOYER_NONCE_BEFORE="$(cast nonce "$L2_LIDO_DEPLOYER_ADDRESS" --rpc-url "$RPC_URL" | tr -d '\r\n')"
+    SCRIPT="script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript"
+    script_base="$(basename "${SCRIPT%:*}")"
+    chain_id="$(cast chain-id --rpc-url "$RPC_URL" | tr -d '\r\n')"
 
-    echo "Running OptimismL2UpgradeScript on ${RPC_URL}"
-    (
-      cd "$ROOT_DIR"
-      # Anvil forks inherit mainnet chain-id, so opt out of the production combined-run guard.
-      ALLOW_UNSAFE_COMBINED_RUN=1 \
-      forge script script/optimism/OptimismL2Upgrade.s.sol:OptimismL2UpgradeScript \
-        --sig "$UPGRADE_SCRIPT_SIG" \
-        --rpc-url "$RPC_URL" \
-        --broadcast \
-        --non-interactive \
-        "${FORGE_UNLOCKED_ARGS[@]}"
-    )
+    echo "Running OptimismL2UpgradeScript canary migration on ${RPC_URL}"
+    # Canary state machine: deploy-test → activate → handoff → finalize (the production recipe sequence).
+    # The deployer signs deploy-test + handoff; the Initial Owner (cold key or impersonated) signs
+    # activate + finalize. No combined run() — there is no combined-run guard left to opt out of.
+    ( cd "$ROOT_DIR"; forge script "$SCRIPT" --sig "runDeployTest()" --rpc-url "$RPC_URL" --broadcast --non-interactive )
 
-    ORACLE_POOL_ADDRESS="$(compute_create_address "$L2_LIDO_DEPLOYER_ADDRESS" "$DEPLOYER_NONCE_BEFORE")"
-    SYNC_TRIGGER_NONCE="$((DEPLOYER_NONCE_BEFORE + 1))"
-    SYNC_TRIGGER_ADDRESS="$(compute_create_address "$L2_LIDO_DEPLOYER_ADDRESS" "$SYNC_TRIGGER_NONCE")"
+    bcast="$ROOT_DIR/broadcast/${script_base}/${chain_id}/runDeployTest-latest.json"
+    [[ -f "$bcast" ]] || die "Missing broadcast JSON: $bcast"
+    ORACLE_POOL_ADDRESS="$(cast to-check-sum-address "$(jq -r '[.transactions[]|select(.contractName=="PausableImmutableOraclePool")][0].contractAddress' "$bcast")")"
+    SYNC_TRIGGER_ADDRESS="$(cast to-check-sum-address "$(jq -r '[.transactions[]|select(.contractName=="SyncTrigger")][0].contractAddress' "$bcast")")"
+    CRE_RECEIVER_ADDRESS="$(cast to-check-sum-address "$(jq -r '[.transactions[]|select(.contractName=="CREReceiver")][0].contractAddress' "$bcast")")"
+    # Export for the activate/handoff/finalize steps, which read the addresses from env.
+    export L2_ORACLE_POOL="$ORACLE_POOL_ADDRESS" L2_SYNC_TRIGGER="$SYNC_TRIGGER_ADDRESS" L2_CRE_RECEIVER="$CRE_RECEIVER_ADDRESS"
+
+    ( cd "$ROOT_DIR"; forge script "$SCRIPT" --sig "$ACTIVATE_SIG" --rpc-url "$RPC_URL" --broadcast --non-interactive "${OWNER_FORGE_ARGS[@]}" )
+    ( cd "$ROOT_DIR"; forge script "$SCRIPT" --sig "runHandoff()" --rpc-url "$RPC_URL" --broadcast --non-interactive )
+    ( cd "$ROOT_DIR"; forge script "$SCRIPT" --sig "$FINALIZE_SIG" --rpc-url "$RPC_URL" --broadcast --non-interactive "${OWNER_FORGE_ARGS[@]}" )
 
     printf '%s\n' \
       "L2_STATE_MATE_RPC_URL=${RPC_URL}" \
@@ -3133,28 +3085,30 @@ _acceptance-test:
       cast rpc --rpc-url "$fork_url" anvil_setBalance "$DEPLOYER_ADDR" "$ANVIL_BALANCE" >/dev/null
       cast rpc --rpc-url "$fork_url" anvil_setBalance "$INITIAL_OWNER" "$ANVIL_BALANCE" >/dev/null
 
-      # Stage 1+2: deploy + migrate
-      # ALLOW_UNSAFE_COMBINED_RUN=1 opts out of the production guard in L2UpgradeScriptBase
-      # (block.chainid is the upstream mainnet id because this is an anvil fork).
+      # Canary state machine: deploy-test → activate → handoff → finalize, mirroring the production
+      # recipe sequence. Each step is a separate broadcast by its real actor — the deployer signs
+      # deploy-test + handoff (its key is exported), and INITIAL_OWNER (auto-impersonated on the fork)
+      # signs activate + finalize. The deployer-owned canary deploys with the test delay/min-amount;
+      # handoff restores production config + transfers to the LOL multisig, and finalize performs the
+      # irreversible governance seal — reaching the same sealed production state the Step-3 state-mate
+      # (production profile) expects. The simulated CRE sync is exercised by the Step-4 forge suites
+      # and the standalone `simulate-sync` recipe, not re-driven here.
       # The CRE Forwarder is pinned per network in code (see _expectedCREForwarder), so no
       # L2_CRE_FORWARDER env is needed; the real forwarder isn't exercised here anyway because CRE
       # reports would need the actual off-chain DON to originate.
-      substep "Stages 1+2: deploy + migrate"
-      (
-        cd "$ROOT_DIR"
-        ALLOW_UNSAFE_COMBINED_RUN=1 \
-        forge script "${NET_SCRIPTS[$i]}" \
-          --sig "runWithUnlockedInitialOwner()" \
-          --rpc-url "$fork_url" \
-          --broadcast --non-interactive \
-          --unlocked --sender "$INITIAL_OWNER" 2>&1 | tail -5
-      )
-      # Read the actual deployed addresses from the forge broadcast JSON (robust against
-      # adding / removing intermediate setter txs that would shift nonces).
       script_file="${NET_SCRIPTS[$i]%:*}"
       script_base="$(basename "$script_file")"
       chain_id="$(cast chain-id --rpc-url "$fork_url" | tr -d '\r\n')"
-      bcast_json="$ROOT_DIR/broadcast/${script_base}/${chain_id}/runWithUnlockedInitialOwner-latest.json"
+      export INITIAL_OWNER
+
+      substep "0→1: deploy-test (deployer-owned canary)"
+      ( cd "$ROOT_DIR"
+        forge script "${NET_SCRIPTS[$i]}" --sig "runDeployTest()" \
+          --rpc-url "$fork_url" --broadcast --non-interactive 2>&1 | tail -5 )
+
+      # Read the actual deployed addresses from the runDeployTest broadcast JSON (robust against nonce
+      # shifts) and export them for the activate/handoff/finalize steps, which read them from env.
+      bcast_json="$ROOT_DIR/broadcast/${script_base}/${chain_id}/runDeployTest-latest.json"
       [[ -f "$bcast_json" ]] || die "Missing forge broadcast JSON: $bcast_json"
       pool_addr="$(jq -r '[.transactions[] | select(.contractName == "PausableImmutableOraclePool")][0].contractAddress' "$bcast_json")"
       trigger_addr="$(jq -r '[.transactions[] | select(.contractName == "SyncTrigger")][0].contractAddress' "$bcast_json")"
@@ -3162,6 +3116,25 @@ _acceptance-test:
       pool_addr="$(cast to-check-sum-address "$pool_addr")"
       trigger_addr="$(cast to-check-sum-address "$trigger_addr")"
       recv_addr="$(cast to-check-sum-address "$recv_addr")"
+      export L2_ORACLE_POOL="$pool_addr" L2_SYNC_TRIGGER="$trigger_addr" L2_CRE_RECEIVER="$recv_addr"
+
+      substep "0→1: activate (INITIAL_OWNER repoints pool + grants SYNC_ROLE)"
+      ( cd "$ROOT_DIR"
+        forge script "${NET_SCRIPTS[$i]}" --sig "runActivateUnlocked()" \
+          --rpc-url "$fork_url" --broadcast --non-interactive \
+          --unlocked --sender "$INITIAL_OWNER" 2>&1 | tail -5 )
+
+      substep "1→2: handoff (restore production config, transfer to LOL multisig)"
+      ( cd "$ROOT_DIR"
+        forge script "${NET_SCRIPTS[$i]}" --sig "runHandoff()" \
+          --rpc-url "$fork_url" --broadcast --non-interactive 2>&1 | tail -5 )
+
+      substep "2→3: finalize (irreversible governance seal)"
+      ( cd "$ROOT_DIR"
+        forge script "${NET_SCRIPTS[$i]}" --sig "runFinalizeUnlocked()" \
+          --rpc-url "$fork_url" --broadcast --non-interactive \
+          --unlocked --sender "$INITIAL_OWNER" 2>&1 | tail -5 )
+
       echo "  OraclePool: $pool_addr  SyncTrigger: $trigger_addr  CREReceiver: $recv_addr"
 
       DEPLOYED_POOLS+=("$pool_addr")
@@ -3326,6 +3299,81 @@ test-base-upgrade-state-verify-canary:
 test-linea-upgrade-state-verify-canary:
     @just _state-verify linea "" canary
 
+# Behavioral canary acceptance on a FORK against the real on-chain deployed addresses. Binds to the
+# canary when config/state/l2-<network>.deployed.yaml carries all three addresses AND the on-chain infra
+# is deployer-owned (verifyCanaryStage1) — skipping the deploy — else deploys fresh on the fork. Reads
+# the same delay/min-amount/float off-chain, so it's non-destructive + keyless: the CI sibling of the
+# on-chain `simulate-sync` real-broadcast path. The RPC should be a mainnet upstream (the test forks it
+# in-process); it also forks L1, so L1_RPC_URL is required.
+_canary-acceptance network rpc_url='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NET="{{network}}"
+    RPC_ARG="{{rpc_url}}"
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    command -v forge >/dev/null 2>&1 || { echo "Missing required command: forge" >&2; exit 1; }
+
+    # RPC precedence mirrors _state-verify: positional [rpc_url] > L2_RPC_URL > L2_STATE_MATE_RPC_URL > L2_<NET>_RPC_URL.
+    case "$NET" in
+      optimism) DEFAULT_RPC="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${L2_OPTIMISM_RPC_URL:-}}}"; CONTRACT=OptimismPoolUpgradeTest ;;
+      arbitrum) DEFAULT_RPC="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${L2_ARBITRUM_RPC_URL:-}}}"; CONTRACT=ArbitrumPoolUpgradeTest ;;
+      base)     DEFAULT_RPC="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${L2_BASE_RPC_URL:-}}}";     CONTRACT=BasePoolUpgradeTest ;;
+      linea)    DEFAULT_RPC="${L2_RPC_URL:-${L2_STATE_MATE_RPC_URL:-${L2_LINEA_RPC_URL:-}}}";     CONTRACT=LineaPoolUpgradeTest ;;
+      *) echo "Unknown network: $NET (one of: optimism|arbitrum|base|linea)" >&2; exit 1 ;;
+    esac
+    RPC_URL="${RPC_ARG:-$DEFAULT_RPC}"
+    [[ -n "$RPC_URL" ]] || { echo "Missing L2 RPC: pass [rpc_url], set L2_RPC_URL, or set the per-network L2_<NET>_RPC_URL" >&2; exit 1; }
+    : "${L1_RPC_URL:?L1_RPC_URL is required (the fork test base also forks L1)}"
+
+    # Export the per-network L2 RPC env var the fork-test base reads via _l2RpcUrl().
+    case "$NET" in
+      optimism) export L2_OPTIMISM_RPC_URL="$RPC_URL" ;;
+      base)     export L2_BASE_RPC_URL="$RPC_URL" ;;
+      linea)    export L2_LINEA_RPC_URL="$RPC_URL" ;;
+      arbitrum) export L2_ARBITRUM_RPC_URL="$RPC_URL" LOCAL_L2_ARBITRUM_RPC_URL="$RPC_URL" ;; # _envOr reads LOCAL first
+    esac
+
+    # Bind to the on-chain canary IF the generated sibling carries all three addresses; else fresh-deploy.
+    # (l2-<net>.deployed.yaml is generated by deploy-test and is absent in a fresh clone/CI,
+    # which is exactly when the fresh-deploy fallback is wanted.)
+    dep="$ROOT_DIR/config/state/l2-$NET.deployed.yaml"
+    re='^0x[0-9a-fA-F]{40}$'
+    if command -v yq >/dev/null 2>&1 && [[ -f "$dep" ]]; then
+      pool="$(yq '.. | select(anchor == "l2OraclePool")'  "$dep" 2>/dev/null | tr -d '"' | head -n1)"
+      trig="$(yq '.. | select(anchor == "l2SyncTrigger")' "$dep" 2>/dev/null | tr -d '"' | head -n1)"
+      recv="$(yq '.. | select(anchor == "l2CreReceiver")'  "$dep" 2>/dev/null | tr -d '"' | head -n1)"
+      if [[ "$pool" =~ $re && "$trig" =~ $re && "$recv" =~ $re ]]; then
+        export L2_ORACLE_POOL="$pool" L2_SYNC_TRIGGER="$trig" L2_CRE_RECEIVER="$recv"
+        echo "Canary acceptance ($NET): binding to on-chain addresses from $dep"
+        echo "  L2_ORACLE_POOL=$pool"
+        echo "  L2_SYNC_TRIGGER=$trig"
+        echo "  L2_CRE_RECEIVER=$recv"
+        [[ -n "${L2_TEST_DEPLOYER:-}" ]] && echo "  L2_TEST_DEPLOYER=$L2_TEST_DEPLOYER (else derived from on-chain owner)"
+      else
+        echo "Canary acceptance ($NET): $dep present but canary anchors empty -> fresh-deploy on fork"
+      fi
+    else
+      echo "Canary acceptance ($NET): no $dep (or yq) -> fresh-deploy on fork"
+    fi
+
+    echo "Forking $RPC_URL (+ L1 $L1_RPC_URL); running $CONTRACT::test_canarySyncOnDeployedAddresses"
+    cd "$ROOT_DIR"
+    forge test --match-contract "$CONTRACT" --match-test test_canarySyncOnDeployedAddresses -vv
+
+# Behavioral canary acceptance on a fork against the real deployed addresses (binds if present, else fresh
+# deploy). Usage: just -E .env.<network> test-<network>-canary-acceptance   (or pass an upstream RPC arg)
+test-optimism-canary-acceptance rpc_url='':
+    @just _canary-acceptance optimism "{{rpc_url}}"
+
+test-arbitrum-canary-acceptance rpc_url='':
+    @just _canary-acceptance arbitrum "{{rpc_url}}"
+
+test-base-canary-acceptance rpc_url='':
+    @just _canary-acceptance base "{{rpc_url}}"
+
+test-linea-canary-acceptance rpc_url='':
+    @just _canary-acceptance linea "{{rpc_url}}"
+
 # Legacy alias
 test-optimism-upgrade-state:
     @just _acceptance-test
@@ -3352,7 +3400,7 @@ _balances-l2 label address rpc_url weth wsteth:
 # <net>.deployed.yaml (.deployed.l1/.l2 anchors), tokens from <net>.inputs.yaml (.externals anchors).
 balances-l1:
     @echo "--- L1 (Ethereum) ---"
-    @just _balances-l1 LidoCustomReceiver "$(yq '.deployed.l1[] | select(anchor == "l1LidoCustomReceiver")' config/state/l1.deployed.yaml)" "$L1_RPC_URL" "$(yq '.externals[] | select(anchor == "l1Weth")' config/state/l1.inputs.yaml)" "$(yq '.externals[] | select(anchor == "l1Wsteth")' config/state/l1.inputs.yaml)"
+    @just _balances-l1 LidoCustomReceiver "$(yq '.externals[] | select(anchor == "l1LidoCustomReceiver")' config/state/l1.inputs.yaml)" "$L1_RPC_URL" "$(yq '.externals[] | select(anchor == "l1Weth")' config/state/l1.inputs.yaml)" "$(yq '.externals[] | select(anchor == "l1Wsteth")' config/state/l1.inputs.yaml)"
 
 # Print CustomSender + OraclePool balances for one L2 lane. Deployed addrs come from
 # config/state/l2-<net>.deployed.yaml; WETH/wstETH token addrs from l2-<net>.inputs.yaml

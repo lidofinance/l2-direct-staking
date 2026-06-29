@@ -241,9 +241,10 @@ four L1 adapters, `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper`.)
 - **Bounded blast radius.** Once handed off both are owned by the LOL multisig
   (deployer-owned during the canary test), and the §3.4 kill switches disable them *without* an upgrade.
 - **Open items.** (1) No third-party audit artifact is in-repo — recommended
-  before/with mainnet rollout if not covered externally. (2) Independently confirm the
-  deployed bytecode is source-verified on each block explorer (state-mate pins the
-  impl address, not source verification).
+  before/with mainnet rollout if not covered externally. (2) Source-verify the deployed
+  bytecode on each block explorer with `just verify-sources` (Etherscan v2), then
+  independently confirm it shows verified — state-mate pins the impl address, not
+  source verification.
 
 ### 2.7 Why `SyncTrigger` and `CREReceiver` are two contracts, not one
 

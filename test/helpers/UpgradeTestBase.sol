@@ -185,31 +185,48 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         newPool = deployPool(cfg);
     }
 
+    /// @dev Drive the full canary state machine to its sealed end state — deploy-test → activate → handoff
+    ///      → finalize — exactly the recipe sequence an operator runs in production. The deployer-owned
+    ///      canary is deployed with the test delay/min-amount ({_deployCanaryL2}); {handoffToLiquidityOwner}
+    ///      then RESTORES production config (real forwarder + LOL author + production delay/amounts) and
+    ///      transfers all three contracts to the LOL multisig, and {finalizeGovernanceSeal} performs the
+    ///      irreversible admin/ProxyAdmin seal to the governance executor. The end state (pool active,
+    ///      SYNC_ROLE granted, LOL-owned, governance-sealed, production-configured) is what the
+    ///      post-migration assertions below expect, so they are unchanged.
+    function _deployAndMigrateL2Canary()
+        internal
+        returns (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver)
+    {
+        (PausableImmutableOraclePool pool, SyncTrigger trigger, CREReceiver receiver) = _deployCanaryL2();
+        newPool = pool;
+        newSyncTrigger = address(trigger);
+        newCREReceiver = receiver;
+
+        // Production cfg drives handoff/finalize: handoff reads cfg.minSyncDelay / cfg.minSyncAmount to
+        // RESTORE the production values (the canary deployed with the low test values) and rewires the
+        // CREReceiver from the deployer to the real forwarder + LOL author.
+        L2UpgradeConfig memory cfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        address realForwarder = makeAddr("creForwarder");
+
+        // Stage 1→2 (Deployer, current owner of all three): sweep test residue, restore production config,
+        // transfer to the LOL multisig.
+        vm.startPrank(lidoStage1Deployer);
+        sweepTestResidue(cfg, address(newPool), lidoStage1Deployer);
+        handoffToLiquidityOwner(cfg, address(newPool), newSyncTrigger, address(newCREReceiver), realForwarder);
+        vm.stopPrank();
+
+        // Stage 2→3 (Initial Owner): irreversible governance seal.
+        vm.startPrank(INITIAL_OWNER);
+        finalizeGovernanceSeal(cfg, address(newPool), newSyncTrigger, address(newCREReceiver), realForwarder);
+        vm.stopPrank();
+    }
+
     function _deployAndMigrateL2WithSyncTrigger()
         internal
         returns (PausableImmutableOraclePool newPool, address newSyncTrigger)
     {
-        vm.selectFork(l2Fork);
-
-        L2UpgradeConfig memory cfg =
-            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
-
-        // Stage 1: Deploy + configure full sync infrastructure (SyncTrigger + CREReceiver, wired),
-        // mirroring production so the Stage-2 precondition is satisfied.
-        newPool = _deployL2Pool(cfg);
-
-        address creForwarder = makeAddr("creForwarder");
-        address creReceiver;
-        vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
-        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
-        (newSyncTrigger, creReceiver) =
-            deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
-        vm.stopPrank();
-
-        // Stage 2: Migrate existing contracts (as Initial Owner)
-        vm.startPrank(INITIAL_OWNER);
-        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, creReceiver, creForwarder);
-        vm.stopPrank();
+        (newPool, newSyncTrigger,) = _deployAndMigrateL2Canary();
     }
 
     function _deployAndMigrateL2() internal returns (PausableImmutableOraclePool newPool) {
@@ -220,33 +237,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         internal
         returns (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver)
     {
-        vm.selectFork(l2Fork);
-
-        L2UpgradeConfig memory cfg =
-            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
-
-        // Stage 1: Deploy + configure (as Lido Deployer)
-        address lidoDeployer = lidoStage1Deployer;
-        newPool = _deployL2Pool(cfg);
-
-        // The deploy funds the SyncTrigger's fee float from the deployer's balance (production
-        // parity — see fundSyncTrigger), so the pranked deployer must hold it.
-        vm.deal(lidoDeployer, cfg.syncTriggerInitialFloat);
-        address creForwarder = makeAddr("creForwarder");
-        vm.startPrank(lidoDeployer);
-        address creReceiverAddr;
-        // expectedAuthor (3rd arg) is the LOL multisig (= cfg.liquidityOwner), NOT the deployer:
-        // the CRE workflow is registered under the Safe via `cre workflow deploy --unsigned`, so
-        // metadata.workflowOwner is the Safe. The deployer only broadcasts Stage 1. See ADR-0001.
-        (newSyncTrigger, creReceiverAddr) =
-            deploySyncInfrastructure(cfg, creForwarder, cfg.liquidityOwner);
-        newCREReceiver = CREReceiver(payable(creReceiverAddr));
-        vm.stopPrank();
-
-        // Stage 2: Migrate existing contracts (as Initial Owner)
-        vm.startPrank(INITIAL_OWNER);
-        executeMigrationSteps(cfg, address(newPool), newSyncTrigger, creReceiverAddr, creForwarder);
-        vm.stopPrank();
+        return _deployAndMigrateL2Canary();
     }
 
     /// @dev Canary config = production config with the low test min-amount + delay so a small WETH seed
@@ -280,6 +271,63 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         vm.startPrank(INITIAL_OWNER);
         activateForTesting(cfg, address(newPool), st);
         vm.stopPrank();
+    }
+
+    /// @dev Acceptance seam. If the canary addresses are supplied via env (L2_ORACLE_POOL /
+    ///      L2_SYNC_TRIGGER / L2_CRE_RECEIVER — e.g. yq'd from config/state/l2-<net>.deployed.yaml by
+    ///      `just test-<net>-canary-acceptance`), BIND to those real on-chain contracts on the L2 fork,
+    ///      assert they are the deployer-owned canary, and SKIP the fresh deploy. Otherwise deploy a fresh
+    ///      canary via {_deployCanaryL2}. The returned `deployer` is the CRE forwarder + author that a
+    ///      bound `onReport` must be pranked as. This is the non-destructive, keyless fork counterpart of
+    ///      the on-chain `simulate-sync` real-broadcast recipe.
+    function _bindOrDeployCanaryL2()
+        internal
+        returns (PausableImmutableOraclePool pool, SyncTrigger trigger, CREReceiver receiver, address deployer)
+    {
+        address envPool = vm.envOr("L2_ORACLE_POOL", address(0));
+        address envTrigger = vm.envOr("L2_SYNC_TRIGGER", address(0));
+        address envReceiver = vm.envOr("L2_CRE_RECEIVER", address(0));
+
+        // No addresses supplied → fresh-deploy fallback (the default in CI / a fresh clone, where the
+        // generated l2-<net>.deployed.yaml — and hence these env vars — is absent).
+        if (envPool == address(0) || envTrigger == address(0) || envReceiver == address(0)) {
+            (pool, trigger, receiver) = _deployCanaryL2();
+            return (pool, trigger, receiver, lidoStage1Deployer);
+        }
+
+        // Bind to the real on-chain canary.
+        vm.selectFork(l2Fork);
+        pool = PausableImmutableOraclePool(envPool);
+        trigger = SyncTrigger(payable(envTrigger));
+        receiver = CREReceiver(payable(envReceiver));
+
+        address envDeployer = vm.envOr("L2_TEST_DEPLOYER", address(0));
+        deployer = envDeployer != address(0) ? envDeployer : Ownable(envPool).owner();
+
+        // Deployer fingerprint: all three contracts owned by the deployer, and the CREReceiver wired with
+        // the deployer as both forwarder and author (the deployer-as-CRE canary shape). Fail loudly if the
+        // supplied addresses are deployed but past the canary stage (handed off to LOL / sealed) rather
+        // than silently re-deploying over real state.
+        bool isCanary = Ownable(envPool).owner() == deployer && Ownable(envTrigger).owner() == deployer
+            && Ownable(envReceiver).owner() == deployer && receiver.getForwarder() == deployer
+            && receiver.getExpectedAuthor() == deployer;
+        require(
+            isCanary,
+            "canary-acceptance: L2_* addrs are deployed but not a deployer-owned canary (handed off / sealed?) - unset them to fresh-deploy"
+        );
+
+        // Hard-assert the full Stage-1 canary invariants against LIVE values. verifyCanaryStage1 ->
+        // _assertSyncInfrastructure checks delay/amounts/float against cfg, so mirror the on-chain delay +
+        // amounts (a canary may legitimately carry different test values than the _canaryCfg literals) and
+        // top up the float on the fork (a prior on-chain simulate-sync may have drawn it down). The fee /
+        // gasLimit / selector fields keep their production values from _canaryCfg, matching the deploy.
+        L2UpgradeConfig memory cfg = _canaryCfg();
+        (uint128 minA, uint128 maxA) = trigger.getAmounts();
+        cfg.minSyncAmount = minA;
+        cfg.maxSyncAmount = maxA;
+        cfg.minSyncDelay = trigger.getDelay();
+        vm.deal(envTrigger, cfg.syncTriggerInitialFloat);
+        verifyCanaryStage1(cfg, envPool, envTrigger, envReceiver, deployer);
     }
 
     function _deployAndMigrateL1() internal {
