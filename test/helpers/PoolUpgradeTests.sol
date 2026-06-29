@@ -833,6 +833,114 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertGt(newSyncTrigger.balance, initialFloat - maxNativeFee, "maxFee excess should refund to the trigger");
     }
 
+    // ──────────────── Canary flow (deployer-simulated CRE) ───────────────
+
+    /// @notice Full canary path: deploy deployer-owned + deployer-as-CRE → activate → simulate a sync via
+    ///         CREReceiver.onReport → handoff to LOL (restore real forwarder/author + production params) →
+    ///         seal governance. The end-state must match what the standard migration lands on.
+    function test_canaryDeployerSimulatedSyncAndHandoff() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver) = _deployCanaryL2();
+        address deployer = lidoStage1Deployer;
+
+        // Stage-1 invariants (cfg carries the test delay/min-amount).
+        verifyCanaryStage1(_canaryCfg(), address(newPool), address(syncTrigger), address(creReceiver), deployer);
+
+        // Seed WETH above the canary min, wait the canary delay, then drive a sync via onReport.
+        uint256 seed = 0.1 ether;
+        deal(L2_WETH, address(newPool), seed);
+        vm.warp(block.timestamp + 60);
+        assertEq(syncTrigger.shouldSyncAmount(), seed, "canary: sync due for the seeded WETH");
+
+        // Deployer is the configured forwarder AND author; craft the Keystone report and call onReport.
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), deployer);
+        bytes memory report = abi.encode(address(syncTrigger), abi.encodePacked(SyncTrigger.triggerSync.selector));
+        vm.prank(deployer);
+        creReceiver.onReport(metadata, report);
+        assertEq(IERC20(L2_WETH).balanceOf(address(newPool)), 0, "canary sync should pull the pool WETH");
+
+        // Stage 1→2 (Deployer): sweep residue, restore production config, transfer to LOL.
+        address realForwarder = makeAddr("creForwarder");
+        L2UpgradeConfig memory prodCfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        vm.deal(deployer, prodCfg.syncTriggerInitialFloat); // headroom for the float top-up
+        vm.startPrank(deployer);
+        sweepTestResidue(prodCfg, address(newPool), deployer);
+        handoffToLiquidityOwner(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        vm.stopPrank();
+
+        verifyCanaryStage2(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+
+        // Stage 2→3 (Initial Owner): the irreversible governance seal.
+        vm.startPrank(INITIAL_OWNER);
+        finalizeGovernanceSeal(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        vm.stopPrank();
+
+        // Final production state — the same invariants the standard migration lands on.
+        assertEq(newPool.owner(), lidoL2LiquidityOwner, "pool owner = LOL");
+        assertEq(Ownable(address(syncTrigger)).owner(), lidoL2LiquidityOwner, "trigger owner = LOL");
+        assertEq(Ownable(address(creReceiver)).owner(), lidoL2LiquidityOwner, "receiver owner = LOL");
+        assertEq(creReceiver.getExpectedAuthor(), lidoL2LiquidityOwner, "author restored to LOL");
+        assertEq(creReceiver.getForwarder(), realForwarder, "forwarder restored to real");
+        (uint128 minA, uint128 maxA) = syncTrigger.getAmounts();
+        assertEq(minA, L2_SYNC_MIN_AMOUNT, "min restored to production");
+        assertEq(maxA, L2_SYNC_MAX_AMOUNT, "max = production");
+        assertEq(syncTrigger.getDelay(), L2_SYNC_DELAY, "delay restored to production");
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, LIDO_L2_GOVERNANCE_EXECUTOR),
+            "admin = governance executor"
+        );
+        assertFalse(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "initial owner admin revoked"
+        );
+        assertEq(Ownable(L2_PROXY_ADMIN).owner(), LIDO_L2_GOVERNANCE_EXECUTOR, "L2 ProxyAdmin = governance executor");
+        _verifyOldAutomationsRevoked();
+    }
+
+    /// @notice 1→0 rollback: after activation, the Initial Owner repoints CustomSender at the old pool and
+    ///         revokes the new SyncTrigger's SYNC_ROLE. The old automation was never touched, so the
+    ///         predecessor system is fully restored.
+    function test_canaryRollbackRestoresOldPool() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,) = _deployCanaryL2();
+
+        assertEq(ICustomSender(L2_CUSTOM_SENDER).getOraclePool(), address(newPool), "pool activated");
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(syncTrigger)), "trigger has SYNC_ROLE");
+
+        vm.startPrank(INITIAL_OWNER);
+        rollbackActivation(_canaryCfg(), L2_OLD_ORACLE_POOL, address(syncTrigger));
+        vm.stopPrank();
+
+        assertEq(ICustomSender(L2_CUSTOM_SENDER).getOraclePool(), L2_OLD_ORACLE_POOL, "rolled back to old pool");
+        assertFalse(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(syncTrigger)), "trigger SYNC_ROLE revoked"
+        );
+        if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
+            assertTrue(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION),
+                "old automation SYNC_ROLE preserved for clean rollback"
+            );
+        }
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "admin still initial owner"
+        );
+    }
+
+    /// @notice Sealing before the LOL handoff must revert: the infra is still deployer-owned, so the
+    ///         {finalizeGovernanceSeal} interlock fails (owner != LOL) before any irreversible write.
+    function test_canaryFinalizeRevertsBeforeHandoff() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver) = _deployCanaryL2();
+        L2UpgradeConfig memory prodCfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        address realForwarder = makeAddr("creForwarder");
+
+        // `this.` so the external call is what expectRevert latches onto; the interlock reverts first.
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger owner"));
+        this.finalizeGovernanceSeal(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "admin untouched after revert"
+        );
+    }
+
     // ──────────────── Internal test helpers ──────────────────────────────
 
     function _deployAndLoadSyncTrigger()

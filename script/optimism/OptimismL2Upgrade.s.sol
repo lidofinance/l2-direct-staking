@@ -69,4 +69,8 @@ contract OptimismL2UpgradeScript is L2UpgradeScriptBase, OptimismL2Defaults {
     function _expectedCREForwarder() internal pure override returns (address) {
         return C.CRE_FORWARDER;
     }
+
+    function _expectedOldOraclePool() internal pure override returns (address) {
+        return C.L2_OLD_ORACLE_POOL;
+    }
 }

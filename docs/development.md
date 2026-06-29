@@ -54,7 +54,7 @@ Notes:
 - `test/CREIntegrationTest.t.sol` — 10 fork-based integration tests per network (Optimism, Arbitrum, Base, Linea = 40 total), covering the full CRE Forwarder → CREReceiver → SyncTrigger → sync path. Includes `test_productionExpectedAuthorIsLolMultisig`, which asserts the production deploy pins `expectedAuthor` to the **LOL multisig** (== owner == CRE workflow owner, ≠ the Stage-1 deployer EOA) and that a Safe-authored report is accepted while a deployer-authored report is rejected (ADR-0001)
 - `test/helpers/CREIntegrationTests.sol` — shared CRE test logic (same pattern as `PoolUpgradeTests.sol`)
 - `cre-workflows/sync-automation/main.test.ts` — 9 TypeScript tests for workflow encoding/decoding logic
-- `test/L2GovernanceExecutorGuard.t.sol` — RPC-free guard test for the migration's `L2_GOVERNANCE_EXECUTOR` validation (mainnet rejects a wrong executor; an opt-out network accepts any) — see [DOC.md §6.3](../DOC.md#63-how-the-final-state-is-verified)
+- `test/L2PinnedConstantsGuard.t.sol` — RPC-free guard test: the governance executor, predecessor OraclePool, and CRE forwarder resolve straight from the per-network constants (never env); a production lane returns its pinned values and an unpinned network reverts — see [DOC.md §6.3](../DOC.md#63-how-the-final-state-is-verified)
 
 ```sh
 # Unit tests only (no RPC required)
@@ -92,14 +92,15 @@ Purpose of each phase:
 
 Required env:
 - `L2_LIDO_DEPLOYER_PRIVATE_KEY`
-- `L2_GOVERNANCE_EXECUTOR`
+
+(The governance executor is pinned in `OptimismMigrationConstants.sol` and read by the recipe/script — not env.)
 
 RPC env:
 - For `test-optimism-upgrade-state`: one upstream source: `L2_STATE_MATE_UPSTREAM_RPC_URL` or `LOCAL_L2_OPTIMISM_RPC_URL` or `L2_OPTIMISM_RPC_URL`.
 - For split commands: pass `[rpc_url]`, or set `L2_STATE_MATE_RPC_URL` (fallback: migration output file, then `LOCAL_L2_OPTIMISM_RPC_URL`, `L2_OPTIMISM_RPC_URL`).
 
 Optional env:
-- `L2_LIQUIDITY_OWNER` (defaults to `L2_GOVERNANCE_EXECUTOR`)
+- `L2_LIQUIDITY_OWNER` (defaults to the pinned `LIDO_L2_GOVERNANCE_EXECUTOR` constant)
 - `INITIAL_OWNER_PRIVATE_KEY` (if omitted, migration uses unlocked/impersonated `INITIAL_OWNER` on anvil-compatible RPCs)
 - `INITIAL_OWNER` (defaults to `OptimismMigrationConstants.INITIAL_OWNER`)
 - `L2_STATE_MATE_FORK_PORT` (default: `8651`)
@@ -169,8 +170,7 @@ Expected: chain-id on :8650 → `1`, on :8651 → `59144`.
 
 ```sh
 export L2_NETWORK=linea
-export L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670   # LineaMigrationConstants
-# CRE forwarder is pinned per network in code (LineaMigrationConstants.CRE_FORWARDER) — no env needed
+# Governance executor, old pool, and CRE forwarder are pinned per network in code (LineaMigrationConstants) — no env needed
 L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1
 # → export L2_ORACLE_POOL=…  L2_SYNC_TRIGGER=…  L2_CRE_RECEIVER=…
 ```

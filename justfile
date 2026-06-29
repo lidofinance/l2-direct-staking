@@ -26,7 +26,7 @@ _l2-script-target network:
 setup:
     cd chainlink-csr && npm install --ignore-scripts && forge install
 
-# Per-network L2 preflight check. Six checks, in order:
+# Per-network L2 preflight check. Seven checks, in order:
 #   1. RPC chain-id matches expected.
 #   2. CustomSender contract has bytecode at the expected address.
 #   3. Legacy SyncAutomation.getLastExecution() age (Chainlink-Automation upkeep
@@ -51,6 +51,14 @@ setup:
 #        OnRamp 1.6.0 (Base, Arbitrum): getDynamicConfig() word 1 = feeQuoter, then
 #          FeeQuoter.getDestChainConfig(sel) word 3 (FeeQuoter 2.0.0) / word 4 (1.6.0)
 #      An unrecognized onRamp/FeeQuoter version WARN-skips instead of reading a wrong field.
+#   7. Stage signing account(s) set up + funded. For whichever signer private key is present in
+#      the env — L2_LIDO_DEPLOYER_PRIVATE_KEY (Stage 1 deploy) and/or INITIAL_OWNER_PRIVATE_KEY
+#      (Stage 2 / L1 migration) — derive the address and confirm it is a funded EOA on this lane.
+#      The deploy/migrate recipes only assert the key var is non-empty; nothing else checks the
+#      account exists or can pay gas, so an unfunded signer otherwise only fails mid-broadcast.
+#      Advisory only (WARN/PASS/INFO, never fatal): zero balance / below the recommended buffer
+#      (L2_DEPLOYER_MIN_BALANCE_ETH, default 0.01) WARN; skipped when no signer key is in the env,
+#      so preflight stays usable as a pure read-only lane gate (just RPC_<NET>, no keys).
 #
 # The 12 h window matches L2_SYNC_DELAY (minSyncDelay) configured on each
 # network's SyncAutomation / SyncTrigger; past 12 h since the last sync, the
@@ -82,21 +90,27 @@ preflight-check:
       *) echo "Unknown L2_NETWORK: $L2_NETWORK (expected: optimism|arbitrum|base|linea)" >&2; exit 2 ;;
     esac
 
-    echo "===================================================================="
-    echo "L2 PREFLIGHT CHECK: $L2_NETWORK"
-    echo "  RPC URL:            $L2_RPC_URL"
-    echo "  Expected chain-id:  $EXPECTED_CHAIN_ID"
-    echo "  CustomSender:       $SENDER"
-    echo "  Old oracle pool:    $POOL"
-    echo "  Pool WETH:          $WETH"
-    echo "  Pool wstETH:        $WSTETH"
-    echo "  Legacy SyncAuto:    $OLD_SYNC"
-    if [[ "$L2_NETWORK" == "linea" ]]; then
-      echo "  Legacy Gelato:      $LINEA_GELATO"
+    # ── Output coloring. Auto-disabled when stdout is not a TTY or NO_COLOR is set, so piped/CI logs
+    # stay plain (no stray escape bytes). Status lines route through these helpers — keyword colored,
+    # message text plain — the same helper-function idiom as `postflight-monitor`'s OK()/WARN()/INFO().
+    if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+      C_RST=$'\033[0m'; C_HDR=$'\033[1;36m'; C_STEP=$'\033[1m'
+      C_PASS=$'\033[1;32m'; C_WARN=$'\033[1;33m'; C_FAIL=$'\033[1;31m'; C_INFO=$'\033[36m'; C_DIM=$'\033[2m'
+    else
+      C_RST=''; C_HDR=''; C_STEP=''; C_PASS=''; C_WARN=''; C_FAIL=''; C_INFO=''; C_DIM=''
     fi
-    echo "===================================================================="
-
-    die() { echo "PREFLIGHT FAIL: $*" >&2; exit 1; }
+    # pass()/warn() tally into PASS_N/WARN_N for the end-of-run summary. (Use $((x+1)), never
+    # ((x++)) — the latter returns non-zero when the pre-increment value is 0 and would trip set -e.)
+    PASS_N=0; WARN_N=0
+    hdr()  { printf '%s%s%s\n' "$C_HDR"  "$*" "$C_RST"; }              # banner / section title (bold cyan)
+    step() { printf '%s%s%s\n' "$C_STEP" "$*" "$C_RST"; }             # "[n/7] CHECK ..." step header (bold)
+    pass() { PASS_N=$((PASS_N+1)); printf '      %sPASS%s %s\n' "$C_PASS" "$C_RST" "$*"; }   # green keyword
+    warn() { WARN_N=$((WARN_N+1)); printf '      %sWARN%s %s\n' "$C_WARN" "$C_RST" "$*"; }   # yellow keyword
+    info() { printf '      %sINFO%s %s\n' "$C_INFO" "$C_RST" "$*"; }   # cyan keyword (not tallied — purely informational)
+    cmd()  { printf '      %scmd:%s %s\n' "$C_DIM"  "$C_RST" "$*"; }   # dim — the example cast invocation
+    cont() { printf '           %s\n' "$*"; }                          # continuation / detail (plain, 11-sp indent)
+    # Hard-stop: red FAIL banner to stderr, then exit non-zero.
+    die() { printf '%sPREFLIGHT FAIL:%s %s\n' "$C_FAIL" "$C_RST" "$*" >&2; exit 1; }
 
     # Strip cast's "[1.234e9]" scientific-notation suffix and any whitespace.
     parse_cast_num() { local s="$1"; s="${s%%[*}"; s="${s%% *}"; printf '%s' "$s"; }
@@ -107,8 +121,22 @@ preflight-check:
       [[ "$code" != "0x" && -n "$code" ]]
     }
 
-    echo "[1/6] CHECK chain-id of RPC matches expected ($EXPECTED_CHAIN_ID)"
-    echo "      cmd: cast chain-id --rpc-url <rpc>"
+    hdr "===================================================================="
+    hdr "L2 PREFLIGHT CHECK: $L2_NETWORK"
+    echo "  RPC URL:            $L2_RPC_URL"
+    echo "  Expected chain-id:  $EXPECTED_CHAIN_ID"
+    echo "  CustomSender:       $SENDER"
+    echo "  Old oracle pool:    $POOL"
+    echo "  Pool WETH:          $WETH"
+    echo "  Pool wstETH:        $WSTETH"
+    echo "  Legacy SyncAuto:    $OLD_SYNC"
+    if [[ "$L2_NETWORK" == "linea" ]]; then
+      echo "  Legacy Gelato:      $LINEA_GELATO"
+    fi
+    hdr "===================================================================="
+
+    step "[1/7] CHECK chain-id of RPC matches expected ($EXPECTED_CHAIN_ID)"
+    cmd "cast chain-id --rpc-url <rpc>"
     actual_chain_id=$(cast chain-id --rpc-url "$L2_RPC_URL")
     if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
       die "chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID for $L2_NETWORK"
@@ -121,60 +149,60 @@ preflight-check:
     if (( head_age > 600 )); then
       die "RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live $L2_NETWORK (check \$${_rpc_var})"
     fi
-    echo "      PASS chain-id = $actual_chain_id (head block ${head_age}s old)"
+    pass "chain-id = $actual_chain_id (head block ${head_age}s old)"
 
-    echo "[2/6] CHECK CustomSender contract has bytecode at $SENDER"
-    echo "      cmd: cast code $SENDER --rpc-url <rpc>"
+    step "[2/7] CHECK CustomSender contract has bytecode at $SENDER"
+    cmd "cast code $SENDER --rpc-url <rpc>"
     if ! has_code "$SENDER"; then
       die "CustomSender $SENDER has no code on this RPC"
     fi
-    echo "      PASS bytecode present at CustomSender"
+    pass "bytecode present at CustomSender"
 
-    echo "[3/6] CHECK legacy SyncAutomation last execution age at $OLD_SYNC"
+    step "[3/7] CHECK legacy SyncAutomation last execution age at $OLD_SYNC"
     if ! has_code "$OLD_SYNC"; then
-      echo "      WARN no contract bytecode at $OLD_SYNC (legacy automation may already be revoked/replaced)"
+      warn "no contract bytecode at $OLD_SYNC (legacy automation may already be revoked/replaced)"
     else
-      echo "      cmd: cast call $OLD_SYNC 'getLastExecution()(uint48)' --rpc-url <rpc>"
+      cmd "cast call $OLD_SYNC 'getLastExecution()(uint48)' --rpc-url <rpc>"
       if ! last_exec_hex=$(cast call "$OLD_SYNC" "getLastExecution()(uint48)" --rpc-url "$L2_RPC_URL" 2>/dev/null); then
-        echo "      WARN $OLD_SYNC has bytecode but does not respond to getLastExecution() (different contract?)"
+        warn "$OLD_SYNC has bytecode but does not respond to getLastExecution() (different contract?)"
       else
         last_exec=$(parse_cast_num "$last_exec_hex")
         now=$(date +%s)
         age=$(( now - last_exec ))
-        echo "      INFO last legacy sync = $last_exec ($((age/3600))h $((age%3600/60))m ago)"
+        info "last legacy sync = $last_exec ($((age/3600))h $((age%3600/60))m ago)"
         if (( age < 12*3600 )); then
-          echo "      WARN last sync was <12h ago; CCIP round-trip may still be in flight (safe to proceed; see README §Migration ordering)."
+          warn "last sync was <12h ago; CCIP round-trip may still be in flight (safe to proceed; see README §Migration ordering)."
         else
-          echo "      PASS no auto-upkeep on this contract in >12h (legacy Chainlink path only — step 5 covers all paths)."
+          pass "no auto-upkeep on this contract in >12h (legacy Chainlink path only — step 5 covers all paths)."
         fi
       fi
     fi
     if [[ "$L2_NETWORK" == "linea" ]]; then
-      echo "      INFO Linea also has a separate Gelato automation at $LINEA_GELATO; check Gelato dashboard"
-      echo "           (https://app.gelato.network/) for pending Linea upkeeps before running Stage 2."
+      info "Linea also has a separate Gelato automation at $LINEA_GELATO; check Gelato dashboard"
+      cont "(https://app.gelato.network/) for pending Linea upkeeps before running Stage 2."
     fi
 
-    echo "[4/6] CHECK old oracle pool token balances (WETH + wstETH)"
+    step "[4/7] CHECK old oracle pool token balances (WETH + wstETH)"
     if ! has_code "$POOL"; then
-      echo "      WARN no contract bytecode at $POOL (old oracle pool unreachable on this RPC)"
+      warn "no contract bytecode at $POOL (old oracle pool unreachable on this RPC)"
     else
       report_balance() {
         local label="$1" token="$2"
-        echo "      cmd: cast call $token 'balanceOf(address)(uint256)' $POOL --rpc-url <rpc>  # $label"
+        cmd "cast call $token 'balanceOf(address)(uint256)' $POOL --rpc-url <rpc>  # $label"
         if raw=$(cast call "$token" "balanceOf(address)(uint256)" "$POOL" --rpc-url "$L2_RPC_URL" 2>/dev/null); then
           local wei ether
           wei=$(parse_cast_num "$raw")
           ether=$(cast from-wei "$wei" 2>/dev/null || echo "?")
-          echo "      INFO old pool $label balance = $wei wei (~ $ether $label)"
+          info "old pool $label balance = $wei wei (~ $ether $label)"
         else
-          echo "      WARN could not read $label balance for $POOL (token=$token may be wrong on this RPC)"
+          warn "could not read $label balance for $POOL (token=$token may be wrong on this RPC)"
         fi
       }
       report_balance WETH   "$WETH"
       report_balance wstETH "$WSTETH"
     fi
 
-    echo "[5/6] CHECK CustomSender 'Sync' events in last ~12h (catches every sync path)"
+    step "[5/7] CHECK CustomSender 'Sync' events in last ~12h (catches every sync path)"
     # topic0 of ICustomSender.Sync(address,uint64,bytes32,uint256); see lib/chainlink-csr/selectors.txt
     SYNC_TOPIC=0x2826f7440c9ba1050bcd2c586a60551875ac8951ec73f01df55ef00b59ae1a9c
     latest_block=$(cast block-number --rpc-url "$L2_RPC_URL" | tr -d '\r\n')
@@ -188,33 +216,33 @@ preflight-check:
       (( ts_per_1000 > 0 )) || ts_per_1000=2000
       twelve_h_blocks=$(( 12 * 3600 * 1000 / ts_per_1000 ))
       from_block=$(( latest_block - twelve_h_blocks ))
-      echo "      cmd: cast logs --json --from-block $from_block --to-block latest --address $SENDER '$SYNC_TOPIC' --rpc-url <rpc>"
+      cmd "cast logs --json --from-block $from_block --to-block latest --address $SENDER '$SYNC_TOPIC' --rpc-url <rpc>"
       if logs_json=$(cast logs --json --from-block "$from_block" --to-block latest \
                       --address "$SENDER" "$SYNC_TOPIC" \
                       --rpc-url "$L2_RPC_URL" 2>&1); then
         count=$(printf '%s' "$logs_json" | jq 'length' 2>/dev/null || echo 0)
         if [[ "${count:-0}" -eq 0 ]]; then
-          echo "      PASS 0 Sync events on $SENDER in last ~12h ($twelve_h_blocks blocks scanned; 1000-block probe spanned ${ts_per_1000}s)"
+          pass "0 Sync events on $SENDER in last ~12h ($twelve_h_blocks blocks scanned; 1000-block probe spanned ${ts_per_1000}s)"
         else
-          echo "      WARN $count Sync event(s) on $SENDER in last ~12h — a CCIP message may still be in flight."
+          warn "$count Sync event(s) on $SENDER in last ~12h — a CCIP message may still be in flight."
           last_block_hex=$(printf '%s' "$logs_json" | jq -r '.[-1].blockNumber' 2>/dev/null)
           if [[ -n "$last_block_hex" && "$last_block_hex" != "null" ]]; then
             last_block_dec=$(cast --to-dec "$last_block_hex" 2>/dev/null || echo "$last_block_hex")
-            echo "           most recent at block $last_block_dec; check https://ccip.chain.link/ for pending."
+            cont "most recent at block $last_block_dec; check https://ccip.chain.link/ for pending."
           fi
-          echo "           Proceeding is SAFE: in-flight wstETH lands in the old pool by design (see README §Migration ordering)."
+          cont "Proceeding is SAFE: in-flight wstETH lands in the old pool by design (see README §Migration ordering)."
         fi
       else
-        echo "      WARN could not scan Sync events (RPC error or range too wide):"
-        echo "           $(printf '%s\n' "$logs_json" | head -n1)"
-        echo "           Inspect manually on the L2 block explorer:"
-        echo "           filter address=$SENDER topic0=$SYNC_TOPIC over the last ~$twelve_h_blocks blocks."
+        warn "could not scan Sync events (RPC error or range too wide):"
+        cont "$(printf '%s\n' "$logs_json" | head -n1)"
+        cont "Inspect manually on the L2 block explorer:"
+        cont "filter address=$SENDER topic0=$SYNC_TOPIC over the last ~$twelve_h_blocks blocks."
       fi
     else
-      echo "      WARN could not derive 12h-ago block estimate (timestamp probe failed); skipping Sync event scan."
+      warn "could not derive 12h-ago block estimate (timestamp probe failed); skipping Sync event scan."
     fi
 
-    echo "[6/6] CHECK configured maxGasLimit ceiling vs live CCIP maxPerMsgGasLimit"
+    step "[6/7] CHECK configured maxGasLimit ceiling vs live CCIP maxPerMsgGasLimit"
     # The CCIP config structs drift across versions (field order changes), so do NOT decode
     # the whole evolving tuple — extract just the one word we want by its version-keyed offset.
     # DestChainConfig / DynamicConfig are fully static structs: each field is one 32-byte word,
@@ -230,14 +258,14 @@ preflight-check:
     DEST_SEL=$(awk '$2=="&ethMainnetCcipChainSelector"{print $3; exit}' "$sm_inputs" 2>/dev/null)
     : "${DEST_SEL:=5009297550715157269}"
     if [[ -z "${EXPECTED:-}" || ! "$EXPECTED" =~ ^[0-9]+$ ]]; then
-      echo "      WARN could not read &maxGasLimit from $sm_inputs; skipping live-cap check"
+      warn "could not read &maxGasLimit from $sm_inputs; skipping live-cap check"
     else
       ROUTER=$(cast call "$SENDER" 'CCIP_ROUTER()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
       ONRAMP=$(cast call "$ROUTER" 'getOnRamp(uint64)(address)' "$DEST_SEL" --rpc-url "$L2_RPC_URL" 2>/dev/null || true)
       if [[ -z "$ROUTER" ]]; then
-        echo "      WARN CustomSender.CCIP_ROUTER() did not respond; skipping live-cap check"
+        warn "CustomSender.CCIP_ROUTER() did not respond; skipping live-cap check"
       elif [[ -z "$ONRAMP" || "$ONRAMP" == "0x0000000000000000000000000000000000000000" ]]; then
-        echo "      WARN Router.getOnRamp($DEST_SEL) = ${ONRAMP:-<none>} — lane not provisioned on this RPC; skipping cap check"
+        warn "Router.getOnRamp($DEST_SEL) = ${ONRAMP:-<none>} — lane not provisioned on this RPC; skipping cap check"
       else
         # The cap lives in a different contract — and at a different word offset — per CCIP
         # version, so branch on typeAndVersion. Each known (version -> offset) pair is verified
@@ -266,31 +294,104 @@ preflight-check:
             case "$FQV" in
               "FeeQuoter 2.0.0")  version_known=1; LIVE_CAP=$(abi_word_dec "$raw" 3) ;;  # isEnabled, maxDataBytes, maxPerMsgGasLimit, ...
               "FeeQuoter 1.6.0"*) version_known=1; LIVE_CAP=$(abi_word_dec "$raw" 4) ;;  # isEnabled, maxNumTokens, maxDataBytes, maxPerMsgGasLimit
-              *) echo "      WARN unrecognized FeeQuoter version '$FQV' at $FQ; cap field offset unknown — skipping (CCIP layout may have changed)" ;;
+              *) warn "unrecognized FeeQuoter version '$FQV' at $FQ; cap field offset unknown — skipping (CCIP layout may have changed)" ;;
             esac
             ;;
           *)
-            echo "      WARN unrecognized onRamp typeAndVersion '$TV' at $ONRAMP; cap check skipped (CCIP layout may have changed — re-verify the read path)"
+            warn "unrecognized onRamp typeAndVersion '$TV' at $ONRAMP; cap check skipped (CCIP layout may have changed — re-verify the read path)"
             ;;
         esac
         if [[ -n "$LIVE_CAP" && "$LIVE_CAP" =~ ^[0-9]+$ ]]; then
-          echo "      INFO onRamp $ONRAMP ($TV); live maxPerMsgGasLimit = $LIVE_CAP, configured ceiling = $EXPECTED"
+          info "onRamp $ONRAMP ($TV); live maxPerMsgGasLimit = $LIVE_CAP, configured ceiling = $EXPECTED"
           if (( EXPECTED > LIVE_CAP )); then
             die "configured maxGasLimit ceiling $EXPECTED exceeds live CCIP cap $LIVE_CAP on $L2_NETWORK ($TV) — an over-cap feeOtoD would pass setFeeOtoD then revert MessageGasLimitTooHigh inside every sync"
           elif (( EXPECTED == LIVE_CAP )); then
-            echo "      PASS ceiling == live CCIP cap = $LIVE_CAP"
+            pass "ceiling == live CCIP cap = $LIVE_CAP"
           else
-            echo "      WARN ceiling $EXPECTED is below live CCIP cap $LIVE_CAP (tighter than CCIP; OK, but widen if the headroom isn't intentional)"
+            warn "ceiling $EXPECTED is below live CCIP cap $LIVE_CAP (tighter than CCIP; OK, but widen if the headroom isn't intentional)"
           fi
         elif [[ -n "$version_known" ]]; then
-          echo "      WARN could not decode live maxPerMsgGasLimit from $ONRAMP ($TV); skipping cap comparison"
+          warn "could not decode live maxPerMsgGasLimit from $ONRAMP ($TV); skipping cap comparison"
         fi
       fi
     fi
 
-    echo "===================================================================="
-    echo "OK L2 preflight passed for $L2_NETWORK. Proceed with migration scripts."
-    echo "===================================================================="
+    step "[7/7] CHECK Stage signing account(s) set up and funded for gas on $L2_NETWORK"
+    # Preflight doubles as a read-only lane gate (run with only RPC_<NET>, no keys), so this step
+    # vets whichever signer key is actually present in the env — the Stage-1 deployer and the
+    # Stage-2 / L1-migration Initial Owner are different cold keys. With `just -E .env.<network>
+    # preflight-check` the .env file's keys are loaded, so the signer for the stage you're about to
+    # run gets checked here, before forge spends gas. Advisory only (never `die`): funding/stage
+    # context is ambiguous from preflight's vantage (e.g. a deployer that already ran Stage 1 may
+    # legitimately be near-empty when you're now running Stage 2), so a low/zero balance WARNs
+    # loudly rather than aborting — forge itself still hard-fails an underfunded broadcast.
+    MIN_ETH="${L2_DEPLOYER_MIN_BALANCE_ETH:-0.01}"
+    MIN_WEI=$(cast to-wei "$MIN_ETH" ether 2>/dev/null || echo "")
+    if ! [[ "$MIN_WEI" =~ ^[0-9]+$ ]]; then
+      warn "L2_DEPLOYER_MIN_BALANCE_ETH='$MIN_ETH' is not a valid amount; falling back to 0.01 ETH buffer"
+      MIN_ETH=0.01; MIN_WEI=10000000000000000
+    fi
+    # awk-double compare — same heuristic-at-wei-scale idiom as postflight-monitor's ge(); a few-wei
+    # imprecision only nudges the WARN boundary (zero is matched exactly by the string test below).
+    ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0>=b+0)}'; }
+    SIGNERS_CHECKED=
+    check_signer() {
+      # $1 label   $2 private-key (may be empty)   $3 address override (may be empty)
+      local label="$1" key="$2" addr="${3:-}"
+      if [[ -n "$key" ]]; then
+        if ! addr=$(cast wallet address --private-key "$key" 2>/dev/null); then
+          warn "$label: key is set but invalid (cast wallet address failed); skipping"
+          SIGNERS_CHECKED=1
+          return 0
+        fi
+      fi
+      [[ -n "$addr" ]] || return 0   # neither key nor address given for this role → not this stage
+      SIGNERS_CHECKED=1
+      if ! [[ "$addr" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+        warn "$label: resolved address '$addr' is malformed; skipping"
+        return 0
+      fi
+      if has_code "$addr"; then
+        warn "$label $addr has contract bytecode — expected an EOA signer (wrong key/address?)"
+      fi
+      local bal eth
+      bal=$(parse_cast_num "$(cast balance "$addr" --rpc-url "$L2_RPC_URL" 2>/dev/null || echo "")")
+      if ! [[ "$bal" =~ ^[0-9]+$ ]]; then
+        warn "$label $addr: balance unreadable (RPC error); skipping funding check"
+        return 0
+      fi
+      eth=$(cast from-wei "$bal" 2>/dev/null || echo "?")
+      if [[ "$bal" == "0" ]]; then
+        warn "$label $addr has 0 ETH — it CANNOT pay gas; fund it before broadcasting this stage"
+      elif ge "$bal" "$MIN_WEI"; then
+        pass "$label $addr funded = $eth ETH (>= $MIN_ETH ETH buffer)"
+      else
+        warn "$label $addr balance = $eth ETH is below the $MIN_ETH ETH buffer — top up before broadcasting this stage"
+      fi
+    }
+    check_signer "Stage-1 deployer (L2_LIDO_DEPLOYER_PRIVATE_KEY)" \
+      "${L2_LIDO_DEPLOYER_PRIVATE_KEY:-}" "${L2_LIDO_DEPLOYER_ADDRESS:-}"
+    check_signer "Stage-2/L1 Initial Owner (INITIAL_OWNER_PRIVATE_KEY)" \
+      "${INITIAL_OWNER_PRIVATE_KEY:-${L2_INITIAL_OWNER_PRIVATE_KEY:-}}" "${INITIAL_OWNER_ADDRESS:-}"
+    if [[ -z "$SIGNERS_CHECKED" ]]; then
+      warn "no signer key in env (L2_LIDO_DEPLOYER_PRIVATE_KEY / INITIAL_OWNER_PRIVATE_KEY); deployer funding NOT checked."
+      cont "OK if you only meant this as a read-only lane gate; otherwise set the relevant key (or run with"
+      cont "-E .env.$L2_NETWORK) so the signer is vetted for gas before you broadcast a deploy/migrate."
+    fi
+
+    hdr "===================================================================="
+    # No hard FAILs reached here (die exits early), so this is always a PASS verdict; the WARN tally
+    # tells the operator how many advisory items to eyeball. WARNs do NOT fail the gate — several are
+    # explicitly "safe to proceed" (in-flight sync, already-revoked legacy automation, unfunded
+    # read-only run), so a non-zero exit here would block benign cases. `die` remains the only abort.
+    if (( WARN_N > 0 )); then
+      printf '%sOK%s L2 preflight passed for %s — %s%d PASS%s, %s%d WARN%s (review the warnings above before proceeding).\n' \
+        "$C_PASS" "$C_RST" "$L2_NETWORK" "$C_PASS" "$PASS_N" "$C_RST" "$C_WARN" "$WARN_N" "$C_RST"
+    else
+      printf '%sOK%s L2 preflight passed for %s — %s%d PASS, 0 WARN%s. Proceed with migration scripts.\n' \
+        "$C_PASS" "$C_RST" "$L2_NETWORK" "$C_PASS" "$PASS_N" "$C_RST"
+    fi
+    hdr "===================================================================="
 
 # Per-network L1 preflight check. Verifies the L1 RPC is Ethereum mainnet, the
 # shared L1 LidoCustomReceiver is reachable, and that its CCIP lane wiring for
@@ -323,20 +424,32 @@ preflight-check-l1:
     EXPECTED_CHAIN_ID=1
     ZERO_ADDR=0x0000000000000000000000000000000000000000
 
-    echo "===================================================================="
-    echo "L1 PREFLIGHT CHECK: $L2_NETWORK"
+    # ── Output coloring (auto-off when stdout isn't a TTY or NO_COLOR is set); same idiom as
+    # preflight-check. This L1 gate has no advisory WARNs — every check either PASSes or dies.
+    if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+      C_RST=$'\033[0m'; C_HDR=$'\033[1;36m'; C_STEP=$'\033[1m'; C_PASS=$'\033[1;32m'; C_FAIL=$'\033[1;31m'; C_DIM=$'\033[2m'
+    else
+      C_RST=''; C_HDR=''; C_STEP=''; C_PASS=''; C_FAIL=''; C_DIM=''
+    fi
+    PASS_N=0
+    hdr()  { printf '%s%s%s\n' "$C_HDR"  "$*" "$C_RST"; }                                    # banner / title (bold cyan)
+    step() { printf '%s%s%s\n' "$C_STEP" "$*" "$C_RST"; }                                    # "[n/4] CHECK ..." (bold)
+    pass() { PASS_N=$((PASS_N+1)); printf '      %sPASS%s %s\n' "$C_PASS" "$C_RST" "$*"; }   # green keyword (tallied)
+    cmd()  { printf '      %scmd:%s %s\n' "$C_DIM"  "$C_RST" "$*"; }                          # dim — example cast invocation
+    die()  { printf '%sL1 PREFLIGHT FAIL:%s %s\n' "$C_FAIL" "$C_RST" "$*" >&2; exit 1; }     # red, to stderr, exit 1
+    norm() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+
+    hdr "===================================================================="
+    hdr "L1 PREFLIGHT CHECK: $L2_NETWORK"
     echo "  L1 RPC URL:            $L1_RPC_URL"
     echo "  Expected chain-id:     $EXPECTED_CHAIN_ID (Ethereum Mainnet)"
     echo "  L1 LidoCustomReceiver: $L1_RECEIVER"
     echo "  L2 CCIP selector:      $L2_CHAIN_SELECTOR"
     echo "  Expected L2 sender:    $EXPECTED_SENDER"
-    echo "===================================================================="
+    hdr "===================================================================="
 
-    die() { echo "L1 PREFLIGHT FAIL: $*" >&2; exit 1; }
-    norm() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
-
-    echo "[1/4] CHECK L1 RPC chain-id matches Ethereum Mainnet ($EXPECTED_CHAIN_ID)"
-    echo "      cmd: cast chain-id --rpc-url <l1-rpc>"
+    step "[1/4] CHECK L1 RPC chain-id matches Ethereum Mainnet ($EXPECTED_CHAIN_ID)"
+    cmd "cast chain-id --rpc-url <l1-rpc>"
     actual_chain_id=$(cast chain-id --rpc-url "$L1_RPC_URL")
     if [[ "$actual_chain_id" != "$EXPECTED_CHAIN_ID" ]]; then
       die "L1 chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID"
@@ -349,26 +462,26 @@ preflight-check-l1:
     if (( head_age > 600 )); then
       die "L1 RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live mainnet (check \$RPC_ETHEREUM)"
     fi
-    echo "      PASS chain-id = $actual_chain_id (head block ${head_age}s old)"
+    pass "chain-id = $actual_chain_id (head block ${head_age}s old)"
 
-    echo "[2/4] CHECK L1 LidoCustomReceiver has bytecode at $L1_RECEIVER"
-    echo "      cmd: cast code $L1_RECEIVER --rpc-url <l1-rpc>"
+    step "[2/4] CHECK L1 LidoCustomReceiver has bytecode at $L1_RECEIVER"
+    cmd "cast code $L1_RECEIVER --rpc-url <l1-rpc>"
     code=$(cast code "$L1_RECEIVER" --rpc-url "$L1_RPC_URL")
     if [[ "$code" == "0x" || -z "$code" ]]; then
       die "L1 receiver $L1_RECEIVER has no code"
     fi
-    echo "      PASS bytecode present at L1 receiver"
+    pass "bytecode present at L1 receiver"
 
-    echo "[3/4] CHECK L1 receiver has non-zero adapter for L2 selector $L2_CHAIN_SELECTOR"
-    echo "      cmd: cast call $L1_RECEIVER 'getAdapter(uint64)(address)' $L2_CHAIN_SELECTOR --rpc-url <l1-rpc>"
+    step "[3/4] CHECK L1 receiver has non-zero adapter for L2 selector $L2_CHAIN_SELECTOR"
+    cmd "cast call $L1_RECEIVER 'getAdapter(uint64)(address)' $L2_CHAIN_SELECTOR --rpc-url <l1-rpc>"
     adapter=$(cast call "$L1_RECEIVER" "getAdapter(uint64)(address)" "$L2_CHAIN_SELECTOR" --rpc-url "$L1_RPC_URL")
     if [[ "$(norm "$adapter")" == "$ZERO_ADDR" ]]; then
       die "no adapter set on L1 receiver for selector $L2_CHAIN_SELECTOR"
     fi
-    echo "      PASS adapter = $adapter"
+    pass "adapter = $adapter"
 
-    echo "[4/4] CHECK L1 receiver's sender for L2 selector $L2_CHAIN_SELECTOR matches $EXPECTED_SENDER"
-    echo "      cmd: cast call $L1_RECEIVER 'getSender(uint64)(bytes)' $L2_CHAIN_SELECTOR --rpc-url <l1-rpc>"
+    step "[4/4] CHECK L1 receiver's sender for L2 selector $L2_CHAIN_SELECTOR matches $EXPECTED_SENDER"
+    cmd "cast call $L1_RECEIVER 'getSender(uint64)(bytes)' $L2_CHAIN_SELECTOR --rpc-url <l1-rpc>"
     sender_bytes=$(cast call "$L1_RECEIVER" "getSender(uint64)(bytes)" "$L2_CHAIN_SELECTOR" --rpc-url "$L1_RPC_URL")
     sender_hex=${sender_bytes#0x}
     # An EVM CustomSender is stored as abi.encode(address) → 32-byte left-padded blob (64 hex chars).
@@ -380,11 +493,11 @@ preflight-check-l1:
     if [[ "$(norm "$decoded_sender")" != "$(norm "$EXPECTED_SENDER")" ]]; then
       die "sender mismatch: got $decoded_sender, expected $EXPECTED_SENDER (raw bytes: $sender_bytes)"
     fi
-    echo "      PASS sender = $decoded_sender (raw bytes: $sender_bytes)"
+    pass "sender = $decoded_sender (raw bytes: $sender_bytes)"
 
-    echo "===================================================================="
-    echo "OK L1 preflight passed for $L2_NETWORK."
-    echo "===================================================================="
+    hdr "===================================================================="
+    printf '%sOK%s L1 preflight passed for %s — %s%d PASS, 0 WARN%s.\n' "$C_PASS" "$C_RST" "$L2_NETWORK" "$C_PASS" "$PASS_N" "$C_RST"
+    hdr "===================================================================="
 
 # Verify that addresses/selectors duplicated outside the canonical Solidity
 # *MigrationConstants.sol files stay in sync with Solidity. Solidity is the
@@ -433,7 +546,7 @@ verify-constants-sync:
 
     # Same as expect_eq, but for anchors that live ONLY in a <stem>.deployed.yaml sibling. Those siblings
     # are deploy-time artifacts (no longer committed — see "fix: update state-mate config"): the per-lane
-    # l2-<net>.deployed.yaml is written by `just deploy-stage1`, the l1-mainnet/extras ones are produced at
+    # l2-<net>.deployed.yaml is written by `just deploy-stage1`, the l1/extras ones are produced at
     # verification time. On a pre-deploy / audit checkout the file is legitimately absent, so SKIP rather
     # than report false drift. When the file IS present the check runs exactly like expect_eq — a genuine
     # rename/missing-anchor still FAILs.
@@ -481,7 +594,7 @@ verify-constants-sync:
     }
 
     L1_SOL=script/l1/L1MigrationConstants.sol
-    L1_YAML=config/state/l1-mainnet.yaml
+    L1_YAML=config/state/l1.yaml
     sol_l1_recv=$(sol_addr "$L1_SOL" L1_LIDO_CUSTOM_RECEIVER)
     sol_l1_recv_impl=$(sol_addr "$L1_SOL" L1_LIDO_CUSTOM_RECEIVER_IMPL)
     sol_initial_owner=$(sol_addr "$L1_SOL" INITIAL_OWNER)
@@ -556,6 +669,10 @@ verify-constants-sync:
       if [[ "$net" == "linea" ]]; then
         sol_gelato=$(sol_addr "$sol" L2_OLD_GELATO_AUTOMATION)
         expect_eq "l2OldGelatoSyncAutomation → L2_OLD_GELATO_AUTOMATION"          "$sol_gelato" "$(yml_anchor "config/state/l2-linea-extras.yaml" l2OldGelatoSyncAutomation)"
+        # The extras config also reads SYNC_ROLE off the upstream CustomSender. Its address is pinned in
+        # the COMMITTED l2-linea-extras.deployed.yaml, so verify it here unconditionally — the per-lane
+        # l2CustomSender check above is deferred (its .deployed.yaml is generated, absent at this point).
+        expect_eq "l2CustomSender (linea-extras) → L2_CUSTOM_SENDER"             "$sol_l2_sender" "$(yml_anchor "config/state/l2-linea-extras.yaml" l2CustomSender)"
         expect_eq "preflight-check LINEA_GELATO → L2_OLD_GELATO_AUTOMATION"       "$sol_gelato" "$(just_field linea LINEA_GELATO)"
       fi
 
@@ -598,10 +715,10 @@ verify-constants-sync:
 
     echo
     echo "[shared L1 yaml: $L1_YAML — L1 receiver, ProxyAdmin, immutables]"
-    # These three live only in the l1-mainnet.deployed.yaml sibling (a deploy/verify-time artifact). The
+    # These three live only in the l1.deployed.yaml sibling (a deploy/verify-time artifact). The
     # receiver + ProxyAdmin addresses are additionally cross-checked against Solidity via the justfile
     # hardcodes below, so deferring them here when the sibling is absent loses no coverage for those two.
-    l1_deployed="config/state/l1-mainnet.deployed.yaml"
+    l1_deployed="config/state/l1.deployed.yaml"
     expect_eq_deferred "l1LidoCustomReceiver → L1_LIDO_CUSTOM_RECEIVER"          "$sol_l1_recv"       "$(yml_anchor "$L1_YAML" l1LidoCustomReceiver)"      "$l1_deployed"
     expect_eq_deferred "l1LidoCustomReceiverImpl → L1_LIDO_CUSTOM_RECEIVER_IMPL" "$sol_l1_recv_impl"  "$(yml_anchor "$L1_YAML" l1LidoCustomReceiverImpl)"  "$l1_deployed"
     expect_eq_deferred "l1ProxyAdmin → L1_PROXY_ADMIN"                           "$sol_l1_proxy"      "$(yml_anchor "$L1_YAML" l1ProxyAdmin)"              "$l1_deployed"
@@ -611,7 +728,7 @@ verify-constants-sync:
     expect_eq "l1Wsteth → L1_WSTETH"                                             "$sol_l1_wsteth"     "$(yml_anchor "$L1_YAML" l1Wsteth)"
     expect_eq "l1CcipRouter → L1_CCIP_ROUTER"                                    "$sol_l1_router"     "$(yml_anchor "$L1_YAML" l1CcipRouter)"
     # ethMainnetCcipChainSelector is verified per-L2 above (line: "ethMainnetCcipChainSelector → ...").
-    # It is intentionally ABSENT from l1-mainnet.inputs.yaml: no L1 check references it, and an
+    # It is intentionally ABSENT from l1.inputs.yaml: no L1 check references it, and an
     # unreferenced anchor is a fatal error under the .inputs full-delegation invariant.
 
     # L2 wstETH addresses surface on the L1 adapter's L2_TOKEN immutable (Optimism + Base only).
@@ -774,11 +891,75 @@ verify-externals-coverage:
         fail=$(( fail + 1 ))
       done
     done
+    # ── Test-stage overlay (--overrides) rules mirror ──────────────────────────────────────────────
+    # Every anchor in the shared canary overlay must, per lane, (a) already exist in that base .inputs,
+    # (b) keep its section, and (c) hold a value that DIFFERS. state-mate enforces these at runtime when
+    # `--overrides` is passed; this is the no-RPC, pre-commit mirror — a no-op / new-label / section slip
+    # here would otherwise surface only at the canary state-mate run.
+    overlay="config/state/l2.inputs.test-stage.yaml"
+    echo "===================================================================="
+    echo "VERIFY TEST-STAGE OVERLAY  ($overlay: exists + same-section + differs, per lane)"
+    echo "===================================================================="
+    ov_fail=0
+    if ! command -v yq >/dev/null 2>&1; then
+      echo "  FAIL yq is required to validate the test-stage overlay but was not found"; fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
+    elif [[ ! -f "$overlay" ]]; then
+      echo "  FAIL overlay file $overlay not found"; fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
+    else
+      # Mirror state-mate's assertOnlyOwnedSections: the overlay may only hold config:/externals:.
+      # Without this, a renamed/typo'd or extra section would make the per-section loops below iterate
+      # NOTHING for that section and silently pass — a false-pass of the very class this lint exists to
+      # catch (and which state-mate rejects at runtime). NB: the value compare below is textual; the
+      # canonical/normalized comparison is state-mate's at runtime, this mirror is a pre-commit best-effort.
+      bad_sections="$(yq -r 'keys | .[]' "$overlay" 2>/dev/null | grep -vxE 'config|externals' || true)"
+      if [[ -n "$bad_sections" ]]; then
+        echo "  FAIL $overlay has section(s) other than config:/externals:: $(echo $bad_sections | tr '\n' ' ')"
+        fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
+      fi
+      # Count anchor DEFINITIONS by grep (independent of section parsing, same pattern as above), so a
+      # renamed/absent section leaves this total intact while the section-keyed loop below comes up short.
+      overlay_anchor_count="$(grep -cE '^[[:space:]]*- &' "$overlay" 2>/dev/null)" # grep -c prints 0 (and exits 1) on no match — keep the bare count, don't `|| echo 0` (that yields "0\n0")
+      checked=0
+      for net in optimism arbitrum base linea; do
+        base="config/state/l2-${net}.inputs.yaml"
+        for sec in config externals; do
+          for a in $(yq -r ".${sec}[] | anchor" "$overlay" 2>/dev/null); do
+            checked=$(( checked + 1 )) # every (anchor × lane) must be evaluated; a short count = a skipped section
+            ov_val="$(yq -r ".${sec}[] | select(anchor == \"$a\")" "$overlay" 2>/dev/null | head -n1)"
+            base_val="$(yq -r ".${sec}[] | select(anchor == \"$a\")" "$base" 2>/dev/null | head -n1)"
+            if [[ -z "$base_val" ]]; then
+              if [[ -n "$(yq -r ".. | select(anchor == \"$a\")" "$base" 2>/dev/null | head -n1)" ]]; then
+                echo "  SECTION  [$net] &$a is not under '$sec:' in $base (the overlay must keep the base section)"
+              else
+                echo "  MISSING  [$net] &$a not defined in $base (overrides cannot introduce new labels)"
+              fi
+              fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 )); continue
+            fi
+            if [[ "$base_val" == "$ov_val" ]]; then
+              echo "  NO-OP    [$net] &$a = $ov_val equals the base value (a no-op override is rejected)"
+              fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 )); continue
+            fi
+            ok=$(( ok + 1 ))
+          done
+        done
+      done
+      # Integrity of the mirror itself: every overlay anchor must have been evaluated against all 4 lanes.
+      # A short count means a section yielded no anchors (empty/renamed/absent, or a yq glitch) — without
+      # this guard ov_fail would stay 0 and the block would false-pass.
+      if [[ "${overlay_anchor_count:-0}" -lt 1 ]]; then
+        echo "  FAIL $overlay defines no anchors to validate"
+        fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
+      elif [[ "$checked" -ne $(( overlay_anchor_count * 4 )) ]]; then
+        echo "  FAIL overlay mirror evaluated $checked of $(( overlay_anchor_count * 4 )) (anchor×lane) checks — a section was skipped (empty/renamed?)"
+        fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
+      fi
+      [[ $ov_fail -eq 0 ]] && echo "OK every overlay anchor exists, keeps its section, and differs across all 4 lanes."
+    fi
     echo "===================================================================="
     if [[ $fail -eq 0 ]]; then
-      echo "OK every L2 external/deployed anchor is constants-checked or allowlisted ($ok anchors)."
+      echo "OK every L2 external/deployed anchor is constants-checked or allowlisted, and the test-stage overlay is consistent ($ok checks)."
     else
-      echo "FAIL $fail uncovered anchor(s): a value pinned only by same-provenance equality is a false-pass risk."
+      echo "FAIL $fail problem(s): an uncovered anchor (same-provenance false-pass risk) and/or a test-stage overlay rule violation — see rows above."
       exit 1
     fi
     echo "===================================================================="
@@ -789,9 +970,9 @@ verify-externals-coverage:
 # Usage: just -E .env.<network> verify-stage1
 #
 # Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL,
-#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, L2_GOVERNANCE_EXECUTOR, and
+#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, and
 #   L2_LIQUIDITY_OWNER (the LOL multisig pinned as CREReceiver.expectedAuthor; defaults to the
-#   network LOL multisig when unset). The CRE Forwarder is pinned per network in code.
+#   network LOL multisig when unset). The governance executor and CRE Forwarder are pinned per network in code.
 verify-stage1:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -885,6 +1066,261 @@ update-cre-config:
     echo "Updated $CONFIG:"
     jq . "$CONFIG"
 
+# ───────────────────────── Canary test flow (deployer-simulated CRE) ─────────────────────────
+# State machine: Stage 0 (initial) → 1 (canary testing) → 2 (pre-ownership migration) →
+#   3 (final.unvalidated) → 4 (final.validated), with a 1→0 rollback. The new contracts deploy
+#   DEPLOYER-OWNED, with the Deployer standing in for the CRE Keystone forwarder + workflow author so it
+#   can drive CREReceiver.onReport directly; after a clean test the Deployer restores the real CRE config
+#   + production params and hands ownership to LOL, then the Initial Owner ("Aphyla") seals governance.
+#   Each recipe is a single broadcast by one actor — do NOT co-locate keys.
+#
+#   The governance executor, predecessor OraclePool, and Lido DAO Agent are pinned per network in the
+#   script/{net}/{Net}MigrationConstants.sol contracts (cross-checked to config/state/*.inputs.yaml by
+#   `just verify-constants-sync`) and read directly by the forge scripts — they are NEVER set in .env.
+
+# Stage 0→1 (Deployer): deploy pool + SyncTrigger + CREReceiver owned by the Lido Deployer, with the
+# deployer as the CREReceiver forwarder AND author. Uses the TEST min-amount/delay overrides so a small
+# WETH seed triggers a sync promptly; production values are restored at `handoff`.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY.
+# Optional env: L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST (default to the syncMinAmount / syncDelay
+#   anchors in the shared overlay config/state/l2.inputs.test-stage.yaml; an explicit env value wins), L2_LIQUIDITY_OWNER.
+#
+# Usage: just -E .env.<network> deploy-test
+deploy-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runDeployTest(); export it before running}"
+    for c in jq yq cast; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
+    # Default the canary knobs from the shared state-mate overlay (an explicit env wins). The overlay
+    # holds the canary values; production lives in l2-<net>.inputs.yaml and is restored at handoff.
+    sm_overlay="config/state/l2.inputs.test-stage.yaml"
+    : "${L2_SYNC_MIN_AMOUNT_TEST:=$(yq '.. | select(anchor == "syncMinAmount")' "$sm_overlay" | tr -d '"' | head -n1)}"
+    : "${L2_SYNC_DELAY_TEST:=$(yq '.. | select(anchor == "syncDelay")' "$sm_overlay" | tr -d '"' | head -n1)}"
+    [[ -n "$L2_SYNC_MIN_AMOUNT_TEST" && -n "$L2_SYNC_DELAY_TEST" ]] || { echo "Failed to read syncMinAmount / syncDelay from $sm_overlay" >&2; exit 1; }
+    export L2_SYNC_MIN_AMOUNT_TEST L2_SYNC_DELAY_TEST
+    echo "Canary test min-amount: ${L2_SYNC_MIN_AMOUNT_TEST} wei; delay: ${L2_SYNC_DELAY_TEST} s (from $sm_overlay; production values restored at handoff)"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runDeployTest()' --rpc-url "$L2_RPC_URL" --broadcast
+
+    chain_id=$(cast chain-id --rpc-url "$L2_RPC_URL" | tr -d '\r\n')
+    bcast="broadcast/$(basename "${SCRIPT%:*}")/${chain_id}/runDeployTest-latest.json"
+    if [[ -f "$bcast" ]]; then
+      pool=$(jq -r '[.transactions[] | select(.contractName == "PausableImmutableOraclePool")][0].contractAddress' "$bcast")
+      trigger=$(jq -r '[.transactions[] | select(.contractName == "SyncTrigger")][0].contractAddress' "$bcast")
+      receiver=$(jq -r '[.transactions[] | select(.contractName == "CREReceiver")][0].contractAddress' "$bcast")
+      echo
+      echo "===================================================================="
+      echo "Canary Stage 1 deployed for $L2_NETWORK — copy these into .env.$L2_NETWORK:"
+      echo "  export L2_ORACLE_POOL=$(cast to-check-sum-address "$pool")"
+      echo "  export L2_SYNC_TRIGGER=$(cast to-check-sum-address "$trigger")"
+      echo "  export L2_CRE_RECEIVER=$(cast to-check-sum-address "$receiver")"
+      echo "  export L2_TEST_DEPLOYER=$(cast wallet address --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY")"
+      echo "Next: just -E .env.$L2_NETWORK activate   (Initial Owner repoints the pool + grants SYNC_ROLE)"
+      echo "===================================================================="
+
+      # Regenerate the committed state-mate `.deployed.yaml` sibling so the 3→4 `state-mate` step has a
+      # current target (the canary IS the production deploy path; parity with `deploy-stage1`). The canary
+      # redeploys the three contracts but reuses the existing CustomSender proxy/impl + ProxyAdmin, which
+      # are carried over; only the three Stage-1 outputs are refreshed from the broadcast JSON above.
+      deployed_file="config/state/l2-$L2_NETWORK.deployed.yaml"
+      if [[ -f "$deployed_file" ]]; then
+        preserved=()
+        for anchor in l2CustomSender l2CustomSenderImpl l2ProxyAdmin; do
+          preserved+=("$(yq ".. | select(anchor == \"$anchor\")" "$deployed_file" 2>/dev/null | tr -d '"' | head -n1)")
+        done
+        bash script/shared/write-deployed-yaml.sh "$deployed_file" "${preserved[@]}" "$pool" "$trigger" "$receiver"
+        echo "  → updated $deployed_file — review the diff and commit it alongside the migration."
+      else
+        echo "WARN $deployed_file not found; skipping .deployed.yaml generation (run from a tree with the committed sibling)." >&2
+      fi
+    else
+      echo "WARN broadcast JSON not found at $bcast; record addresses from the forge log above." >&2
+    fi
+
+# Stage 0→1 verify (read-only): canary infra deployed + deployer-owned, pool repointed, SYNC_ROLE
+# granted, seal not run. Run right after `activate`, before `simulate-sync` (it asserts the full float).
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER,
+#   L2_TEST_DEPLOYER. Optional: L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST
+#   (default to the syncMinAmount / syncDelay anchors in the shared overlay config/state/l2.inputs.test-stage.yaml).
+#
+# Usage: just -E .env.<network> verify-test
+verify-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+    : "${L2_TEST_DEPLOYER:?L2_TEST_DEPLOYER is required; populate it from deploy-test output}"
+
+    # Match deploy-test: default the canary knobs from the shared state-mate overlay.
+    sm_overlay="config/state/l2.inputs.test-stage.yaml"
+    if command -v yq >/dev/null 2>&1; then
+      : "${L2_SYNC_MIN_AMOUNT_TEST:=$(yq '.. | select(anchor == "syncMinAmount")' "$sm_overlay" | tr -d '"' | head -n1)}"
+      : "${L2_SYNC_DELAY_TEST:=$(yq '.. | select(anchor == "syncDelay")' "$sm_overlay" | tr -d '"' | head -n1)}"
+      [[ -n "$L2_SYNC_MIN_AMOUNT_TEST" && -n "$L2_SYNC_DELAY_TEST" ]] || { echo "Failed to read syncMinAmount / syncDelay from $sm_overlay" >&2; exit 1; }
+      export L2_SYNC_MIN_AMOUNT_TEST L2_SYNC_DELAY_TEST
+    fi
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runVerifyTest()' --rpc-url "$L2_RPC_URL"
+
+# Stage 0→1 (Initial Owner): reversible activation — repoint CustomSender at the new pool and grant the
+# new SyncTrigger SYNC_ROLE. Admin + the old automation's SYNC_ROLE are left intact so `rollback` is clean.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, INITIAL_OWNER_PRIVATE_KEY,
+#   L2_ORACLE_POOL, L2_SYNC_TRIGGER.
+#
+# Usage: just -E .env.<network> activate
+activate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${INITIAL_OWNER_PRIVATE_KEY:?required for runActivate(); export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runActivate()' --rpc-url "$L2_RPC_URL" --broadcast
+
+# Stage 1 (Deployer): seed the pool with WETH so a sync becomes due. Deposits ETH→WETH and transfers it
+# to the pool. WETH is read from the pool's TOKEN_IN (authoritative).
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_ORACLE_POOL.
+# Optional env: L2_TEST_WETH_SEED (wei, default 1e17 = 0.1 WETH; must exceed the canary minAmount —
+#   L2_SYNC_MIN_AMOUNT_TEST / the syncMinAmount anchor in the shared overlay config/state/l2.inputs.test-stage.yaml).
+#
+# Usage: just -E .env.<network> seed-test-weth
+seed-test-weth:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required to fund/seed; export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    command -v cast >/dev/null 2>&1 || { echo "Missing 'cast' (foundry)" >&2; exit 1; }
+    SEED="${L2_TEST_WETH_SEED:-100000000000000000}"
+    WETH="$(cast call "$L2_ORACLE_POOL" 'TOKEN_IN()(address)' --rpc-url "$L2_RPC_URL" | tr -d '\r\n')"
+    echo "Seeding $SEED wei of WETH ($WETH) into pool $L2_ORACLE_POOL"
+    cast send "$WETH" 'deposit()' --value "$SEED" --rpc-url "$L2_RPC_URL" --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY"
+    cast send "$WETH" 'transfer(address,uint256)' "$L2_ORACLE_POOL" "$SEED" --rpc-url "$L2_RPC_URL" --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY"
+    echo "Pool WETH balance: $(cast call "$WETH" 'balanceOf(address)(uint256)' "$L2_ORACLE_POOL" --rpc-url "$L2_RPC_URL")"
+
+# Stage 1 (Deployer): simulate a CRE-driven sync by calling CREReceiver.onReport directly (the deployer is
+# the configured forwarder + author). Runs onReport → triggerSync → CustomSender.sync. Seed WETH and wait
+# the test delay (L2_SYNC_DELAY_TEST) first.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_SYNC_TRIGGER,
+#   L2_CRE_RECEIVER.
+#
+# Usage: just -E .env.<network> simulate-sync
+simulate-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runSimulateSync(); export it before running}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+
+    if command -v yq >/dev/null 2>&1; then
+      delay=$(yq '.. | select(anchor == "syncDelay")' "config/state/l2.inputs.test-stage.yaml" 2>/dev/null | tr -d '"' | head -n1)
+      [[ -n "$delay" ]] && echo "Reminder: a sync only fires once the canary delay (${delay}s, syncDelay in the test-stage overlay) has elapsed since the last execution." >&2 || true
+    fi
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runSimulateSync()' --rpc-url "$L2_RPC_URL" --broadcast
+
+# Stage 1→0 (Initial Owner): roll back the activation — repoint CustomSender at the old pool and revoke the
+# new SyncTrigger's SYNC_ROLE. The old automation was never touched, so the predecessor system is restored.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, INITIAL_OWNER_PRIVATE_KEY, L2_SYNC_TRIGGER.
+#   (The predecessor OraclePool to restore is pinned per network in code, not env.)
+#
+# Usage: just -E .env.<network> rollback
+rollback:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${INITIAL_OWNER_PRIVATE_KEY:?required for runRollback(); export it before running}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runRollback()' --rpc-url "$L2_RPC_URL" --broadcast
+
+# Stage 1→2 (Deployer): sweep test residue to the deployer, restore production config (real CRE forwarder +
+# LOL author + production delay/amounts), top up the float, and transfer pool + SyncTrigger + CREReceiver to
+# LOL. The in-broadcast assertion against production values reverts if any restore was missed.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY,
+#   L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER. Optional: L2_LIQUIDITY_OWNER.
+#
+# Usage: just -E .env.<network> handoff
+handoff:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runHandoff(); export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runHandoff()' --rpc-url "$L2_RPC_URL" --broadcast
+    echo
+    echo "Next: LOL registers the production CRE workflow (just -E .env.$L2_NETWORK update-cre-config && deploy-cre-workflow),"
+    echo "then 'just -E .env.$L2_NETWORK verify-stage2' before 'finalize'."
+
+# Stage 2 verify (read-only): post-handoff, pre-seal — infra LOL-owned + production-configured, pool active,
+# SYNC_ROLE held, Initial Owner still admin (seal not run).
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER.
+#   Optional: L2_LIQUIDITY_OWNER.
+#
+# Usage: just -E .env.<network> verify-stage2
+verify-stage2:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runVerifyStage2()' --rpc-url "$L2_RPC_URL"
+
+# Stage 2→3 (Initial Owner): the IRREVERSIBLE governance seal — revoke old automation(s), migrate
+# CustomSender admin + L2 ProxyAdmin to the governance executor. Refuses to run unless the infra is already
+# LOL-owned + production-configured (the `handoff` must have completed). Run `migrate-l1` once after all 4.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, INITIAL_OWNER_PRIVATE_KEY,
+#   L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER. Optional: L2_LIQUIDITY_OWNER.
+#
+# Usage: just -E .env.<network> finalize
+finalize:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${INITIAL_OWNER_PRIVATE_KEY:?required for runFinalize(); export it before running}"
+    : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runFinalize()' --rpc-url "$L2_RPC_URL" --broadcast
+
+# ───────────────────────── Legacy one-shot flow (fork tests / fallback) ─────────────────────────
+
 # Stage 1 — deploy new OraclePool, SyncTrigger, CREReceiver (per network).
 # Actor: Lido Deployer. After forge broadcast, the recipe parses the broadcast
 # JSON and prints the three deployed addresses as export-ready KEY=VALUE lines
@@ -892,8 +1328,9 @@ update-cre-config:
 # update-cre-config / migrate-stage2.
 #
 # Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL,
-#   L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR.
-#   (The CRE Forwarder is pinned per network in code — see _expectedCREForwarder — not an env var.)
+#   L2_LIDO_DEPLOYER_PRIVATE_KEY.
+#   (The governance executor and CRE Forwarder are pinned per network in code — see
+#    _expectedGovernanceExecutor / _expectedCREForwarder — not env vars.)
 # Optional env: L2_LIQUIDITY_OWNER (defaults to network LOL multisig).
 #
 # Usage: just -E .env.<network> deploy-stage1
@@ -903,7 +1340,6 @@ deploy-stage1:
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
     : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
     : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runDeploy(); export it before running}"
-    : "${L2_GOVERNANCE_EXECUTOR:?required for runDeploy()}"
     for c in jq yq cast; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
@@ -1017,7 +1453,7 @@ deploy-cre-workflow:
 # Usage: just -E .env.<network> migrate-stage2
 #
 # Required env (all loaded from .env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL,
-#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, INITIAL_OWNER_PRIVATE_KEY, L2_GOVERNANCE_EXECUTOR.
+#   L2_SYNC_TRIGGER, L2_CRE_RECEIVER, INITIAL_OWNER_PRIVATE_KEY.
 #   (The CRE Forwarder is pinned per network in code — see _expectedCREForwarder.)
 # Optional env: L2_LIQUIDITY_OWNER (defaults to network LOL multisig).
 # (runMigrate() reads L2_CRE_RECEIVER for executeMigrationSteps' Stage-1-completeness precondition.)
@@ -1027,7 +1463,6 @@ migrate-stage2:
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
     : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
     : "${INITIAL_OWNER_PRIVATE_KEY:?required for runMigrate(); export it before running}"
-    : "${L2_GOVERNANCE_EXECUTOR:?required for runMigrate()}"
     : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
     : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it in .env.$L2_NETWORK from deploy-stage1 output}"
     : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required by runMigrate(); populate it in .env.$L2_NETWORK from deploy-stage1 output}"
@@ -1047,7 +1482,8 @@ migrate-stage2:
 # Actor: Initial Owner (cold key).
 #
 # Required env: L1_RPC_URL (loaded from any .env.<network> — it's identical across the four),
-#               INITIAL_OWNER_PRIVATE_KEY, LIDO_DAO_AGENT (or LIDO_NEW_OWNER)
+#               INITIAL_OWNER_PRIVATE_KEY
+#               (The Lido DAO Agent recipient is pinned in code — see L1MigrationConstants — not env.)
 #
 # Usage: just -E .env.<any-network> migrate-l1
 migrate-l1:
@@ -1055,8 +1491,6 @@ migrate-l1:
     set -euo pipefail
     : "${L1_RPC_URL:?L1_RPC_URL is required; set it in .env.<network> or export it before running}"
     : "${INITIAL_OWNER_PRIVATE_KEY:?required for L1 migration; export it before running}"
-    [[ -n "${LIDO_DAO_AGENT:-}" || -n "${LIDO_NEW_OWNER:-}" ]] \
-      || { echo "LIDO_DAO_AGENT (or LIDO_NEW_OWNER) required for L1 migration" >&2; exit 1; }
     forge script script/l1/L1UpgradeScript.s.sol:L1UpgradeScript \
         --rpc-url "$L1_RPC_URL" --broadcast
 
@@ -1425,11 +1859,19 @@ postflight-monitor:
     eqa() { [[ "$(lc "$1")" == "$(lc "$2")" ]]; }                                            # case-insensitive address compare
     ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0>=b+0)}'; }                              # a>=b (awk doubles — heuristic at wei scale)
     lt() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0< b+0)}'; }                              # a<b
-    OK()    { printf '    OK    %s\n' "$1"; }
-    INFO()  { printf '    info  %s\n' "$1"; }
-    WARN()  { printf '    WARN  %s\n' "$1"; rc=1; }
-    ALERT() { printf '    ALERT %s\n' "$1"; rc=1; }
-    SKIP()  { printf '    SKIP  %s\n' "$1"; rc=1; }
+    # ── Output coloring (auto-off when stdout isn't a TTY or NO_COLOR is set). Keyword colored,
+    # message text plain; the fixed-width keyword padding is preserved (ANSI codes are zero-width).
+    if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+      C_RST=$'\033[0m'; C_OK=$'\033[1;32m'; C_INFO=$'\033[2m'; C_WARN=$'\033[1;33m'; C_ALERT=$'\033[1;31m'; C_SKIP=$'\033[36m'; C_HDR=$'\033[1;36m'
+    else
+      C_RST=''; C_OK=''; C_INFO=''; C_WARN=''; C_ALERT=''; C_SKIP=''; C_HDR=''
+    fi
+    hdr()   { printf '%s%s%s\n' "$C_HDR" "$*" "$C_RST"; }                                    # section banner / title (bold cyan)
+    OK()    { printf '    %sOK%s    %s\n' "$C_OK"    "$C_RST" "$1"; }
+    INFO()  { printf '    %sinfo%s  %s\n' "$C_INFO"  "$C_RST" "$1"; }
+    WARN()  { printf '    %sWARN%s  %s\n' "$C_WARN"  "$C_RST" "$1"; rc=1; }
+    ALERT() { printf '    %sALERT%s %s\n' "$C_ALERT" "$C_RST" "$1"; rc=1; }
+    SKIP()  { printf '    %sSKIP%s  %s\n' "$C_SKIP"  "$C_RST" "$1"; rc=1; }
     # ck_addr "<label>" "<got>" "<want>" "<friendly>" — OK if got==want, ALERT on mismatch, WARN if unreadable.
     ck_addr() { if ! is_addr "$2"; then WARN "$1 unreadable"; elif eqa "$2" "$3"; then OK "$1 = $4 ($3)"; else ALERT "$1 = $2 (expected $4 $3)"; fi; }
     # ck_trap "<label>" "<wei>" — §2 trapped-funds verdict: WARN if unreadable, ALERT if > ~1 ETH-equiv, else OK.
@@ -1453,17 +1895,17 @@ postflight-monitor:
       if out="$(cast logs --json --from-block "$4" --to-block latest --address "$2" "$3" --rpc-url "$1" 2>&1)"; then
         printf '%s' "$out" | jq 'length' 2>/dev/null || echo "?"; else echo "?"; fi; }
 
-    echo "===================================================================="
-    echo "POSTFLIGHT MONITOR — Lido L2 direct-staking (docs/monitoring.md subset)"
+    hdr "===================================================================="
+    hdr "POSTFLIGHT MONITOR — Lido L2 direct-staking (docs/monitoring.md subset)"
     echo "  event-scan window: ${WINDOW_H}h (override: MONITOR_WINDOW_HOURS) — snapshot, not coverage"
-    echo "===================================================================="
+    hdr "===================================================================="
 
     # ════════════════════════ L1 (Ethereum mainnet) ════════════════════════
     echo
-    echo "──────────── L1 (Ethereum mainnet) ────────────"
+    hdr "──────────── L1 (Ethereum mainnet) ────────────"
     L1_RPC="${RPC_ETHEREUM:-${L1_RPC_URL:-}}"
     OP_IN="${ROOT_DIR}/config/state/l2-optimism.inputs.yaml"
-    L1_IN="${ROOT_DIR}/config/state/l1-mainnet.inputs.yaml"
+    L1_IN="${ROOT_DIR}/config/state/l1.inputs.yaml"
     if [[ -z "$L1_RPC" ]]; then
       SKIP "L1 pass — set RPC_ETHEREUM (or legacy L1_RPC_URL)"
     elif ! cast chain-id --rpc-url "$L1_RPC" >/dev/null 2>&1; then
@@ -1515,7 +1957,7 @@ postflight-monitor:
     for net in "${NETS[@]}"; do
       u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"; name="${u:0:1}${net:1}"
       rpc_env="RPC_$u"; l2_env="L2_${u}_RPC_URL"
-      echo; echo "──────────── ${name} ────────────"
+      echo; hdr "──────────── ${name} ────────────"
       INF="${ROOT_DIR}/config/state/l2-${net}.inputs.yaml"; DEP="${ROOT_DIR}/config/state/l2-${net}.deployed.yaml"
       [[ -f "$INF" ]] || { SKIP "${name} — inputs file not found: $INF"; continue; }
       url="${!rpc_env:-}"; [[ -n "$url" ]] || url="${!l2_env:-}"
@@ -1647,7 +2089,7 @@ postflight-monitor:
 
     # ════════════════════════ NOT covered here (wire into indexer / dashboard) ════════════════════════
     echo
-    echo "──────────── NOT covered here — needs an indexer / dashboard ────────────"
+    hdr "──────────── NOT covered here — needs an indexer / dashboard ────────────"
     echo "  • §1 events: RoleGranted/Revoked, OwnershipTransferred, Forwarder/ExpectedAuthor/AllowedCallUpdated, OraclePool Paused → Tenderly/Dune"
     echo "  • §4 CRE credit balance (LOL Safe's CRE account) — dashboard-only, no on-chain signal → https://cre.chain.link/workflows"
     echo "        on-chain proxy = the §3 liveness rows above (stale sync + healthy fees/float ⇒ suspect credit starvation)"
@@ -1655,11 +2097,252 @@ postflight-monitor:
     echo "  • RMN curse (no single stable view) + continuous 1:1 Sync↔MessageSucceeded pairing → indexer"
     echo "  • exhaustive §1 wiring → state-mate (\`just -E .env.<net> test-<net>-upgrade-state-verify\`); fee/gas headroom (§5) → \`just quote-ccip-fees\` + \`just -E .env.<net> preflight-check\`"
     echo
-    echo "===================================================================="
-    if (( rc == 0 )); then echo "OK postflight-monitor: all on-chain-readable checks green (still wire the dashboard/indexer rows above)."
-    else echo "postflight-monitor finished with WARN/ALERT/SKIP rows — review above (exit $rc)."; fi
-    echo "===================================================================="
+    hdr "===================================================================="
+    if (( rc == 0 )); then printf '%sOK%s postflight-monitor: all on-chain-readable checks green (still wire the dashboard/indexer rows above).\n' "$C_OK" "$C_RST"
+    else printf '%spostflight-monitor finished with WARN/ALERT/SKIP rows%s — review above (exit %s).\n' "$C_WARN" "$C_RST" "$rc"; fi
+    hdr "===================================================================="
     exit $rc
+
+# Live post-deploy "canary": seed the NEW oracle pool with a little wstETH, stake a dust amount via
+# CustomSender.fastStake, and verify the staker actually received wstETH — a tiny end-to-end proof that
+# the migrated pool services fastStake, before the LOL multisig seeds full liquidity and announces go-live.
+#
+# MUST run AFTER migrate-stage2: fastStake routes through CustomSender.getOraclePool(), which only points
+# at the new pool post-migration. The recipe HARD-ABORTS unless the sender points at the target new pool
+# (else it would seed the new pool but stake into the old one). The pool is a WETH->wstETH swap venue —
+# OraclePool.swap pays the staker out of the pool's wstETH reserve and reverts OraclePoolInsufficientTokenOut
+# if it is empty — so "fund the pool" means seeding wstETH, NOT ETH, and is distinct from the SyncTrigger
+# ETH float funded at deploy-stage1.
+#
+# DRY RUN BY DEFAULT: prints resolved values, runs every read-only precondition, prints the planned amounts
+# and SENDS NOTHING. Re-run with SMOKE_CONFIRM=yes to actually move funds (wstETH seed tx + fastStake tx).
+#
+# Verification is by OBSERVATION (not assertion): the staker's wstETH balanceOf delta measured strictly
+# across the fastStake tx must be > 0 and equal the emitted FastStake.amountOut, and the pool balances must
+# reconcile (wstETH: before+seed-out; WETH: before+dust). Full addresses/amounts + both tx hashes are printed.
+# If the stake tx fails after the seed tx lands, the seeded wstETH simply stays as pool reserve (recoverable
+# only via a later swap) — not lost, but re-running adds more; size SMOKE_SEED_WSTETH accordingly.
+#
+# Required env: L2_NETWORK; RPC_<NET> (or legacy L2_RPC_URL); L2_SMOKE_PRIVATE_KEY (the canary signer —
+#   must already hold a little wstETH to seed AND native ETH for the dust stake + gas).
+# New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-stage1) win; when unset they
+#   fall back to the l2OraclePool / l2CustomSender anchors in config/state/l2-<net>.deployed.yaml. Tokens,
+#   chain-id and the old pool come from config/state/l2-<net>.inputs.yaml (no new hardcodes here, so
+#   verify-constants-sync is unaffected).
+# Tunables (all wei): SMOKE_STAKE_AMOUNT (default 1e15 = 0.001), SMOKE_SEED_WSTETH (default 2e15 = 0.002),
+#   SMOKE_MIN_OUT (default 0), SMOKE_GAS_BUFFER (default 1e15), SMOKE_STAKE_TOKEN=native|weth (default native).
+#
+# Usage:  just -E .env.<net> smoke-stake                    # dry run (read-only)
+#         SMOKE_CONFIRM=yes just -E .env.<net> smoke-stake  # execute (moves real funds)
+# Live canary: seed new pool with a little wstETH, dust-fastStake, verify wstETH received (dry-run by default; SMOKE_CONFIRM=yes moves real funds).
+smoke-stake:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    for c in yq cast jq bc; do command -v "$c" >/dev/null 2>&1 || { echo "$c is required" >&2; exit 1; }; done
+
+    # Resolve L2 RPC: prefer RPC_<NET> (shell env), fall back to L2_RPC_URL (legacy .env file).
+    _net_upper=$(echo "$L2_NETWORK" | tr '[:lower:]' '[:upper:]')
+    _rpc_var="RPC_${_net_upper}"
+    L2_RPC_URL="${!_rpc_var:-${L2_RPC_URL:-}}"
+    : "${L2_RPC_URL:?Set ${_rpc_var} (or legacy L2_RPC_URL) for $L2_NETWORK}"
+
+    sm_inputs="${ROOT_DIR}/config/state/l2-${L2_NETWORK}.inputs.yaml"
+    sm_deployed="${ROOT_DIR}/config/state/l2-${L2_NETWORK}.deployed.yaml"
+    [[ -f "$sm_inputs" ]] || { echo "inputs file not found: $sm_inputs" >&2; exit 1; }
+
+    die() { echo "SMOKE FAIL: $*" >&2; exit 1; }
+    parse_num() { local s="$1"; s="${s%%[*}"; s="${s%% *}"; s="${s//$'\r'/}"; s="${s//$'\n'/}"; printf '%s' "$s"; }
+    yq1() { yq "[.. | select(anchor==\"$2\")][0]" "$1" 2>/dev/null | tr -d '"' | tr -d '\r\n'; }
+    is_addr() { [[ "${1:-}" =~ ^0x[0-9a-fA-F]{40}$ ]]; }
+    is_uint() { [[ "${1:-}" =~ ^[0-9]+$ ]]; }
+    lc() { printf '%s' "${1:-}" | tr 'A-F' 'a-f'; }
+    eqa() { [[ "$(lc "$1")" == "$(lc "$2")" ]]; }
+    nonzero_addr() { is_addr "$1" && [[ "$(lc "$1")" != "0x0000000000000000000000000000000000000000" ]]; }
+    ge() { [[ "$(echo "$1 >= $2" | bc)" == "1" ]]; }                                         # exact big-int (wei exceeds bash 64-bit)
+    # Must-succeed read: dies with context (the tolerant reads below use inline `|| true`).
+    rdcall() { local out; out="$(cast call "$@" --rpc-url "$L2_RPC_URL" 2>/dev/null)" || die "cast call failed: $*"; parse_num "$out"; }
+
+    # ── Resolve constants (no new hardcodes — single source verify-constants-sync/state-mate guard) ──
+    EXPECTED_CHAIN_ID="$(yq1 "$sm_inputs" l2ChainId)"
+    WETH="$(yq1 "$sm_inputs" l2Weth)"
+    WSTETH="$(yq1 "$sm_inputs" l2Wsteth)"
+    OLD_POOL="$(yq1 "$sm_inputs" l2OldOraclePool)"
+    # New pool + sender: env (printed by deploy-stage1) wins; else the .deployed.yaml anchors.
+    POOL="${L2_ORACLE_POOL:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2OraclePool || true )}"
+    SENDER="${L2_CUSTOM_SENDER:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2CustomSender || true )}"
+
+    : "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (must hold a little wstETH to seed + native ETH for the dust stake + gas)}"
+    SIGNER="$(cast wallet address --private-key "$L2_SMOKE_PRIVATE_KEY" 2>/dev/null | tr -d '\r\n')" || die "invalid L2_SMOKE_PRIVATE_KEY"
+
+    STAKE_TOKEN="${SMOKE_STAKE_TOKEN:-native}"
+    DUST="${SMOKE_STAKE_AMOUNT:-1000000000000000}"                                            # 1e15 = 0.001
+    SEED="${SMOKE_SEED_WSTETH:-2000000000000000}"                                             # 2e15 = 0.002
+    MIN_OUT="${SMOKE_MIN_OUT:-0}"
+    GAS_BUFFER="${SMOKE_GAS_BUFFER:-1000000000000000}"                                        # 1e15 = 0.001, native ETH gas headroom
+    for v in DUST SEED MIN_OUT GAS_BUFFER; do is_uint "${!v}" || die "$v must be a wei integer, got '${!v}'"; done
+    [[ "$DUST" != "0" ]] || die "SMOKE_STAKE_AMOUNT must be > 0 (fastStake reverts on zero)"
+    [[ "$STAKE_TOKEN" == native || "$STAKE_TOKEN" == weth ]] || die "SMOKE_STAKE_TOKEN must be native|weth, got '$STAKE_TOKEN'"
+
+    if [[ "${SMOKE_CONFIRM:-}" == "yes" ]]; then MODE="EXECUTE (moves real funds)"; else MODE="DRY RUN (set SMOKE_CONFIRM=yes to execute)"; fi
+    echo "===================================================================="
+    echo "SMOKE-STAKE (live canary): $L2_NETWORK    [$MODE]"
+    echo "  RPC URL:        $L2_RPC_URL"
+    echo "  Signer:         $SIGNER"
+    echo "  New OraclePool: $POOL"
+    echo "  CustomSender:   $SENDER"
+    echo "  WETH:           $WETH"
+    echo "  wstETH:         $WSTETH"
+    echo "  Seed wstETH:    $SEED wei (~ $(cast from-wei "$SEED") wstETH)"
+    echo "  Dust stake:     $DUST wei (~ $(cast from-wei "$DUST") ETH) via $STAKE_TOKEN"
+    echo "  Min amount out: $MIN_OUT wei"
+    echo "===================================================================="
+
+    nonzero_addr "$POOL"   || die "new OraclePool unresolved — set L2_ORACLE_POOL or populate l2OraclePool in $sm_deployed (got '$POOL')"
+    nonzero_addr "$SENDER" || die "CustomSender unresolved — set L2_CUSTOM_SENDER or populate l2CustomSender in $sm_deployed (got '$SENDER')"
+    is_addr "$WETH"   || die "l2Weth unresolved from $sm_inputs"
+    is_addr "$WSTETH" || die "l2Wsteth unresolved from $sm_inputs"
+    is_uint "$EXPECTED_CHAIN_ID" || die "l2ChainId unresolved from $sm_inputs"
+
+    # ── [1/4] Live, not a stale fork ──
+    echo "[1/4] CHECK chain-id + head freshness (live, not a stale fork)"
+    actual_chain_id="$(parse_num "$(cast chain-id --rpc-url "$L2_RPC_URL")")"
+    [[ "$actual_chain_id" == "$EXPECTED_CHAIN_ID" ]] || die "chain-id mismatch: got $actual_chain_id, expected $EXPECTED_CHAIN_ID for $L2_NETWORK"
+    head_ts="$(parse_num "$(cast block latest --field timestamp --rpc-url "$L2_RPC_URL")")"
+    head_age=$(( $(date +%s) - head_ts ))
+    (( head_age <= 600 )) || die "RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live $L2_NETWORK (check \$${_rpc_var})"
+    echo "      PASS chain-id=$actual_chain_id (head ${head_age}s old)"
+
+    # ── [2/4] Migration done: sender points at the NEW pool ──
+    echo "[2/4] CHECK CustomSender.getOraclePool() == new pool (migrate-stage2 done)"
+    live_pool="$(parse_num "$(cast call "$SENDER" 'getOraclePool()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    is_addr "$live_pool" || die "CustomSender.getOraclePool() unreadable at $SENDER (wrong sender address / RPC?)"
+    if ! eqa "$live_pool" "$POOL"; then
+      if is_addr "$OLD_POOL" && eqa "$live_pool" "$OLD_POOL"; then
+        die "CustomSender still points at the OLD pool ($live_pool) — run migrate-stage2 first (fastStake would hit the old pool)"
+      fi
+      die "CustomSender.getOraclePool()=$live_pool != target new pool $POOL — refusing (would seed one pool, stake into another)"
+    fi
+    echo "      PASS sender -> new pool $POOL"
+
+    # ── [3/4] Pool sanity ──
+    echo "[3/4] CHECK new pool immutables + not paused"
+    p_in="$(parse_num "$(cast call "$POOL" 'TOKEN_IN()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    p_out="$(parse_num "$(cast call "$POOL" 'TOKEN_OUT()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    p_sender="$(parse_num "$(cast call "$POOL" 'SENDER()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    p_paused="$(parse_num "$(cast call "$POOL" 'paused()(bool)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    p_fee="$(parse_num "$(cast call "$POOL" 'getFee()(uint96)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    is_uint "$p_fee" || p_fee=0
+    eqa "$p_in"  "$WETH"   || die "pool.TOKEN_IN()=$p_in != l2Weth $WETH"
+    eqa "$p_out" "$WSTETH" || die "pool.TOKEN_OUT()=$p_out != l2Wsteth $WSTETH"
+    eqa "$p_sender" "$SENDER" || die "pool.SENDER()=$p_sender != $SENDER"
+    [[ "$p_paused" == "false" ]] || die "pool is paused (paused()=$p_paused) — swap is whenNotPaused; unpause before the canary"
+    echo "      PASS TOKEN_IN=WETH, TOKEN_OUT=wstETH, SENDER ok, paused=false, fee=$p_fee (PRECISION 1e18)"
+
+    # ── [4/4] Signer funded + seed covers the expected output ──
+    echo "[4/4] CHECK signer balances + expected output"
+    sig_wst="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$SIGNER")"
+    sig_eth="$(parse_num "$(cast balance "$SIGNER" --rpc-url "$L2_RPC_URL" 2>/dev/null || echo 0)")"
+    is_uint "$sig_eth" || sig_eth=0
+    # expected fastStake output (matches OraclePool.swap, integer math): (dust - dust*fee/1e18) * 1e18 / price
+    oracle="$(parse_num "$(cast call "$POOL" 'getOracle()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+    price=""; expected_out=""
+    if is_addr "$oracle"; then
+      price="$(parse_num "$(cast call "$oracle" 'getLatestAnswer()(uint256)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
+      if is_uint "$price" && [[ "$price" != "0" ]]; then
+        expected_out="$(echo "( $DUST - $DUST * $p_fee / 1000000000000000000 ) * 1000000000000000000 / $price" | bc)"
+      fi
+    fi
+    echo "      INFO signer wstETH=$sig_wst wei (~ $(cast from-wei "$sig_wst")); native ETH=$sig_eth wei (~ $(cast from-wei "$sig_eth"))"
+    if [[ -n "$expected_out" ]]; then echo "      INFO oracle=$oracle price=$price -> expected out ~ $expected_out wei (~ $(cast from-wei "$expected_out") wstETH)"; else echo "      WARN oracle price unreadable; expected-output check skipped (verification still uses the measured delta)"; fi
+    ge "$sig_wst" "$SEED" || die "signer wstETH $sig_wst < seed $SEED — acquire a little wstETH on $L2_NETWORK first"
+    if [[ -n "$expected_out" ]]; then ge "$SEED" "$expected_out" || die "seed $SEED < expected output $expected_out — raise SMOKE_SEED_WSTETH (swap would revert OraclePoolInsufficientTokenOut)"; fi
+    if [[ "$STAKE_TOKEN" == native ]]; then
+      ge "$sig_eth" "$(echo "$DUST + $GAS_BUFFER" | bc)" || die "signer native ETH $sig_eth < dust $DUST + gas buffer $GAS_BUFFER — top up (or lower SMOKE_GAS_BUFFER)"
+    else
+      ge "$sig_eth" "$GAS_BUFFER" || die "signer native ETH $sig_eth < gas buffer $GAS_BUFFER — top up for gas"
+      sig_weth="$(rdcall "$WETH" 'balanceOf(address)(uint256)' "$SIGNER")"
+      ge "$sig_weth" "$DUST" || die "SMOKE_STAKE_TOKEN=weth but signer WETH $sig_weth < dust $DUST — wrap some ETH->WETH or use native"
+      echo "      INFO signer WETH=$sig_weth wei (~ $(cast from-wei "$sig_weth"))"
+    fi
+    echo "      PASS signer funded (seed + dust + gas covered)"
+
+    # Pre-seed pool snapshot (also confirms the pool balances are readable).
+    pool_wst0="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
+    pool_weth0="$(rdcall "$WETH" 'balanceOf(address)(uint256)' "$POOL")"
+
+    if [[ "${SMOKE_CONFIRM:-}" != "yes" ]]; then
+      echo "===================================================================="
+      echo "DRY RUN OK — all preconditions passed; no funds moved."
+      echo "  Re-run to EXECUTE:  SMOKE_CONFIRM=yes just -E .env.$L2_NETWORK smoke-stake"
+      echo "  Would (1) transfer $SEED wei wstETH -> pool $POOL"
+      echo "        (2) fastStake $DUST wei via $STAKE_TOKEN, expecting ~ ${expected_out:-?} wei wstETH to $SIGNER"
+      echo "===================================================================="
+      exit 0
+    fi
+
+    # ── EXECUTE (SMOKE_CONFIRM=yes) ──
+    echo "EXECUTE — moving funds"
+    SEND=(cast send --rpc-url "$L2_RPC_URL" --private-key "$L2_SMOKE_PRIVATE_KEY" --json)
+
+    echo "  -> seed: wstETH.transfer($POOL, $SEED)"
+    seed_rcpt="$("${SEND[@]}" "$WSTETH" 'transfer(address,uint256)' "$POOL" "$SEED")" || die "seed transfer failed"
+    seed_tx="$(printf '%s' "$seed_rcpt" | jq -r '.transactionHash')"
+    [[ "$(printf '%s' "$seed_rcpt" | jq -r '.status')" == "0x1" ]] || die "seed tx reverted ($seed_tx)"
+    pool_wst1="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
+    [[ "$pool_wst1" == "$(echo "$pool_wst0 + $SEED" | bc)" ]] || die "pool wstETH after seed = $pool_wst1, expected $(echo "$pool_wst0 + $SEED" | bc) (tx $seed_tx)"
+    echo "     seeded: tx=$seed_tx ; pool wstETH $pool_wst0 -> $pool_wst1"
+
+    # Window start: staker wstETH immediately before the stake tx (= after seed).
+    staker_before="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$SIGNER")"
+
+    echo "  -> stake: CustomSender.fastStake($STAKE_TOKEN, $DUST, $MIN_OUT)"
+    if [[ "$STAKE_TOKEN" == native ]]; then
+      stake_rcpt="$("${SEND[@]}" --value "$DUST" "$SENDER" 'fastStake(address,uint256,uint256)' '0x0000000000000000000000000000000000000000' "$DUST" "$MIN_OUT")" || die "fastStake (native) failed"
+    else
+      echo "     approve: WETH.approve($SENDER, $DUST)"
+      ap_rcpt="$("${SEND[@]}" "$WETH" 'approve(address,uint256)' "$SENDER" "$DUST")" || die "WETH approve failed"
+      [[ "$(printf '%s' "$ap_rcpt" | jq -r '.status')" == "0x1" ]] || die "approve reverted"
+      stake_rcpt="$("${SEND[@]}" "$SENDER" 'fastStake(address,uint256,uint256)' "$WETH" "$DUST" "$MIN_OUT")" || die "fastStake (weth) failed"
+    fi
+    stake_tx="$(printf '%s' "$stake_rcpt" | jq -r '.transactionHash')"
+    [[ "$(printf '%s' "$stake_rcpt" | jq -r '.status')" == "0x1" ]] || die "fastStake tx reverted ($stake_tx)"
+
+    # ── Verify by observation ──
+    staker_after="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$SIGNER")"
+    pool_wst2="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
+    pool_weth2="$(rdcall "$WETH" 'balanceOf(address)(uint256)' "$POOL")"
+    delta="$(echo "$staker_after - $staker_before" | bc)"
+
+    # Corroborate against the FastStake event amountOut (2nd data word); not load-bearing.
+    ft_topic="$(cast keccak 'FastStake(address,address,uint256,uint256)')"
+    ev_data="$(printf '%s' "$stake_rcpt" | jq -r --arg t "$(lc "$ft_topic")" --arg a "$(lc "$SENDER")" 'first(.logs[] | select((.address|ascii_downcase)==$a and (.topics[0]|ascii_downcase)==$t) | .data) // empty' 2>/dev/null || true)"
+    ev_out=""
+    if [[ "$ev_data" =~ ^0x[0-9a-fA-F]+$ ]]; then d="${ev_data#0x}"; [[ ${#d} -ge 128 ]] && ev_out="$(cast to-dec "0x${d:64:64}")"; fi
+
+    echo "     delta(staker wstETH) = $delta wei (~ $(cast from-wei "$delta"))   [tx $stake_tx]"
+    [[ "$(echo "$delta > 0" | bc)" == "1" ]] || die "staker wstETH delta = $delta (expected > 0) — fastStake delivered nothing"
+    if [[ -n "$ev_out" ]]; then
+      [[ "$ev_out" == "$delta" ]] || die "FastStake.amountOut=$ev_out != measured staker delta=$delta"
+      echo "     OK FastStake.amountOut == measured delta = $delta"
+    else
+      echo "     WARN could not decode FastStake event amountOut; relying on the measured balance delta"
+    fi
+    want_wst="$(echo "$pool_wst1 - $delta" | bc)"
+    want_weth="$(echo "$pool_weth0 + $DUST" | bc)"
+    [[ "$pool_wst2" == "$want_wst" ]]   || die "pool wstETH after = $pool_wst2, expected $want_wst (before+seed-out)"
+    [[ "$pool_weth2" == "$want_weth" ]] || die "pool WETH after = $pool_weth2, expected $want_weth (before+dust)"
+
+    echo "===================================================================="
+    echo "OK SMOKE-STAKE PASSED — $L2_NETWORK"
+    echo "  staker $SIGNER received $delta wei wstETH (~ $(cast from-wei "$delta"))"
+    echo "  seed tx:     $seed_tx   (+$SEED wei wstETH -> pool)"
+    echo "  stake tx:    $stake_tx   ($DUST wei $STAKE_TOKEN -> fastStake)"
+    echo "  pool wstETH: $pool_wst0 -> $pool_wst1 (seed) -> $pool_wst2 (after stake)"
+    echo "  pool WETH:   $pool_weth0 -> $pool_weth2 (+$DUST)"
+    [[ -n "$price" ]] && echo "  oracle price: $price (expected out ~ ${expected_out:-?} wei)"
+    echo "===================================================================="
 
 # Verify each lane's pinned CRE Keystone forwarder is the ERC-165-gating, 2-arg-`onReport` "Router"
 # build that `CREReceiver` speaks — the load-bearing external assumption of the whole CRE→sync path.
@@ -1904,7 +2587,9 @@ _optimism-state-migrate rpc_url='':
     require_cmd cast
     require_cmd forge
     require_env L2_LIDO_DEPLOYER_PRIVATE_KEY
-    require_env L2_GOVERNANCE_EXECUTOR
+    # Governance executor is pinned in the constants contract, never read from .env.
+    L2_GOVERNANCE_EXECUTOR="$(grep -E 'LIDO_L2_GOVERNANCE_EXECUTOR' "$ROOT_DIR/script/optimism/OptimismMigrationConstants.sol" | grep -Eo '0x[0-9a-fA-F]{40}' | head -n1)"
+    [[ -n "$L2_GOVERNANCE_EXECUTOR" ]] || die "could not read LIDO_L2_GOVERNANCE_EXECUTOR from OptimismMigrationConstants.sol"
 
     RPC_URL="$(resolve_rpc_url)"
     L2_LIQUIDITY_OWNER_RESOLVED="${L2_LIQUIDITY_OWNER:-$L2_GOVERNANCE_EXECUTOR}"
@@ -2020,7 +2705,9 @@ _optimism-state-update-config rpc_url='':
     }
 
     require_cmd cast
-    require_env L2_GOVERNANCE_EXECUTOR
+    # Governance executor is pinned in the constants contract, never read from .env.
+    L2_GOVERNANCE_EXECUTOR="$(grep -E 'LIDO_L2_GOVERNANCE_EXECUTOR' "$ROOT_DIR/script/optimism/OptimismMigrationConstants.sol" | grep -Eo '0x[0-9a-fA-F]{40}' | head -n1)"
+    [[ -n "$L2_GOVERNANCE_EXECUTOR" ]] || die "could not read LIDO_L2_GOVERNANCE_EXECUTOR from OptimismMigrationConstants.sol"
 
     RPC_URL="$(resolve_rpc_url)"
 
@@ -2091,13 +2778,14 @@ _optimism-state-update-config rpc_url='':
     echo "Regenerated state-mate .deployed sibling: ${STATE_MATE_DEPLOYED} (rpc: ${RPC_URL})"
 
 [private]
-_state-verify network rpc_url='':
+_state-verify network rpc_url='' overrides='':
     #!/usr/bin/env bash
     set -euo pipefail
 
     NETWORK="{{network}}"
     ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
     RPC_URL="{{rpc_url}}"
+    OVERRIDES="{{overrides}}"   # non-empty (e.g. "canary") ⇒ apply the shared pre-handoff test-stage overlay
 
     # Map network name to default RPC env var.
     # Priority: positional [rpc_url] > L2_RPC_URL (from .env.<net>) > legacy fallbacks.
@@ -2119,6 +2807,12 @@ _state-verify network rpc_url='':
       --inputs   "$ROOT_DIR/config/state/l2-$NETWORK.inputs.yaml"
       --deployed "$ROOT_DIR/config/state/l2-$NETWORK.deployed.yaml"
     )
+    # CANARY (pre-handoff) profile: redefine the 4 deploy-test anchors via the shared overlay. An empty
+    # `overrides` arg (the default) keeps the PRODUCTION values from l2-<net>.inputs.yaml — the post-handoff state.
+    if [[ -n "$OVERRIDES" ]]; then
+      STATE_MATE_SIBLING_ARGS+=(--overrides "$ROOT_DIR/config/state/l2.inputs.test-stage.yaml")
+      echo "Canary profile: applying --overrides config/state/l2.inputs.test-stage.yaml"
+    fi
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${NETWORK}-l2-state-verify.XXXXXX")"
     STATE_MATE_LOG="$WORK_DIR/state-mate.log"
 
@@ -2216,7 +2910,7 @@ verify-l1-state-mate l1_rpc_url='':
     [[ -n "$RPC_URL" ]] || { echo "Missing RPC URL: pass [l1_rpc_url] or set L1_RPC_URL" >&2; exit 1; }
 
     STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
-    STATE_MATE_CONFIG="$ROOT_DIR/config/state/l1-mainnet.yaml"
+    STATE_MATE_CONFIG="$ROOT_DIR/config/state/l1.yaml"
 
     command -v node >/dev/null 2>&1 || { echo "Missing required command: node" >&2; exit 1; }
     if command -v corepack >/dev/null 2>&1; then
@@ -2249,8 +2943,8 @@ verify-l1-state-mate l1_rpc_url='':
 #
 # Env vars (all optional for the fork-based acceptance test):
 #   L2_LIDO_DEPLOYER_PRIVATE_KEY  — deployer key (generated if missing on Anvil)
-#   L2_GOVERNANCE_EXECUTOR        — governance executor address
 #   RPC_ETHEREUM / RPC_OPTIMISM / RPC_ARBITRUM / RPC_BASE / RPC_LINEA — upstream RPCs for forking
+#   (The governance executor is pinned per network in code; the recipe's NET_GOVS array mirrors it.)
 #     (legacy L1_RPC_URL / L2_<NET>_RPC_URL are still honoured as fallbacks)
 # ──────────────────────────────────────────────────────────────────
 
@@ -2448,7 +3142,6 @@ _acceptance-test:
       substep "Stages 1+2: deploy + migrate"
       (
         cd "$ROOT_DIR"
-        L2_GOVERNANCE_EXECUTOR="$gov" \
         ALLOW_UNSAFE_COMBINED_RUN=1 \
         forge script "${NET_SCRIPTS[$i]}" \
           --sig "runWithUnlockedInitialOwner()" \
@@ -2535,7 +3228,7 @@ _acceptance-test:
     substep "L1: running state-mate checks against fork"
     (
       cd "$STATE_MATE_DIR"
-      L1_RPC_URL="$L1_FORK_URL" yarn start "$ROOT_DIR/config/state/l1-mainnet.yaml" --only "l1" 2>&1 | tail -12
+      L1_RPC_URL="$L1_FORK_URL" yarn start "$ROOT_DIR/config/state/l1.yaml" --only "l1" 2>&1 | tail -12
     ) || die "L1 state-mate failed"
     echo "L1 state-mate checks passed"
 
@@ -2602,8 +3295,9 @@ test-optimism-upgrade-state-migrate rpc_url='':
 test-optimism-upgrade-state-update-config rpc_url='':
     @just _optimism-state-update-config "{{rpc_url}}"
 
-# Verify post-migration state-mate checks. Reads L2_RPC_URL from .env.<network>
-# (or legacy fallbacks: L2_STATE_MATE_RPC_URL / LOCAL_L2_<NET>_RPC_URL / L2_<NET>_RPC_URL).
+# Verify post-migration state-mate checks (PRODUCTION / post-handoff profile). Reads L2_RPC_URL from
+# .env.<network> (or legacy fallbacks: L2_STATE_MATE_RPC_URL / LOCAL_L2_<NET>_RPC_URL / L2_<NET>_RPC_URL).
+# For the pre-handoff CANARY state, run the `-canary` variant below (adds --overrides l2.inputs.test-stage.yaml).
 # Usage: just -E .env.<network> test-<network>-upgrade-state-verify
 test-optimism-upgrade-state-verify:
     @just _state-verify optimism ""
@@ -2616,6 +3310,21 @@ test-base-upgrade-state-verify:
 
 test-linea-upgrade-state-verify:
     @just _state-verify linea ""
+
+# Canary (pre-handoff) state-mate checks — the production wiring + the shared test-stage overlay, which
+# redefines the 4 deploy-test anchors (deployer-owned infra + forwarder/author, 0.05e18 / 60s).
+# Usage: just -E .env.<network> test-<network>-upgrade-state-verify-canary
+test-optimism-upgrade-state-verify-canary:
+    @just _state-verify optimism "" canary
+
+test-arbitrum-upgrade-state-verify-canary:
+    @just _state-verify arbitrum "" canary
+
+test-base-upgrade-state-verify-canary:
+    @just _state-verify base "" canary
+
+test-linea-upgrade-state-verify-canary:
+    @just _state-verify linea "" canary
 
 # Legacy alias
 test-optimism-upgrade-state:
@@ -2643,7 +3352,7 @@ _balances-l2 label address rpc_url weth wsteth:
 # <net>.deployed.yaml (.deployed.l1/.l2 anchors), tokens from <net>.inputs.yaml (.externals anchors).
 balances-l1:
     @echo "--- L1 (Ethereum) ---"
-    @just _balances-l1 LidoCustomReceiver "$(yq '.deployed.l1[] | select(anchor == "l1LidoCustomReceiver")' config/state/l1-mainnet.deployed.yaml)" "$L1_RPC_URL" "$(yq '.externals[] | select(anchor == "l1Weth")' config/state/l1-mainnet.inputs.yaml)" "$(yq '.externals[] | select(anchor == "l1Wsteth")' config/state/l1-mainnet.inputs.yaml)"
+    @just _balances-l1 LidoCustomReceiver "$(yq '.deployed.l1[] | select(anchor == "l1LidoCustomReceiver")' config/state/l1.deployed.yaml)" "$L1_RPC_URL" "$(yq '.externals[] | select(anchor == "l1Weth")' config/state/l1.inputs.yaml)" "$(yq '.externals[] | select(anchor == "l1Wsteth")' config/state/l1.inputs.yaml)"
 
 # Print CustomSender + OraclePool balances for one L2 lane. Deployed addrs come from
 # config/state/l2-<net>.deployed.yaml; WETH/wstETH token addrs from l2-<net>.inputs.yaml

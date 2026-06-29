@@ -1,0 +1,22 @@
+---
+# Canary Stage-1 overlay for state-mate `--overrides`, shared by all 4 lanes like config/state/l2.yaml.
+# Redefines the 4 anchors the canary deploy-test sets to deployer/test values, so a run with
+# `--overrides config/state/l2.inputs.test-stage.yaml` verifies the live PRE-handoff state. The base
+# l2-<net>.inputs.yaml hold the PRODUCTION values; `handoff` restores those on-chain, after which the
+# FINAL (production) state-mate run drops `--overrides` and reads the base unchanged.
+#
+# state-mate enforces, per lane, that every label here (a) already exists in that l2-<net>.inputs.yaml
+# (no new labels), (b) keeps the same section, and (c) holds a value that DIFFERS from the base (a
+# no-op is rejected). `just verify-externals-coverage` mirrors all three pre-commit (no RPC). The four
+# canary values are lane-invariant — same deployer + amounts — and differ from every lane's production
+# base, so this one file serves all four.
+config:
+  - &syncMinAmount 50000000000000000 # 0.05e18  canary SyncTrigger.getAmounts()[0]  (prod base: 5e18)
+  - &syncDelay 60                    # 1 min    canary SyncTrigger.getDelay()        (prod base: 12h / 43200)
+externals:
+  # Pre-handoff the deployer owns pool / SyncTrigger / CREReceiver AND stands in for the CRE forwarder
+  # + workflow author, so both production roles collapse onto the deployer here.
+  # ⚠ DEV-FORK deployer only (Anvil acct #0). For a MAINNET canary run, set BOTH values below to the
+  #   real deployer (L2_TEST_DEPLOYER from deploy-test) LOCALLY — do NOT commit (one edit, one file).
+  - &l2LiquidityOwner "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  - &l2CreForwarder  "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"

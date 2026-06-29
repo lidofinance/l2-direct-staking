@@ -10,9 +10,9 @@
 # Canonical source for addresses: script/l1/L1MigrationConstants.sol and the per-net
 # script/<net>/<Net>MigrationConstants.sol. `just verify-constants-sync` cross-checks.
 
-# Deploy parameters live in the sibling l1-mainnet.inputs.yaml (config: knobs + externals: third-party
-# facts); our deployed L1 addresses live in l1-mainnet.deployed.yaml. Both are auto-discovered siblings,
-# concatenated anchors-first, so the *aliases below resolve. l1-mainnet.deployed.yaml is hand-authored
+# Deploy parameters live in the sibling l1.inputs.yaml (config: knobs + externals: third-party
+# facts); our deployed L1 addresses live in l1.deployed.yaml. Both are auto-discovered siblings,
+# concatenated anchors-first, so the *aliases below resolve. l1.deployed.yaml is hand-authored
 # and STATIC — the L1 Stage-2 step only migrates ownership of pre-existing contracts; it deploys nothing new.
 
 roles:

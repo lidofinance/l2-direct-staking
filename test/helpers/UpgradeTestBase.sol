@@ -249,6 +249,39 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         vm.stopPrank();
     }
 
+    /// @dev Canary config = production config with the low test min-amount + delay so a small WETH seed
+    ///      triggers a sync promptly. Production values are restored at {handoffToLiquidityOwner}.
+    function _canaryCfg() internal view returns (L2UpgradeConfig memory cfg) {
+        cfg = _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        cfg.minSyncAmount = 0.05 ether;
+        cfg.minSyncDelay = 60;
+    }
+
+    /// @dev Stage 0→1 of the canary flow: deploy pool + SyncTrigger + CREReceiver owned by the Lido
+    ///      Deployer, with the deployer as the CREReceiver forwarder AND author (so it can drive onReport
+    ///      directly), then the Initial Owner performs the reversible activation.
+    function _deployCanaryL2()
+        internal
+        returns (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver)
+    {
+        vm.selectFork(l2Fork);
+
+        L2UpgradeConfig memory cfg = _canaryCfg();
+        address deployer = lidoStage1Deployer;
+
+        vm.deal(deployer, cfg.syncTriggerInitialFloat);
+        vm.startPrank(deployer);
+        newPool = deployPool(cfg, deployer);
+        (address st, address cr) = deploySyncInfrastructure(cfg, deployer, deployer, deployer);
+        vm.stopPrank();
+        syncTrigger = SyncTrigger(payable(st));
+        creReceiver = CREReceiver(payable(cr));
+
+        vm.startPrank(INITIAL_OWNER);
+        activateForTesting(cfg, address(newPool), st);
+        vm.stopPrank();
+    }
+
     function _deployAndMigrateL1() internal {
         vm.selectFork(l1Fork);
 
