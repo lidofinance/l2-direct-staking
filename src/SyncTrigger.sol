@@ -382,7 +382,6 @@ contract SyncTrigger is Ownable {
         // actively reverts is caught — a code-less `pool`, or one whose `paused()` returns < 32 bytes,
         // reverts during the success-branch ABI decode and PROPAGATES past this try/catch. Not reachable
         // today; do not rely on this to tolerate an arbitrary `pool` address.
-        // NB: if the address has no bytecode it still returns false.
         try IPausableLike(pool).paused() returns (bool paused) {
             return paused;
         } catch {
