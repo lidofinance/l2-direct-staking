@@ -44,7 +44,7 @@ Each recipe is one broadcast by one actor: `just -E .env.<network> <recipe>`.
 
 ### 0 → 1 — deploy + activate (repeat per network ×4)
 - Pre-reqs: Deployer funded with ETH (fees + float + test WETH); `preflight-check`, `preflight-check-l1`, `verify-constants-sync` green.
-- **Deployer:** `deploy-test` ⇒ `runDeployTest()` — deploy the three contracts deployer-owned, `CREReceiver` forwarder + author = deployer, `SyncTrigger` test `delay`/`minAmount` + funded float. Then `verify-test` ⇒ `runVerifyTest()`.
+- **Deployer:** `deploy-test` ⇒ `runDeployTest()` — deploy the three contracts deployer-owned, `CREReceiver` forwarder + author = deployer, `SyncTrigger` test `delay`/`minAmount` (float NOT funded here). Then `fund-trigger` ⇒ `runFundTrigger()` — fund the `SyncTrigger` native fee float (separate tx). Then `verify-test` ⇒ `runVerifyTest()`.
 - **Deployer (off the critical path):** `verify-sources` — publish the three contracts' Solidity source to the lane explorer (Etherscan v2; one `ETHERSCAN_API_KEY` covers all 4 lanes). Re-runnable + idempotent and recovers the **actual** on-chain constructor args via `--guess-constructor-args` (so it matches the deployer-owned/test-valued canary build); the same contracts persist through `handoff`, so this also verifies the production deploy. Changes no on-chain state.
 - **Aphyla:** `activate` ⇒ `runActivate()` — `setOraclePool(newPool)` + `grantRole(SYNC_ROLE, syncTrigger)`. Leaves admin + old automation intact. *(Reversible.)*
 

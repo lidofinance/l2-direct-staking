@@ -121,9 +121,10 @@ export L2_RPC_URL=http://127.0.0.1:8651
 export L2_LIDO_DEPLOYER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80   # anvil acct #0 == $DEPLOYER
 SCRIPT=script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript
 just deploy-test                                              # → paste the 4 printed exports (incl. L2_TEST_DEPLOYER) into the shell
-just verify-test                                              # Evidence: "Script ran successfully" = canary Stage-1 read-backs pass
+just fund-trigger                                             # Deployer: fund the SyncTrigger native fee float (separate tx from deploy-test)
 # Initial-Owner steps impersonate $IO on anvil via the *Unlocked variants (no IO key needed):
 forge script $SCRIPT --sig 'runActivateUnlocked()' --rpc-url $L2_RPC_URL --broadcast --non-interactive --unlocked --sender $IO
+just verify-test                                              # Evidence: "Script ran successfully" = canary Stage-1 read-backs pass (asserts the funded float)
 just seed-test-weth                                           # deposit + transfer test WETH into the pool
 cast rpc --rpc-url $L2_RPC_URL evm_increaseTime 120 >/dev/null && cast rpc --rpc-url $L2_RPC_URL evm_mine >/dev/null   # pass the test delay
 just simulate-sync                                            # onReport → triggerSync → sync (deployer simulates the CRE forwarder)
@@ -181,6 +182,7 @@ sequenceDiagram
     LidoDep->>CRERecv: deployCREReceiver(forwarder=Deployer, expectedAuthor=Deployer, allow=none yet)
     LidoDep->>ST: deploySyncTrigger(forwarder=CRERecv, owner=Deployer, TEST minAmount/delay) — born configured
     LidoDep->>CRERecv: setAllowedCall(ST, triggerSync)
+    LidoDep->>ST: fund native fee float (fund-trigger — SEPARATE tx from runDeployTest)
     end
 
     rect rgb(243, 255, 239)
@@ -247,15 +249,18 @@ sequenceDiagram
 
 ```sh
 just -E .env.<network> deploy-test          # Deployer: deploy pool+trigger+receiver OWNED BY THE DEPLOYER, with the
-#   deployer as the CREReceiver forwarder AND author, TEST minAmount/delay, + fund the trigger float. PRINTS
+#   deployer as the CREReceiver forwarder AND author, TEST minAmount/delay. Does NOT fund the trigger float
+#   (that is a separate step — see fund-trigger below). PRINTS
 #   export L2_ORACLE_POOL/SYNC_TRIGGER/CRE_RECEIVER/TEST_DEPLOYER → append all four to .env.<network>.
+just -E .env.<network> fund-trigger         # Deployer: fund the SyncTrigger native fee float, separate tx from deploy.
 #   The float (L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5 ETH) is sent from the Deployer wallet — it must hold
 #   ≥ 0.5 ETH + deploy gas + a little test WETH/ETH per lane. Reverts (L2UpgradeFloatBelowFloor) if the
 #   constant doesn't cover one worst-case sync. See docs/fees.md §Funding the float.
 just -E .env.<network> activate             # Initial Owner: setOraclePool(new) + grantRole(SYNC_ROLE, trigger).
 #   REVERSIBLE — admin + the legacy automation's SYNC_ROLE are left intact (so `rollback` is clean).
 just -E .env.<network> verify-test          # verify (in-description): infra deployer-owned, pool repointed,
-#   SYNC_ROLE granted, Initial Owner still admin, float funded. Run before simulate-sync (asserts full float).
+#   SYNC_ROLE granted, Initial Owner still admin, float funded. Run after fund-trigger + before simulate-sync
+#   (asserts the full float).
 just -E .env.<network> verify-sources       # publish pool+trigger+receiver SOURCE to the lane explorer
 #   (Etherscan v2; needs ETHERSCAN_API_KEY). Off the critical path, re-runnable + idempotent; reads the actual
 #   on-chain constructor args, and the same contracts persist to production, so this covers the prod deploy too.

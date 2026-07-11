@@ -160,7 +160,8 @@ contract L2UpgradeActions {
     }
 
     /**
-     * @notice Deploy CREReceiver + a fully-configured SyncTrigger, wire them together, and fund the float.
+     * @notice Deploy CREReceiver + a fully-configured SyncTrigger, wire them together, and (by default) fund
+     *         the float. The 5-arg variant's `fundFloat` toggles the funding; the on-chain canary opts out.
      * @dev Shared by production scripts and fork tests. Pool must be deployed separately.
      *
      *      The receiver is deployed FIRST (with an empty allow-list seed) so the SyncTrigger can be
@@ -181,12 +182,29 @@ contract L2UpgradeActions {
     ///      Production passes `cfg.liquidityOwner` (LOL multisig, owned from birth). The canary test flow
     ///      passes the Lido Deployer — with `creForwarder` and `expectedAuthor` also = the deployer — so it
     ///      can stand in for the CRE forwarder + workflow author and drive `CREReceiver.onReport` directly;
-    ///      the real forwarder/author and LOL ownership are restored at {handoffToLiquidityOwner}.
+    ///      the real forwarder/author and LOL ownership are restored at {handoffToLiquidityOwner}. Funds the
+    ///      float in the same broadcast (`fundFloat = true`); the canary opts out — see the 5-arg variant.
     function deploySyncInfrastructure(
         L2UpgradeConfig memory cfg,
         address creForwarder,
         address expectedAuthor,
         address deployOwner
+    ) public returns (address syncTrigger, address creReceiverAddr) {
+        return deploySyncInfrastructure(cfg, creForwarder, expectedAuthor, deployOwner, true);
+    }
+
+    /// @dev Funding-parametrized variant. `fundFloat` controls whether the SyncTrigger's native fee float is
+    ///      seeded in the SAME broadcast that deploys it. Production / fork tests pass `true` (one-shot
+    ///      deploy+fund). The on-chain canary (`runDeployTest`) passes `false` so the float is funded by a
+    ///      SEPARATE operator step (`just fund-trigger` → {fundSyncTrigger}), keeping deploy and funding as
+    ///      distinct transactions; the matching float post-condition is likewise skipped here until that step
+    ///      runs (`verify-test`/{verifyCanaryStage1} re-asserts the funded float before the simulated sync).
+    function deploySyncInfrastructure(
+        L2UpgradeConfig memory cfg,
+        address creForwarder,
+        address expectedAuthor,
+        address deployOwner,
+        bool fundFloat
     ) public returns (address syncTrigger, address creReceiverAddr) {
         _requireNonZeroL2(deployOwner);
         CREReceiver cr = deployCREReceiver(creForwarder, expectedAuthor, address(0), bytes4(0));
@@ -199,12 +217,12 @@ contract L2UpgradeActions {
         if (Ownable(address(cr)).owner() != deployOwner) {
             transferCREReceiverOwnership(address(cr), deployOwner);
         }
-        fundSyncTrigger(address(st), cfg);
+        if (fundFloat) fundSyncTrigger(address(st), cfg);
 
         syncTrigger = address(st);
         creReceiverAddr = address(cr);
 
-        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor, deployOwner);
+        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor, deployOwner, fundFloat);
     }
 
     /**
@@ -258,7 +276,7 @@ contract L2UpgradeActions {
         address creForwarder,
         address expectedAuthor
     ) private view {
-        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor, cfg.liquidityOwner);
+        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor, cfg.liquidityOwner, true);
     }
 
     /// @dev `expectedOwner` is the owner the SyncTrigger/CREReceiver must currently hold — `cfg.liquidityOwner`
@@ -269,7 +287,8 @@ contract L2UpgradeActions {
         address creReceiverAddr,
         address creForwarder,
         address expectedAuthor,
-        address expectedOwner
+        address expectedOwner,
+        bool requireFloat
     ) private view {
         CREReceiver cr = CREReceiver(payable(creReceiverAddr));
         SyncTrigger st = SyncTrigger(payable(syncTrigger));
@@ -307,11 +326,16 @@ contract L2UpgradeActions {
             "creReceiver allow-list seed"
         );
         _requireL2PostCondition(Ownable(creReceiverAddr).owner() == expectedOwner, "creReceiver owner");
-        // The float must hold at least the configured initial float. fundSyncTrigger seeds it at deploy;
-        // handoffToLiquidityOwner and finalizeGovernanceSeal replenish it via _topUpFloat after any test or
-        // live sync draws it down (in the canary flow SYNC_ROLE is granted early, at activateForTesting, so
-        // a sync CAN run before the seal), keeping this bound true at every site that runs this assert.
-        _requireL2PostCondition(syncTrigger.balance >= cfg.syncTriggerInitialFloat, "syncTrigger fee float");
+        // The float must hold at least the configured initial float. Skipped (`requireFloat == false`) only
+        // for the on-chain canary deploy, which funds the float in a SEPARATE step (`just fund-trigger`) —
+        // verify-test re-asserts it before any sync. fundSyncTrigger seeds it (at deploy in production/tests,
+        // or at fund-trigger in the canary); handoffToLiquidityOwner and finalizeGovernanceSeal replenish it
+        // via _topUpFloat after any test or live sync draws it down (in the canary flow SYNC_ROLE is granted
+        // early, at activateForTesting, so a sync CAN run before the seal), keeping this bound true at every
+        // site that runs this assert with requireFloat = true.
+        if (requireFloat) {
+            _requireL2PostCondition(syncTrigger.balance >= cfg.syncTriggerInitialFloat, "syncTrigger fee float");
+        }
     }
 
     function migrateSenderAdmin(L2UpgradeConfig memory cfg) public {
@@ -532,7 +556,7 @@ contract L2UpgradeActions {
 
         // Guardrail: production forwarder + LOL author + production delay/amounts + LOL ownership + float.
         _assertSyncInfrastructure(
-            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner
+            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, true
         );
     }
 
@@ -554,7 +578,7 @@ contract L2UpgradeActions {
         // permissionless, so the broadcaster (Initial Owner) can replenish the now-LOL-owned trigger.
         _topUpFloat(newSyncTrigger, cfg.syncTriggerInitialFloat);
         _assertSyncInfrastructure(
-            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner
+            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, true
         );
         _requireL2PostCondition(ICustomSender(cfg.customSender).getOraclePool() == newPool, "finalize oraclePool");
         _requireL2PostCondition(
@@ -578,7 +602,7 @@ contract L2UpgradeActions {
     ) public view {
         _requireNonZeroL2(oraclePool);
         _requireNonZeroL2(testOwner);
-        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, testOwner, testOwner, testOwner);
+        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, testOwner, testOwner, testOwner, true);
 
         IOraclePool pool = IOraclePool(oraclePool);
         _requireL2PostCondition(pool.SENDER() == cfg.customSender, "oraclePool SENDER");
@@ -612,7 +636,7 @@ contract L2UpgradeActions {
         _requireNonZeroL2(oraclePool);
         _requireNonZeroL2(realForwarder);
         _assertSyncInfrastructure(
-            cfg, syncTrigger, creReceiverAddr, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner
+            cfg, syncTrigger, creReceiverAddr, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, true
         );
         _requireL2PostCondition(Ownable(oraclePool).owner() == cfg.liquidityOwner, "oraclePool owner not LOL");
         _requireL2PostCondition(

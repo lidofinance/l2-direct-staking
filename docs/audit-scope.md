@@ -263,27 +263,32 @@ by its own signer — there is no combined deploy+migrate entrypoint.
 
 1. **0→1 deploy — `runDeployTest()`** (Lido Deployer). Deploy `OraclePool` / `SyncTrigger` /
    `CREReceiver` **owned by the deployer**, with the deployer as the `CREReceiver` forwarder **and**
-   author and a **low test** `minAmount`/`delay`; fund the float. Touches **only the new contracts** —
+   author and a **low test** `minAmount`/`delay`. The trigger's fee float is funded by a **separate**
+   `runFundTrigger()` step (`just fund-trigger`), not this deploy. Touches **only the new contracts** —
    fully reversible by discarding them. Self-reverts (`_assertSyncInfrastructure`, `expectedOwner =
    deployer`, which still reads back `DEST_CHAIN_SELECTOR`, `WNATIVE`, delay, amounts, `feeDtoO`,
-   `feeOtoD`) on any wrong wire/parameter — a botched deploy leaves the live (old) system untouched.
-2. **0→1 activate — `runActivate()`** (Initial Owner). `setOraclePool(new)` + `grantSyncRole(new
+   `feeOtoD`; the float read-back is deferred to the funded steps) on any wrong wire/parameter — a botched
+   deploy leaves the live (old) system untouched.
+2. **0→1 fund — `runFundTrigger()`** (Lido Deployer). Fund the new `SyncTrigger`'s native fee float to
+   `L2_SYNC_TRIGGER_INITIAL_FLOAT` (0.5 ETH) — a separate transaction from the deploy (1). `fundSyncTrigger`
+   reverts (`L2UpgradeFloatBelowFloor`) unless the configured float covers one worst-case sync.
+3. **0→1 activate — `runActivate()`** (Initial Owner). `setOraclePool(new)` + `grantSyncRole(new
    SyncTrigger)`. **Reversible** — the Initial Owner keeps `DEFAULT_ADMIN_ROLE` and the legacy
    automation keeps `SYNC_ROLE`, so `runRollback()` (`setOraclePool(old)` + revoke) fully restores the
    predecessor system.
-3. **Stage 1 test — `runSimulateSync()`** (Lido Deployer). Seed the pool with WETH, then call
+4. **Stage 1 test — `runSimulateSync()`** (Lido Deployer). Seed the pool with WETH, then call
    `CREReceiver.onReport` directly (deployer = forwarder + author): exercises `onReport → triggerSync →
    CustomSender.sync` and a real CCIP forward leg, **without** the real Keystone forwarder or DON (a
    deliberate residual — see §B and §E).
-4. **Gate — `runVerifyTest()`** (anyone, read-only). Confirms the canary state: infra deployer-owned,
-   pool repointed, `SYNC_ROLE` granted, Initial Owner still admin (seal not run).
-5. **1→2 handoff — `runHandoff()`** (Lido Deployer). Sweep test residue; **restore production config**
+5. **Gate — `runVerifyTest()`** (anyone, read-only). Confirms the canary state: infra deployer-owned,
+   pool repointed, `SYNC_ROLE` granted, float funded, Initial Owner still admin (seal not run).
+6. **1→2 handoff — `runHandoff()`** (Lido Deployer). Sweep test residue; **restore production config**
    (`setForwarder(real)`, `setExpectedAuthor(LOL)`, `setDelay(12h)`, `setAmounts(5e18,100e18)`); top up
    the float; `transferOwnership(→ LOL)` on all three. A closing `_assertSyncInfrastructure` against
    **production** values (`expectedOwner = LOL`) reverts the whole handoff if any restore was missed —
    the guardrail that a misconfigured production system cannot ship. LOL then registers the production
    CRE workflow; `runVerifyStage2()` confirms the post-handoff, pre-seal state.
-6. **2→3 seal — `runFinalize()`** (Initial Owner). The irreversible cutover, in order:
+7. **2→3 seal — `runFinalize()`** (Initial Owner). The irreversible cutover, in order:
    `revokeSyncRole`(old Chainlink [+ Gelato on Linea]) → `migrateSenderAdmin` (grant gov-exec, revoke
    Initial Owner) → `transferProxyAdminOwnership`(gov-exec). It **first** re-asserts the LOL-owned,
    production-configured infra as an **interlock** (refuses to seal unless `handoff` completed);

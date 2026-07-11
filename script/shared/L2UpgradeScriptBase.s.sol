@@ -176,15 +176,37 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         L2UpgradeConfig memory cfg =
             _canaryTestCfg(_envInitialOwnerAddress(), _governanceExecutor(), _envLiquidityOwnerAddress());
 
+        // fundFloat = false: the SyncTrigger's native fee float is funded by a SEPARATE operator step
+        // (`just fund-trigger` → runFundTrigger), keeping deploy and funding as distinct transactions.
         vm.startBroadcast(deployerKey);
         oraclePool = address(deployPool(cfg, deployer));
-        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, deployer, deployer);
+        (syncTrigger, creReceiverAddr) = deploySyncInfrastructure(cfg, deployer, deployer, deployer, false);
         vm.stopBroadcast();
 
         console2.log("L2_ORACLE_POOL=%s", vm.toString(oraclePool));
         console2.log("L2_SYNC_TRIGGER=%s", vm.toString(syncTrigger));
         console2.log("L2_CRE_RECEIVER=%s", vm.toString(creReceiverAddr));
         console2.log("L2_TEST_DEPLOYER=%s", vm.toString(deployer));
+    }
+
+    /// @notice Stage 0→1 (Deployer): fund the deployed SyncTrigger's native fee float from the Lido Deployer.
+    ///         Split out of {runDeployTest} so the deploy and the float funding are distinct transactions; run
+    ///         it ONCE before `verify-test`/`simulate-sync` (both require the funded float). Funding is
+    ///         permissionless; {fundSyncTrigger} sends the FULL `syncTriggerInitialFloat` (not a top-up — a
+    ///         re-run over-funds, excess being owner-only `sweep`-recoverable) and reverts only if that
+    ///         configured float is below the worst-case floor.
+    function runFundTrigger() public {
+        assertL2ChainId(_expectedChainId());
+        uint256 deployerKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
+        address syncTrigger = vm.envAddress("L2_SYNC_TRIGGER");
+        L2UpgradeConfig memory cfg =
+            _canaryTestCfg(_envInitialOwnerAddress(), _governanceExecutor(), _envLiquidityOwnerAddress());
+
+        vm.startBroadcast(deployerKey);
+        fundSyncTrigger(syncTrigger, cfg);
+        vm.stopBroadcast();
+
+        console2.log("Funded SyncTrigger %s float to %s wei", vm.toString(syncTrigger), uint256(cfg.syncTriggerInitialFloat));
     }
 
     /// @notice Stage 0→1 verify (read-only): canary infra deployed + owned by the deployer, pool repointed,

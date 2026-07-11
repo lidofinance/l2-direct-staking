@@ -425,13 +425,15 @@ automatically. The mechanics:
   (`sweep()` is owner-only = LOL multisig, `src/SyncTrigger.sol:288` — a Safe transaction). So
   size deposits as floor + bounded runway (e.g. `maxNativeFee` + ~30 days ≈ 0.5 ETH/lane), not
   "fill it up", and refill from the [§5 alert](monitoring.md#5-capacity--headroom--medium).
-- **Initial funding is part of `deploy-test` itself** (`fundSyncTrigger`, `script/shared/L2UpgradeActions.s.sol`):
-  the amount is pinned as `L2_SYNC_TRIGGER_INITIAL_FLOAT` in each network's `MigrationConstants` (0.5 ETH),
-  sent from the Lido Deployer wallet during the canary deploy broadcast. The script reverts with
+- **Initial funding is a SEPARATE step from `deploy-test`** — `just fund-trigger` ⇒ `runFundTrigger()` ⇒
+  `fundSyncTrigger` (`script/shared/L2UpgradeActions.s.sol`), run right after the deploy so the two are
+  distinct transactions. The amount is pinned as `L2_SYNC_TRIGGER_INITIAL_FLOAT` in each network's
+  `MigrationConstants` (0.5 ETH), sent from the Lido Deployer wallet. The script reverts with
   `L2UpgradeFloatBelowFloor` if the constant doesn't cover one worst-case sync (`maxFee + feeDtoO`), and
-  both the in-broadcast assert and `verify-test` read the balance back. Fork-test coverage:
+  `verify-test` (run after `fund-trigger`) reads the balance back. Fork-test coverage:
   `test_productionDeployFundsSyncTriggerFloatForFirstSync` runs the first sync on the script-funded float
-  alone — no test-side `vm.deal`.
+  alone — no test-side `vm.deal` (the fork helper deploys with `fundFloat = true`, i.e. deploy+fund in one
+  shot — the on-chain canary is what splits them into `deploy-test` + `fund-trigger`).
 - LINK fee payment is **not supported**: both fee setters reject `payInLink == true`, the constructor
   grants no LINK allowance, and `getMaxFees()` returns only the native total — there is no LINK float.
 
@@ -705,8 +707,8 @@ on is confirmed, so it is the forward-looking bound — which is also why the ca
 
 ### Reproduction
 
-(2026-06-17; per-lane `CustomSender` from `config/state/l2-<net>.deployed.yaml` — OP/Base/Linea share
-`0x328de900…`, Arbitrum is `0x72229141…`.)
+(2026-06-17; per-lane `CustomSender` from `config/state/l2-<net>.inputs.yaml` (externals) — OP/Base/Linea
+share `0x328de900…`, Arbitrum is `0x72229141…`.)
 
 ```bash
 SENDER=0x328de900860816d29D1367F6903a24D8ed40C997   # OP/Base/Linea; Arbitrum: 0x72229141D4B016682d3618ECe47c046f30Da4AD1

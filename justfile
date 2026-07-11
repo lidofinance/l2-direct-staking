@@ -630,8 +630,7 @@ verify-constants-sync:
       # in these siblings. yml_anchor strips `.yaml` and scans <stem>.inputs.yaml/<stem>.deployed.yaml,
       # so this stem still resolves the anchors even though the per-lane wiring file is gone.
       sm="config/state/l2-${net}.yaml"
-      # The l2CustomSender/Impl/ProxyAdmin anchors live only in the generated .deployed.yaml sibling.
-      l2_deployed="config/state/l2-${net}.deployed.yaml"
+      # The l2CustomSender/Impl/ProxyAdmin anchors are pre-existing externals pinned in <stem>.inputs.yaml.
 
       sol_l2_sender=$(sol_addr   "$sol" L2_CUSTOM_SENDER)
       sol_l2_sender_impl=$(sol_addr "$sol" L2_CUSTOM_SENDER_IMPL)
@@ -653,9 +652,9 @@ verify-constants-sync:
       echo
       echo "[$net] state-mate siblings: ${sm%.yaml}.{inputs,deployed}.yaml (shared wiring: config/state/l2.yaml)"
       expect_eq "l2ChainId → ${upper}_CHAIN_ID"                                  "$sol_chain_id"      "$(yml_anchor "$sm" l2ChainId)"
-      expect_eq_deferred "l2CustomSender → L2_CUSTOM_SENDER"                     "$sol_l2_sender"     "$(yml_anchor "$sm" l2CustomSender)"     "$l2_deployed"
-      expect_eq_deferred "l2CustomSenderImpl → L2_CUSTOM_SENDER_IMPL"            "$sol_l2_sender_impl" "$(yml_anchor "$sm" l2CustomSenderImpl)" "$l2_deployed"
-      expect_eq_deferred "l2ProxyAdmin → L2_PROXY_ADMIN"                         "$sol_l2_proxy"      "$(yml_anchor "$sm" l2ProxyAdmin)"      "$l2_deployed"
+      expect_eq "l2CustomSender → L2_CUSTOM_SENDER"                             "$sol_l2_sender"     "$(yml_anchor "$sm" l2CustomSender)"
+      expect_eq "l2CustomSenderImpl → L2_CUSTOM_SENDER_IMPL"                    "$sol_l2_sender_impl" "$(yml_anchor "$sm" l2CustomSenderImpl)"
+      expect_eq "l2ProxyAdmin → L2_PROXY_ADMIN"                                 "$sol_l2_proxy"      "$(yml_anchor "$sm" l2ProxyAdmin)"
       expect_eq "l2OldOraclePool → L2_OLD_ORACLE_POOL"                           "$sol_l2_pool"       "$(yml_anchor "$sm" l2OldOraclePool)"
       expect_eq "l2GovernanceExecutor → LIDO_L2_GOVERNANCE_EXECUTOR"             "$sol_l2_gov"        "$(yml_anchor "$sm" l2GovernanceExecutor)"
       expect_eq "l2CreForwarder → CRE_FORWARDER"                                 "$sol_l2_fwd"        "$(yml_anchor "$sm" l2CreForwarder)"
@@ -673,8 +672,8 @@ verify-constants-sync:
         sol_gelato=$(sol_addr "$sol" L2_OLD_GELATO_AUTOMATION)
         expect_eq "l2OldGelatoSyncAutomation → L2_OLD_GELATO_AUTOMATION"          "$sol_gelato" "$(yml_anchor "config/state/l2-linea-extras.yaml" l2OldGelatoSyncAutomation)"
         # The extras config also reads SYNC_ROLE off the upstream CustomSender. Its address is pinned in
-        # the COMMITTED l2-linea-extras.deployed.yaml, so verify it here unconditionally — the per-lane
-        # l2CustomSender check above is deferred (its .deployed.yaml is generated, absent at this point).
+        # the COMMITTED l2-linea-extras.deployed.yaml (separate from the per-lane l2-linea.inputs.yaml
+        # externals anchor checked above), so verify that committed copy here too.
         expect_eq "l2CustomSender (linea-extras) → L2_CUSTOM_SENDER"             "$sol_l2_sender" "$(yml_anchor "config/state/l2-linea-extras.yaml" l2CustomSender)"
         expect_eq "preflight-check LINEA_GELATO → L2_OLD_GELATO_AUTOMATION"       "$sol_gelato" "$(just_field linea LINEA_GELATO)"
       fi
@@ -1104,21 +1103,13 @@ deploy-test:
       echo "Next: just -E .env.$L2_NETWORK activate   (Initial Owner repoints the pool + grants SYNC_ROLE)"
       echo "===================================================================="
 
-      # Regenerate the committed state-mate `.deployed.yaml` sibling so the 3→4 `state-mate` step has a
-      # current target (the canary IS the production deploy path). The canary redeploys the three contracts
-      # but reuses the existing CustomSender proxy/impl + ProxyAdmin, which are carried over; only the three
-      # Stage-1 outputs are refreshed from the broadcast JSON above.
+      # Generate the state-mate `.deployed.yaml` sibling so the 3→4 `state-mate` step has a current target
+      # (the canary IS the production deploy path). This file holds ONLY the three Stage-1 outputs from the
+      # broadcast JSON above — the pre-existing CustomSender proxy/impl + ProxyAdmin are externals in
+      # l2-$L2_NETWORK.inputs.yaml, so this is always regenerable with no pre-existing seed.
       deployed_file="config/state/l2-$L2_NETWORK.deployed.yaml"
-      if [[ -f "$deployed_file" ]]; then
-        preserved=()
-        for anchor in l2CustomSender l2CustomSenderImpl l2ProxyAdmin; do
-          preserved+=("$(yq ".. | select(anchor == \"$anchor\")" "$deployed_file" 2>/dev/null | tr -d '"' | head -n1)")
-        done
-        bash script/shared/write-deployed-yaml.sh "$deployed_file" "${preserved[@]}" "$pool" "$trigger" "$receiver"
-        echo "  → updated $deployed_file — review the diff and commit it alongside the migration."
-      else
-        echo "WARN $deployed_file not found; skipping .deployed.yaml generation (run from a tree with the committed sibling)." >&2
-      fi
+      bash script/shared/write-deployed-yaml.sh "$deployed_file" "$pool" "$trigger" "$receiver"
+      echo "  → wrote $deployed_file — review the diff and commit it alongside the migration."
     else
       echo "WARN broadcast JSON not found at $bcast; record addresses from the forge log above." >&2
     fi
@@ -1229,6 +1220,26 @@ activate:
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runActivate()' --rpc-url "$L2_RPC_URL" --broadcast
+
+# Stage 1 (Deployer): fund the deployed SyncTrigger's native fee float (L2_SYNC_TRIGGER_INITIAL_FLOAT).
+# Split out of `deploy-test` so the deploy and the float funding are distinct transactions. Run ONCE after
+# `deploy-test` and before `verify-test`/`simulate-sync` (both require the funded float). Sends the FULL
+# configured float (not a top-up — re-running over-funds; excess is owner-only `sweep`-recoverable);
+# reverts (L2UpgradeFloatBelowFloor) only if that float is below the worst-case floor.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_SYNC_TRIGGER.
+#
+# Usage: just -E .env.<network> fund-trigger
+fund-trigger:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
+    : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runFundTrigger(); export it before running}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
+
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runFundTrigger()' --rpc-url "$L2_RPC_URL" --broadcast
 
 # Stage 1 (Deployer): seed the pool with WETH so a sync becomes due. Deposits ETH→WETH and transfers it
 # to the pool. WETH is read from the pool's TOKEN_IN (authoritative).
@@ -1919,28 +1930,28 @@ postflight-monitor:
       # Resolve every per-lane input anchor in ONE yq pass (matches the quote-ccip-fees pattern; the
       # `[..][0]` form pins output order to query order, and a missing anchor yields a stable `null` line).
       { IFS= read -r ROUTER; IFS= read -r WETH; IFS= read -r OLDPOOL; IFS= read -r CREFWD
-        IFS= read -r LOL; IFS= read -r SEL; IFS= read -r SYNCMIN
+        IFS= read -r LOL; IFS= read -r SEL; IFS= read -r SYNCMIN; IFS= read -r INP_SENDER
       } < <(yq '[.. | select(anchor=="l2CcipRouter")][0], [.. | select(anchor=="l2Weth")][0],
         [.. | select(anchor=="l2OldOraclePool")][0], [.. | select(anchor=="l2CreForwarder")][0],
         [.. | select(anchor=="l2LiquidityOwner")][0], [.. | select(anchor=="ethMainnetCcipChainSelector")][0],
-        [.. | select(anchor=="syncMinAmount")][0]' "$INF" 2>/dev/null)
+        [.. | select(anchor=="syncMinAmount")][0], [.. | select(anchor=="l2CustomSender")][0]' "$INF" 2>/dev/null)
       # Deployed addresses (only SyncTrigger is not on-chain-discoverable). Absent file ⇒ SKIP those rows.
-      DEP_SENDER="" ; DEP_TRIG="" ; DEP_RECV="" ; DEP_POOL=""
+      DEP_TRIG="" ; DEP_RECV="" ; DEP_POOL=""
       if [[ -f "$DEP" ]]; then
-        { IFS= read -r DEP_SENDER; IFS= read -r DEP_TRIG; IFS= read -r DEP_RECV; IFS= read -r DEP_POOL
-        } < <(yq '[.. | select(anchor=="l2CustomSender")][0], [.. | select(anchor=="l2SyncTrigger")][0],
+        { IFS= read -r DEP_TRIG; IFS= read -r DEP_RECV; IFS= read -r DEP_POOL
+        } < <(yq '[.. | select(anchor=="l2SyncTrigger")][0],
           [.. | select(anchor=="l2CreReceiver")][0], [.. | select(anchor=="l2OraclePool")][0]' "$DEP" 2>/dev/null)
       fi
 
-      # Bootstrap CustomSender LIVE from the known old pool, cross-check vs file (A.12 externality).
+      # Bootstrap CustomSender LIVE from the known old pool, cross-check vs the .inputs externals anchor.
       SENDER="$(rd "$url" "$OLDPOOL" 'SENDER()(address)')"
-      if ! is_addr "$SENDER"; then SENDER="$DEP_SENDER"; fi
+      if ! is_addr "$SENDER"; then SENDER="$INP_SENDER"; fi
       if is_addr "$SENDER"; then
         echo "  CustomSender = $SENDER"
         if is_addr "$DEP_TRIG"; then echo "  SyncTrigger  = $DEP_TRIG (.deployed)"; fi
-        is_addr "$DEP_SENDER" && { eqa "$SENDER" "$DEP_SENDER" || ALERT "§1 CustomSender live=$SENDER ≠ .deployed=$DEP_SENDER (stale/contaminated file)"; }
+        is_addr "$INP_SENDER" && { eqa "$SENDER" "$INP_SENDER" || ALERT "§1 CustomSender live=$SENDER ≠ .inputs=$INP_SENDER (stale/contaminated file)"; }
       else
-        WARN "${name} — CustomSender unresolved (oldPool.SENDER() failed, no .deployed.yaml); §1/§3/§5 limited"
+        WARN "${name} — CustomSender unresolved (oldPool.SENDER() failed, no l2CustomSender in .inputs); §1/§3/§5 limited"
       fi
 
       # ── §1 wiring + new pool (derived live; cross-checked vs file) ──
@@ -2076,10 +2087,10 @@ postflight-monitor:
 #
 # Required env: L2_NETWORK; RPC_<NET> (or legacy L2_RPC_URL); L2_SMOKE_PRIVATE_KEY (the canary signer —
 #   must already hold a little wstETH to seed AND native ETH for the dust stake + gas).
-# New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-test) win; when unset they
-#   fall back to the l2OraclePool / l2CustomSender anchors in config/state/l2-<net>.deployed.yaml. Tokens,
-#   chain-id and the old pool come from config/state/l2-<net>.inputs.yaml (no new hardcodes here, so
-#   verify-constants-sync is unaffected).
+# New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-test) win; when unset the
+#   new pool falls back to l2OraclePool in config/state/l2-<net>.deployed.yaml and the CustomSender to the
+#   l2CustomSender external in config/state/l2-<net>.inputs.yaml. Tokens, chain-id and the old pool also
+#   come from .inputs.yaml (no new hardcodes here, so verify-constants-sync is unaffected).
 # Tunables (all wei): SMOKE_STAKE_AMOUNT (default 1e15 = 0.001), SMOKE_SEED_WSTETH (default 2e15 = 0.002),
 #   SMOKE_MIN_OUT (default 0), SMOKE_GAS_BUFFER (default 1e15), SMOKE_STAKE_TOKEN=native|weth (default native).
 #
@@ -2120,9 +2131,10 @@ smoke-stake:
     WETH="$(yq1 "$sm_inputs" l2Weth)"
     WSTETH="$(yq1 "$sm_inputs" l2Wsteth)"
     OLD_POOL="$(yq1 "$sm_inputs" l2OldOraclePool)"
-    # New pool + sender: env (printed by deploy-test) wins; else the .deployed.yaml anchors.
+    # CustomSender is a pre-existing external in .inputs; env (printed by deploy-test) wins.
+    SENDER="${L2_CUSTOM_SENDER:-$(yq1 "$sm_inputs" l2CustomSender)}"
+    # New pool: env (printed by deploy-test) wins; else the freshly-generated .deployed.yaml anchor.
     POOL="${L2_ORACLE_POOL:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2OraclePool || true )}"
-    SENDER="${L2_CUSTOM_SENDER:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2CustomSender || true )}"
 
     : "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (must hold a little wstETH to seed + native ETH for the dust stake + gas)}"
     SIGNER="$(cast wallet address --private-key "$L2_SMOKE_PRIVATE_KEY" 2>/dev/null | tr -d '\r\n')" || die "invalid L2_SMOKE_PRIVATE_KEY"
@@ -2151,7 +2163,7 @@ smoke-stake:
     echo "===================================================================="
 
     nonzero_addr "$POOL"   || die "new OraclePool unresolved — set L2_ORACLE_POOL or populate l2OraclePool in $sm_deployed (got '$POOL')"
-    nonzero_addr "$SENDER" || die "CustomSender unresolved — set L2_CUSTOM_SENDER or populate l2CustomSender in $sm_deployed (got '$SENDER')"
+    nonzero_addr "$SENDER" || die "CustomSender unresolved — set L2_CUSTOM_SENDER or populate l2CustomSender in $sm_inputs (got '$SENDER')"
     is_addr "$WETH"   || die "l2Weth unresolved from $sm_inputs"
     is_addr "$WSTETH" || die "l2Wsteth unresolved from $sm_inputs"
     is_uint "$EXPECTED_CHAIN_ID" || die "l2ChainId unresolved from $sm_inputs"
@@ -2615,8 +2627,7 @@ _optimism-state-update-config rpc_url='':
     STATE_MATE_OUTPUT_FILE="${L2_STATE_MATE_OUTPUT_FILE:-${TMPDIR:-/tmp}/optimism-l2-state-mate.env}"
     STATE_MATE_DEPLOYED="$ROOT_DIR/config/state/l2-optimism.deployed.yaml"
     STATE_MATE_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/optimism-l2-state-config.XXXXXX")"
-    L2_CUSTOM_SENDER="${L2_STATE_MATE_CUSTOM_SENDER:-0x328de900860816d29D1367F6903a24D8ed40C997}"
-    L2_PROXY_ADMIN="${L2_STATE_MATE_PROXY_ADMIN:-0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192}"
+    L2_CUSTOM_SENDER="${L2_STATE_MATE_CUSTOM_SENDER:-0x328de900860816d29D1367F6903a24D8ed40C997}" # only to derive the new OraclePool live
     INITIAL_OWNER_DEFAULT="${L2_STATE_MATE_INITIAL_OWNER:-0xb5c336a5c60D3482b29d83C742C65AE8351b91a8}"
 
     cleanup() { rm -rf "$STATE_MATE_WORK_DIR"; }
@@ -2717,15 +2728,9 @@ _optimism-state-update-config rpc_url='':
       CRE_RECEIVER_ADDRESS="$(read_saved_output_var L2_STATE_MATE_CRE_RECEIVER 2>/dev/null || true)"
     fi
 
-    # Read EIP-1967 implementation slot from the proxy.
-    EIP1967_IMPL_SLOT="0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
-    IMPL_RAW="$(cast storage "$L2_CUSTOM_SENDER" "$EIP1967_IMPL_SLOT" --rpc-url "$RPC_URL" | tr -d '\r\n')"
-    L2_CUSTOM_SENDER_IMPL="0x$(printf '%s' "${IMPL_RAW#0x}" | tail -c 40)"
-    [[ "$L2_CUSTOM_SENDER_IMPL" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Failed to read implementation slot for $L2_CUSTOM_SENDER"
-    L2_CUSTOM_SENDER_IMPL="$(cast to-check-sum-address "$L2_CUSTOM_SENDER_IMPL")"
-
+    # The .deployed.yaml holds only the three freshly-deployed contracts; the pre-existing CustomSender
+    # proxy/impl + ProxyAdmin are externals in l2-optimism.inputs.yaml (no slot read needed here).
     bash "$ROOT_DIR/script/shared/write-deployed-yaml.sh" "$STATE_MATE_DEPLOYED" \
-      "$L2_CUSTOM_SENDER" "$L2_CUSTOM_SENDER_IMPL" "$L2_PROXY_ADMIN" \
       "$ORACLE_POOL_ADDRESS" "$SYNC_TRIGGER_ADDRESS" "$CRE_RECEIVER_ADDRESS"
     echo "Regenerated state-mate .deployed sibling: ${STATE_MATE_DEPLOYED} (rpc: ${RPC_URL})"
 
@@ -2935,16 +2940,15 @@ _acceptance-test:
                    "ArbitrumPoolUpgradeTest|ArbitrumCREIntegrationTest" \
                    "BasePoolUpgradeTest|BaseCREIntegrationTest" \
                    "LineaPoolUpgradeTest|LineaCREIntegrationTest")
-    NET_SENDERS=(  0x328de900860816d29D1367F6903a24D8ed40C997 0x72229141D4B016682d3618ECe47c046f30Da4AD1 0x328de900860816d29D1367F6903a24D8ed40C997 0x328de900860816d29D1367F6903a24D8ed40C997)
-    NET_IMPLS=(    0x65498495DdC07c52E12EEe3c44D3a1166eed8703 0x220F64A4793Bc8aca7330ceCc4ae4e2F3B5Bc664 0x65498495DdC07c52E12EEe3c44D3a1166eed8703 0xBf96561e4519182CFA4cebBf95494D9CA5a316f9)
-    NET_PROXIES=(  0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192 0x5B42aEbFe95247f1d22e282831e2A513bF050217 0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192 0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192)
+    # CustomSender proxy/impl + ProxyAdmin are pre-existing externals (in each l2-<net>.inputs.yaml) and
+    # exist in forked state, so the fork .deployed.yaml no longer carries them — no NET_SENDERS/IMPLS/PROXIES.
     NET_LOLS=(     0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6)
     NET_COUNT=${#NET_NAMES[@]}
 
     die() { echo "FAIL: $*" >&2; exit 1; }
 
     # Validate parallel arrays have consistent length
-    for arr_name in NET_RPC_ENVS NET_RPC_ENVS_LEGACY NET_GOVS NET_SCRIPTS NET_TESTS NET_SENDERS NET_IMPLS NET_PROXIES NET_LOLS; do
+    for arr_name in NET_RPC_ENVS NET_RPC_ENVS_LEGACY NET_GOVS NET_SCRIPTS NET_TESTS NET_LOLS; do
       eval "arr_len=\${#${arr_name}[@]}"
       [[ "$arr_len" -eq "$NET_COUNT" ]] || die "Array $arr_name has $arr_len elements, expected $NET_COUNT"
     done
@@ -3169,16 +3173,16 @@ _acceptance-test:
 
       sm_config="$ROOT_DIR/config/state/l2.yaml"
       sm_inputs="$ROOT_DIR/config/state/l2-$name.inputs.yaml"
-      # Fork redeploys land at addresses that differ from the committed (mainnet-expected) ones, so
-      # write the fork's ACTUAL deployed addresses to a throwaway .deployed.yaml and override the
-      # committed sibling via --deployed. The static <net>.inputs.yaml (governance actors, tokens,
-      # fee blobs) needs no override — the fork reuses the canonical NET_GOVS/NET_LOLS and the anvil
+      # Fork redeploys of the three fresh contracts land at addresses that differ from the committed
+      # (mainnet-expected) ones, so write the fork's ACTUAL pool/trigger/receiver to a throwaway
+      # .deployed.yaml and override via --deployed. The static <net>.inputs.yaml (governance actors,
+      # tokens, fee blobs, AND the pre-existing CustomSender proxy/impl + ProxyAdmin) needs no override —
+      # the fork inherits those from forked state and reuses the canonical NET_GOVS/NET_LOLS and the anvil
       # dev deployer (= the committed l2LidoDeployer) — but it MUST be passed explicitly since the
       # shared l2.yaml's basename-keyed auto-discovery would otherwise look for l2.inputs.yaml.
       fork_deployed="$WORK_DIR/$name.deployed.yaml"
       substep "$name: writing fork .deployed.yaml"
       bash "$ROOT_DIR/script/shared/write-deployed-yaml.sh" "$fork_deployed" \
-        "${NET_SENDERS[$i]}" "${NET_IMPLS[$i]}" "${NET_PROXIES[$i]}" \
         "${DEPLOYED_POOLS[$i]}" "${DEPLOYED_TRIGGERS[$i]}" "${DEPLOYED_RECEIVERS[$i]}"
 
       substep "$name: running state-mate checks"
@@ -3402,8 +3406,8 @@ balances-l1:
     @echo "--- L1 (Ethereum) ---"
     @just _balances-l1 LidoCustomReceiver "$(yq '.externals[] | select(anchor == "l1LidoCustomReceiver")' config/state/l1.inputs.yaml)" "$L1_RPC_URL" "$(yq '.externals[] | select(anchor == "l1Weth")' config/state/l1.inputs.yaml)" "$(yq '.externals[] | select(anchor == "l1Wsteth")' config/state/l1.inputs.yaml)"
 
-# Print CustomSender + OraclePool balances for one L2 lane. Deployed addrs come from
-# config/state/l2-<net>.deployed.yaml; WETH/wstETH token addrs from l2-<net>.inputs.yaml
+# Print CustomSender + OraclePool balances for one L2 lane. The new OraclePool comes from
+# config/state/l2-<net>.deployed.yaml; CustomSender + WETH/wstETH token addrs from l2-<net>.inputs.yaml
 # (read once and reused for both sub-calls).
 [no-exit-message]
 _balances-net net label rpc_url:
@@ -3414,7 +3418,7 @@ _balances-net net label rpc_url:
     weth="$(yq '.externals[] | select(anchor == "l2Weth")' "$inp")"
     wsteth="$(yq '.externals[] | select(anchor == "l2Wsteth")' "$inp")"
     echo "--- {{label}} ---"
-    just _balances-l2 CustomSender "$(yq '.deployed.l2[] | select(anchor == "l2CustomSender")' "$dep")" "{{rpc_url}}" "$weth" "$wsteth"
+    just _balances-l2 CustomSender "$(yq '.externals[] | select(anchor == "l2CustomSender")' "$inp")" "{{rpc_url}}" "$weth" "$wsteth"
     echo ""
     just _balances-l2 OraclePool "$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' "$dep")" "{{rpc_url}}" "$weth" "$wsteth"
 

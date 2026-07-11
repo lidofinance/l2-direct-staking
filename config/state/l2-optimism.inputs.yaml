@@ -53,6 +53,12 @@ externals:
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
   - &l2OldOraclePool "0x6F357d53d6bE3238180316BA5F8f11467e164588"
   - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated l2-optimism.deployed.yaml.
+  #   Pinned to OptimismMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
+  - &l2CustomSenderImpl "0x65498495DdC07c52E12EEe3c44D3a1166eed8703"
+  - &l2ProxyAdmin "0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192"
   # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
   #   network & Chainlink-operated. Pinned to OptimismMigrationConstants.CRE_FORWARDER (verify-constants-sync).
   - &l2CreForwarder "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"
