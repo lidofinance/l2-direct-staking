@@ -18,5 +18,5 @@ externals:
   # + workflow author, so both production roles collapse onto the deployer here.
   # ⚠ DEV-FORK deployer only (Anvil acct #0). For a MAINNET canary run, set BOTH values below to the
   #   real deployer (L2_TEST_DEPLOYER from deploy-test) LOCALLY — do NOT commit (one edit, one file).
-  - &l2LiquidityOwner "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-  - &l2CreForwarder  "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  - &l2LiquidityOwner "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
+  - &l2CreForwarder  "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"

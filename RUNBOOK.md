@@ -264,6 +264,9 @@ just -E .env.<network> verify-test          # verify (in-description): infra dep
 just -E .env.<network> verify-sources       # publish pool+trigger+receiver SOURCE to the lane explorer
 #   (Etherscan v2; needs ETHERSCAN_API_KEY). Off the critical path, re-runnable + idempotent; reads the actual
 #   on-chain constructor args, and the same contracts persist to production, so this covers the prod deploy too.
+just -E .env.<network> diffyscan            # third-party cross-check of the published sources: diffyscan diffs the
+#   explorer copy against the deploy commit on GitHub (pinned via the '# deploy-commit:' stamp in
+#   config/state/l2-<net>.deployed.yaml). Needs diffyscan on PATH + GITHUB_API_TOKEN; run after verify-sources.
 ```
 
 ### Stage 1 — canary sync test — Duty: **Lido Deployer**, per network
@@ -278,6 +281,51 @@ just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly
 > **Non-destructive fork rehearsal (keyless, CI).** `just -E .env.<network> test-<network>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an in-process fork of the live chain, binding to the real on-chain canary from `config/state/l2-<network>.deployed.yaml` (auto-detected deployer-owned via `verifyCanaryStage1` — **skips the deploy**; falls back to a fresh on-fork deploy if absent). Costs no gas, mutates no real state — the CI sibling of `simulate-sync`. Point its RPC at a mainnet upstream; `L1_RPC_URL` required. See [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md).
 
 > **Rollback (1→0).** If the test is unsatisfactory: `just -E .env.<network> rollback` (Initial Owner) repoints `CustomSender` at the pinned predecessor OraclePool and revokes the new trigger's `SYNC_ROLE`. The legacy automation was never touched, so the predecessor system is fully restored. Reversibility is **control-plane only** — wstETH already synced to L1 + in-flight CCIP messages cannot be undone (the wstETH is `sweep`-recoverable from the test pool). Offered **only from Stage 1**; after handoff the contracts are LOL's.
+
+### Canary validation — all 4 lanes, run per network after `deploy-test`
+
+One-time prep for a mainnet canary: locally set BOTH deployer anchors in the shared overlay
+`config/state/l2.inputs.test-stage.yaml` (`&l2LiquidityOwner`, `&l2CreForwarder`) to the real deployer
+(`L2_TEST_DEPLOYER` from deploy-test) — **do not commit** (the committed values are the Anvil dev-fork
+account; the file's own header documents this).
+
+```sh
+# 1. On-chain wiring + config — state-mate with the canary overlay (validate: live reads over RPC).
+#    Evidence: "Total: 82 checks". BEFORE activate exactly these check-failures are EXPECTED:
+#      · customSender.getOraclePool  → still the old pool          (clears at `activate`)
+#      · SYNC_ROLE(new trigger)      → false, twice: checks + ACL  (clears at `activate`)
+#      · syncTrigger.shouldSyncAmount→ ≠0 iff the OLD pool holds WETH (reads via the still-active old
+#        pool; e.g. 12.74 WETH pending on Arbitrum at deploy time)  (clears at `activate`)
+#      · DEFAULT_ADMIN = InitialOwner not GovExec (×3: two checks + ACL), legacy automation still holds
+#        SYNC_ROLE, proxyAdmin.owner = InitialOwner                 (all clear only at 3→4 `finalize`)
+#    AFTER activate only the finalize-gated group may remain; anything else is a real defect.
+just -E .env.<network> test-<network>-upgrade-state-verify-canary
+
+# 2. Stage-1 invariants (verify: read-backs) — run only AFTER fund-trigger + activate (asserts the float
+#    and the repointed pool, so it legitimately fails before those steps).
+just -E .env.<network> verify-test
+
+# 3. Source publication + third-party source diff.
+#    ⚠ Etherscan v2 FREE keys reject verification SUBMISSIONS per chain ("upgrade your api plan"):
+#    arbitrum + linea are on the free tier (verify-sources works as-is, done 2026-07-13); optimism +
+#    base need a paid/eligible key — reads work everywhere. Free-key fallback for the gated chains
+#    (used for optimism/arbitrum/base, 2026-07-13): POST the standard JSON to Sourcify
+#    (sourcify.dev/server/v2/verify/<chainId>/<addr>; forge 1.7.1's --verifier sourcify/blockscout are
+#    both broken), then Blockscout auto-imports the exact_match within minutes.
+just -E .env.<network> verify-sources        # Etherscan-family publication
+
+#    diffyscan: explorer copy vs the pinned '# deploy-commit:' in config/state/l2-<net>.deployed.yaml.
+#    Default (no override) reads Etherscan v2 — works wherever verify-sources published (arbitrum, linea).
+#    For the Sourcify/Blockscout lanes use the override: optimism.blockscout.com | arbitrum.blockscout.com
+#    | base.blockscout.com (Linea has NO *.blockscout.com instance).
+#    GITHUB_API_TOKEN must read lidofinance/l2-direct-staking (org policy: fine-grained PAT, ≤30-day
+#    lifetime); without it only the pool (all-public sources) can be diffed.
+DIFFYSCAN_EXPLORER_HOSTNAME=<network>.blockscout.com \
+  just -E .env.<network> diffyscan           # omit the override to read Etherscan v2
+
+# 4. Behavioral rehearsal on a fork of the live chain (keyless, non-destructive, binds to the real canary).
+just -E .env.<network> test-<network>-canary-acceptance
+```
 
 ### 1→2 handoff — Duty: **Lido Deployer** (restore + transfer), then **LOL** (CRE workflow), per network
 
