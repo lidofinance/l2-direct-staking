@@ -18,8 +18,9 @@ import {UpgradeTestBase} from "test/helpers/UpgradeTestBase.sol";
  */
 abstract contract CREIntegrationTests is UpgradeTestBase {
     CREReceiver internal creReceiver;
-    address internal creForwarder = makeAddr("creForwarder");
-    address internal creAuthor = makeAddr("creWorkflowAuthor");
+    // creForwarder is inherited from UpgradeTestBase (the address the on-fork handoff wires in);
+    // creAuthor is set by _deployAndSetupCRE to the LOL multisig the handoff pins as expectedAuthor.
+    address internal creAuthor;
 
     function test_creReceiverTriggersSyncViaReport() public {
         (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
@@ -68,6 +69,8 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
 
         address newAuthor = makeAddr("rotatedAuthor");
+        // The bound receiver is LOL-owned after the on-fork handoff, so the rotation is a LOL action.
+        vm.prank(lidoL2LiquidityOwner);
         creReceiver.setExpectedAuthor(newAuthor);
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
@@ -286,24 +289,18 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         creReceiver.onReport(_buildCREMetadata(creAuthor), report);
     }
 
+    /// @dev Bind to the DEPLOYED canary and drive it to the sealed production end state
+    ///      ({_deployAndMigrateL2Canary}), then adopt the deployed CREReceiver instead of deploying a
+    ///      fresh one. The handoff/finalize interlocks already assert the wiring (trigger forwarder =
+    ///      receiver, receiver forwarder = {creForwarder}, expectedAuthor = LOL), so no re-checks here.
     function _deployAndSetupCRE()
         internal
         returns (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger)
     {
         address syncTriggerAddr;
-        (newPool, syncTriggerAddr) = _deployAndMigrateL2WithSyncTrigger();
+        (newPool, syncTriggerAddr, creReceiver) = _deployAndMigrateL2Canary();
         syncTrigger = SyncTrigger(payable(syncTriggerAddr));
-
-        creReceiver = new CREReceiver(
-            creForwarder,
-            creAuthor,
-            syncTriggerAddr,
-            SyncTrigger.triggerSync.selector
-        );
-
-        vm.prank(lidoL2LiquidityOwner);
-        syncTrigger.setForwarder(address(creReceiver));
-        assertEq(syncTrigger.getForwarder(), address(creReceiver), "forwarder should be CREReceiver");
+        creAuthor = lidoL2LiquidityOwner;
     }
 
     /// @dev Builds CRE metadata: abi.encodePacked(bytes32 workflowId, bytes10 workflowName, address workflowOwner)

@@ -278,7 +278,7 @@ just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly
 #   onReport → triggerSync → CustomSender.sync; fee fronted from the trigger float (no value on the call).
 ```
 
-> **Non-destructive fork rehearsal (keyless, CI).** `just -E .env.<network> test-<network>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an in-process fork of the live chain, binding to the real on-chain canary from `config/state/l2-<network>.deployed.yaml` (auto-detected deployer-owned via `verifyCanaryStage1` — **skips the deploy**; falls back to a fresh on-fork deploy if absent). Costs no gas, mutates no real state — the CI sibling of `simulate-sync`. Point its RPC at a mainnet upstream; `L1_RPC_URL` required. See [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md).
+> **Non-destructive fork rehearsal (keyless).** `just -E .env.<network> test-<network>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an in-process fork of the live chain, binding to the real on-chain canary from `config/state/l2-<network>.deployed.yaml` (asserted deployer-owned via `verifyCanaryStage1` — **skips the deploy**). Binding is **bind-only**: the three canary addresses are required and a missing one is a hard failure (no fresh-deploy fallback). Costs no gas, mutates no real state — the fork sibling of `simulate-sync`. Point its RPC at a mainnet upstream; `L1_RPC_URL` required. See [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md).
 
 > **Rollback (1→0).** If the test is unsatisfactory: `just -E .env.<network> rollback` (Initial Owner) repoints `CustomSender` at the pinned predecessor OraclePool and revokes the new trigger's `SYNC_ROLE`. The legacy automation was never touched, so the predecessor system is fully restored. Reversibility is **control-plane only** — wstETH already synced to L1 + in-flight CCIP messages cannot be undone (the wstETH is `sweep`-recoverable from the test pool). Offered **only from Stage 1**; after handoff the contracts are LOL's.
 
@@ -377,6 +377,18 @@ DIFFYSCAN_EXPLORER_HOSTNAME=<network>.blockscout.com \
 
 # 4. Behavioral rehearsal on a fork of the live chain (keyless, non-destructive, binds to the real canary).
 just -E .env.<network> test-<network>-canary-acceptance
+
+# 5. Full integration suites (PoolUpgrade + CREIntegration, 36 tests/lane) BOUND to the deployed canary.
+#    Bind-only: the four L2_* address vars from .env.<network> are REQUIRED — a missing one is a hard
+#    failure, not a fresh-deploy fallback. Stages the live chain hasn't reached yet (activate → handoff
+#    → finalize) are pranked on the in-process fork, so the suites start from the real deployed
+#    bytecode+state and drive it to the sealed end state. The suites read the lane fork upstream from
+#    L2_<NETWORK>_RPC_URL and L1 from L1_RPC_URL. All four lanes green on the live canary 2026-07-16.
+#    NB `just test-acceptance` (G1) reruns these same suites — its environment must carry the four
+#    canary address vars too (source any .env.<network>; the addresses are lane-invariant).
+set -a; source .env.<network>; set +a           # loads the L2_ORACLE_POOL/L2_SYNC_TRIGGER/... quartet
+export L2_<NETWORK>_RPC_URL=$RPC_<NETWORK>_REMOTE L1_RPC_URL=$RPC_ETHEREUM
+forge test --match-contract '<Net>PoolUpgradeTest|<Net>CREIntegrationTest'
 ```
 
 ### 1→2 handoff — Duty: **Lido Deployer** (restore + transfer), then **LOL** (CRE workflow), per network

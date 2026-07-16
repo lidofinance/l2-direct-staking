@@ -557,11 +557,11 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     ///      activated correctly, but finalize is handed a creReceiver the trigger's forwarder does not
     ///      point at — the opening {_assertSyncInfrastructure} interlock fails and nothing is sealed.
     function test_canaryFinalizeRevertsOnMiswiredStage1() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,) = _deployCanaryL2();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,,) = _bindCanaryL2();
 
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
-        address realForwarder = makeAddr("creForwarder");
+        address realForwarder = creForwarder;
 
         // Call via `this.` so finalizeGovernanceSeal runs as a single external call and the interlock
         // revert is caught atomically (expectRevert latches onto the next external call). The trigger's
@@ -769,7 +769,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
         assertEq(
             newCREReceiver.getForwarder(),
-            makeAddr("creForwarder"),
+            creForwarder,
             "CREReceiver forwarder should be set"
         );
 
@@ -834,16 +834,14 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     ///         CREReceiver.onReport → handoff to LOL (restore real forwarder/author + production params) →
     ///         seal governance. The end-state must match what the standard migration lands on.
     function test_canaryDeployerSimulatedSyncAndHandoff() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver) = _deployCanaryL2();
-        address deployer = lidoStage1Deployer;
+        // Stage-1 invariants are already hard-asserted inside the bind (with the live delay/min-amount).
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver, address deployer) =
+            _bindCanaryL2();
 
-        // Stage-1 invariants (cfg carries the test delay/min-amount).
-        verifyCanaryStage1(_canaryCfg(), address(newPool), address(syncTrigger), address(creReceiver), deployer);
-
-        // Seed WETH above the canary min, wait the canary delay, then drive a sync via onReport.
+        // Seed WETH above the canary min, wait the live canary delay, then drive a sync via onReport.
         uint256 seed = 0.1 ether;
         deal(L2_WETH, address(newPool), seed);
-        vm.warp(block.timestamp + 60);
+        vm.warp(block.timestamp + syncTrigger.getDelay() + 1);
         assertEq(syncTrigger.shouldSyncAmount(), seed, "canary: sync due for the seeded WETH");
 
         // Deployer is the configured forwarder AND author; craft the Keystone report and call onReport.
@@ -854,7 +852,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(IERC20(L2_WETH).balanceOf(address(newPool)), 0, "canary sync should pull the pool WETH");
 
         // Stage 1→2 (Deployer): sweep residue, restore production config, transfer to LOL.
-        address realForwarder = makeAddr("creForwarder");
+        address realForwarder = creForwarder;
         L2UpgradeConfig memory prodCfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
         vm.deal(deployer, prodCfg.syncTriggerInitialFloat); // headroom for the float top-up
@@ -891,14 +889,14 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         _verifyOldAutomationsRevoked();
     }
 
-    /// @notice Behavioral canary acceptance against the REAL on-chain deployed addresses when supplied via
-    ///         env (else a fresh deploy): bind to the deployer-owned canary, seed WETH above the on-chain
-    ///         min, wait the on-chain delay, drive a sync via CREReceiver.onReport as the deployer, and
-    ///         assert the pool WETH is pulled. The non-destructive, keyless, CI-runnable fork sibling of the
-    ///         on-chain `simulate-sync` real-broadcast path. Driven by `just test-<net>-canary-acceptance`.
+    /// @notice Behavioral canary acceptance against the REAL on-chain deployed addresses (bind-only —
+    ///         the env addresses are required): bind to the deployer-owned canary, seed WETH above the
+    ///         on-chain min, wait the on-chain delay, drive a sync via CREReceiver.onReport as the
+    ///         deployer, and assert the pool WETH is pulled. The non-destructive, keyless fork sibling of
+    ///         the on-chain `simulate-sync` real-broadcast path. Driven by `just test-<net>-canary-acceptance`.
     function test_canarySyncOnDeployedAddresses() public {
         (PausableImmutableOraclePool pool, SyncTrigger trigger, CREReceiver receiver, address deployer) =
-            _bindOrDeployCanaryL2();
+            _bindCanaryL2();
 
         // Seed above the on-chain canary min (deal SETS the balance, so the drain-to-0 assert is
         // deterministic even against a live pool that already holds WETH); the seed is far below any lane
@@ -926,10 +924,21 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     ///         revokes the new SyncTrigger's SYNC_ROLE. The old automation was never touched, so the
     ///         predecessor system is fully restored.
     function test_canaryRollbackRestoresOldPool() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,) = _deployCanaryL2();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,,) = _bindCanaryL2();
 
         assertEq(ICustomSender(L2_CUSTOM_SENDER).getOraclePool(), address(newPool), "pool activated");
         assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(syncTrigger)), "trigger has SYNC_ROLE");
+
+        // The legacy automations' LIVE role state (which of the pinned addresses actually still holds
+        // SYNC_ROLE varies by lane — e.g. Linea's holder is the Gelato bot, not the Chainlink upkeep):
+        // rollback must PRESERVE it, whatever it is, so capture before and compare after.
+        bool chainlinkHadRole = L2_OLD_CHAINLINK_AUTOMATION != address(0)
+            && IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION);
+        bool gelatoHadRole = L2_OLD_GELATO_AUTOMATION != address(0)
+            && IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION);
+        assertTrue(
+            chainlinkHadRole || gelatoHadRole, "some legacy automation still holds SYNC_ROLE pre-rollback"
+        );
 
         vm.startPrank(INITIAL_OWNER);
         rollbackActivation(_canaryCfg(), L2_OLD_ORACLE_POOL, address(syncTrigger));
@@ -940,9 +949,17 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
             IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(syncTrigger)), "trigger SYNC_ROLE revoked"
         );
         if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
-            assertTrue(
+            assertEq(
                 IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION),
-                "old automation SYNC_ROLE preserved for clean rollback"
+                chainlinkHadRole,
+                "chainlink automation SYNC_ROLE preserved for clean rollback"
+            );
+        }
+        if (L2_OLD_GELATO_AUTOMATION != address(0)) {
+            assertEq(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION),
+                gelatoHadRole,
+                "gelato automation SYNC_ROLE preserved for clean rollback"
             );
         }
         assertTrue(
@@ -953,10 +970,10 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     /// @notice Sealing before the LOL handoff must revert: the infra is still deployer-owned, so the
     ///         {finalizeGovernanceSeal} interlock fails (owner != LOL) before any irreversible write.
     function test_canaryFinalizeRevertsBeforeHandoff() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver) = _deployCanaryL2();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver,) = _bindCanaryL2();
         L2UpgradeConfig memory prodCfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
-        address realForwarder = makeAddr("creForwarder");
+        address realForwarder = creForwarder;
 
         // `this.` so the external call is what expectRevert latches onto; the interlock reverts first.
         vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger owner"));
