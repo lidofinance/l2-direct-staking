@@ -284,6 +284,58 @@ just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly
 
 ### Canary validation — all 4 lanes, run per network after `deploy-test`
 
+**Stage-1 canary deployments (live, 2026-07).** The three deployer-owned contracts (test params:
+`minAmount` 0.05 WETH, `delay` 60 s) landed at the **same addresses on all 4 networks** — a fresh
+deployer (`0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c`) with the same nonce sequence per lane. The
+authoritative copies (with the `# deploy-commit:` stamp diffyscan pins to) are
+`config/state/l2-<network>.deployed.yaml`. The deploy **parameters** the state-mate run checks against
+live in the sibling inputs configs: `config/state/l2-<network>.inputs.yaml` (per-lane production values —
+gas, sync amounts/delay, fee blobs, tokens, CCIP router/selector, governance actors) plus the shared
+canary overlay `config/state/l2.inputs.test-stage.yaml` (the 4 anchors deploy-test overrides: test
+`syncMinAmount`/`syncDelay` and the deployer standing in for owner + forwarder/author);
+`just verify-constants-sync` proves both match the pinned Solidity constants the deploy read.
+
+| Contract | Address (identical on Optimism · Arbitrum · Base · Linea) |
+|---|---|
+| OraclePool (`PausableImmutableOraclePool`) | `0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8` |
+| SyncTrigger | `0x1594705D5f9BbDb36453ACF15C94d041c0E02c62` |
+| CREReceiver | `0x29113eD7AE4C97Ee2F20A5511C852aa37C0d6b85` |
+
+| Network | deploy-commit | diffyscan source explorer |
+|---|---|---|
+| Optimism | `730cf53` | `optimism.blockscout.com` (override) |
+| Arbitrum | `ecbfcf5` | Etherscan v2 (default) |
+| Base | `ecbfcf5` | `base.blockscout.com` (override) |
+| Linea | `ecbfcf5` | Etherscan v2 (default) |
+
+Concrete per-network command lines for this deployment (state-mate first, then diffyscan; rationale
+for each in the numbered steps below):
+
+```sh
+# state-mate (canary profile) — Evidence: "Total: 82 checks", only the documented pre-activate /
+# pre-finalize groups failing (see step 1 below)
+just -E .env.optimism test-optimism-upgrade-state-verify-canary
+just -E .env.arbitrum test-arbitrum-upgrade-state-verify-canary
+just -E .env.base     test-base-upgrade-state-verify-canary
+just -E .env.linea    test-linea-upgrade-state-verify-canary
+
+# diffyscan — Evidence: exit 0, per-contract "0 diffs" for all three contracts.
+# ⚠ `just -E .env.<net>` REPLACES the default dotenv list, so the shared `.env` is NOT loaded —
+#   export ETHERSCAN_API_KEY (e.g. `set -a; source .env; set +a`) and GITHUB_API_TOKEN
+#   (fine-grained PAT ≤30 days WITH contents-read on lidofinance/l2-direct-staking) first.
+DIFFYSCAN_EXPLORER_HOSTNAME=optimism.blockscout.com just -E .env.optimism diffyscan
+just -E .env.arbitrum diffyscan
+DIFFYSCAN_EXPLORER_HOSTNAME=base.blockscout.com     just -E .env.base     diffyscan
+just -E .env.linea    diffyscan
+```
+
+**Evidence status (run 2026-07-16).** state-mate: all 4 lanes → `Total: 82 checks`, failures exactly
+the documented pre-`activate` expected set (8 on Optimism/Linea; 9 on Arbitrum/Base — the extra one is
+the documented `shouldSyncAmount` old-pool-holds-WETH case) — `activate` has not been run yet.
+diffyscan: on all 4 lanes the pool diffs green (11/11 identical files, both explorer schemes); the
+SyncTrigger + CREReceiver diffs abort at a GitHub 404 — the available PAT has no read grant on
+`lidofinance/l2-direct-staking`. Re-run with a repo-granted PAT to close the diffyscan evidence.
+
 One-time prep for a mainnet canary: locally set BOTH deployer anchors in the shared overlay
 `config/state/l2.inputs.test-stage.yaml` (`&l2LiquidityOwner`, `&l2CreForwarder`) to the real deployer
 (`L2_TEST_DEPLOYER` from deploy-test) — **do not commit** (the committed values are the Anvil dev-fork
