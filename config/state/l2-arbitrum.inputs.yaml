@@ -8,6 +8,8 @@ config:
   - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
   - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
   - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
+  # Canary (Stage-1) overrides for these knobs live in the shared overlay config/state/l2.inputs.test-stage.yaml
+  # (state-mate --overrides), NOT here — these are the production values restored at handoff.
   - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Arbitrum FeeQuoter maxPerMsgGasLimit
   # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
   # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=1_000_000)
@@ -42,9 +44,18 @@ externals:
   #   VACUOUSLY on mainnet (this address never held a role here) — it does NOT prove the real deployer
   #   renounced admin. Intentionally NOT in verify-constants-sync (no Solidity address constant); the
   #   externals-coverage lint allowlists it. See RUNBOOK "Deployer-renounce check".
+  #   Canary (Stage-1): the deployer-as-owner/forwarder/author state is verified via the shared overlay
+  #   config/state/l2.inputs.test-stage.yaml (set its two deployer addresses locally for a mainnet canary),
+  #   NOT this anchor — l2.yaml references *l2LidoDeployer only in the customSender.hasRole==false check.
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
   - &l2OldOraclePool "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
   - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated l2-arbitrum.deployed.yaml.
+  #   Pinned to ArbitrumMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x72229141D4B016682d3618ECe47c046f30Da4AD1"
+  - &l2CustomSenderImpl "0x220F64A4793Bc8aca7330ceCc4ae4e2F3B5Bc664"
+  - &l2ProxyAdmin "0x5B42aEbFe95247f1d22e282831e2A513bF050217"
   # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
   #   network & Chainlink-operated. Pinned to ArbitrumMigrationConstants.CRE_FORWARDER (verify-constants-sync).
   - &l2CreForwarder "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"

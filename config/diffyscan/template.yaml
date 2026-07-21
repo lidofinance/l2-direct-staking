@@ -1,0 +1,42 @@
+---
+# diffyscan (lidofinance/diffyscan) config TEMPLATE — the network-invariant kernel. Do not run
+# diffyscan on this file; `just -E .env.<network> diffyscan-config` fills the placeholder tokens from the
+# lane's committed state and writes config/diffyscan/l2-<net>.generated.yaml (gitignored):
+#   addresses   ← config/state/l2-<net>.deployed.yaml   (the three Stage-1 deploy outputs)
+#   chain id    ← config/state/l2-<net>.inputs.yaml     (&l2ChainId anchor)
+#   repo commit ← the '# deploy-commit:' stamp in the deployed.yaml (written at deploy time)
+#   dep commits ← that commit's own submodule gitlinks (git rev-parse <commit>:lib/<dep>)
+# so the diff runs against WHAT WAS DEPLOYED, immune to later branch churn — nothing here
+# duplicates a value that already has a source of truth elsewhere in the repo.
+
+# The three canary contracts (the only contracts this migration deploys — same scope as
+# `just verify-sources`, which must have published them to the explorer before diffyscan can read them).
+contracts:
+  "@L2_ORACLE_POOL@": PausableImmutableOraclePool
+  "@L2_SYNC_TRIGGER@": SyncTrigger
+  "@L2_CRE_RECEIVER@": CREReceiver
+
+# Etherscan v2: one hostname + one key for all 4 lanes; the chain id selects the network
+# (mirrors verify-sources' `--chain` usage of the same ETHERSCAN_API_KEY).
+explorer_hostname: api.etherscan.io
+explorer_chain_id: @L2_CHAIN_ID@
+explorer_token_env_var: ETHERSCAN_API_KEY
+
+github_repo:
+  url: https://github.com/lidofinance/l2-direct-staking
+  commit: "@DEPLOY_COMMIT@"
+  relative_root: ""
+
+# Verified-source paths that live in git submodules — GitHub serves those paths as gitlinks, not
+# files, so diffyscan must fetch them from their own repos. Exactly these two prefixes appear across
+# the three contracts' verification inputs (forge verify-contract --show-standard-json-input); keys
+# are longest-prefix-matched and stripped, so lib/chainlink-csr/contracts/… → contracts/… in the dep repo.
+dependencies:
+  "lib/chainlink-csr":
+    url: https://github.com/Aphyla/chainlink-csr
+    commit: "@CSR_COMMIT@"
+    relative_root: ""
+  "lib/openzeppelin-contracts":
+    url: https://github.com/OpenZeppelin/openzeppelin-contracts
+    commit: "@OZ_COMMIT@"
+    relative_root: ""

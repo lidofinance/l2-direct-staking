@@ -17,7 +17,7 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
 - **Evidence** — the **carrier + observation** that decides a gate (an exit code, a printed count, a revert, an on-chain read-back). A claim with no carrier is an opinion.
 
 **Def — verify vs validate** (two different evidence kinds, do not conflate):
-*verify* = read back values just written / immutables, decided **in-description** (`verify-stage1`; the in-tx read-backs). *validate* = observe the deployed contracts **live over RPC** from outside (`state-mate` → ≥45 checks; fork tests). Both are required; they fail differently.
+*verify* = read back values just written / immutables, decided **in-description** (`verify-test`, `verify-stage2`; the in-tx read-backs). *validate* = observe the deployed contracts **live over RPC** from outside (`state-mate` → ≥45 checks; fork tests). Both are required; they fail differently.
 
 ---
 
@@ -33,14 +33,20 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
   L1_RPC_URL=https://...                 # Ethereum mainnet (same in all 4 files)
   L2_RPC_URL=https://...                 # this L2's RPC
   L2_NETWORK=linea                       # optimism|arbitrum|base|linea
-  L2_LIDO_DEPLOYER_PRIVATE_KEY=0x...     # Stage 1 signer
-  INITIAL_OWNER_PRIVATE_KEY=0x...        # Stage 2 signer (cold key)
-  L2_GOVERNANCE_EXECUTOR=0x...           # per network (table below)
-  # CRE forwarder: pinned per network in <Lane>MigrationConstants.CRE_FORWARDER — NOT an env var
-  LIDO_DAO_AGENT=0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c
-  # appended after deploy-stage1:  L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER
-  #   (deploy-stage1 also (re)writes config/state/l2-<network>.deployed.yaml — commit it)
+  L2_LIDO_DEPLOYER_PRIVATE_KEY=0x...     # Lido Deployer — signs deploy-test + handoff
+  INITIAL_OWNER_PRIVATE_KEY=0x...        # Initial Owner (cold key) — signs activate + finalize
+  ETHERSCAN_API_KEY=...                  # etherscan.io v2 key (one key, all 4 lanes) — for `verify-sources`
+  # Pinned per network in <Lane>MigrationConstants.sol and read directly by the forge scripts — NOT env
+  # vars (verified by `just verify-constants-sync`): the L2 governance executor, the predecessor OraclePool
+  # (rollback target), the CRE forwarder, and the Lido DAO Agent. See the table below for their values.
+  # canary test overrides — optional: default to the syncMinAmount / syncDelay anchors in the shared
+  #   overlay config/state/l2.inputs.test-stage.yaml (an explicit value here wins); production restored at `handoff`:
+  L2_SYNC_MIN_AMOUNT_TEST=50000000000000000   # 0.05 WETH so a small seed triggers a sync (prod 5e18)
+  L2_SYNC_DELAY_TEST=60                        # seconds between syncs during the test (prod 12h)
+  L2_TEST_WETH_SEED=100000000000000000         # 0.1 WETH seeded by seed-test-weth (> the test min)
+  # appended after deploy-test:  L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER / L2_TEST_DEPLOYER
   # appended after deploy-cre-workflow:  CRE_WORKFLOW_ID
+  #   (regenerate config/state/l2-<network>.deployed.yaml from the final addresses before state-mate)
   ```
 
 | Network  | L2 Governance Executor | LOL multisig (pool/CREReceiver/SyncTrigger owner) |
@@ -60,9 +66,10 @@ Shared L1: Receiver `0x6F357d53d6bE3238180316BA5F8f11467e164588` · ProxyAdmin
 | ID | Admissibility predicate | Evidence that decides it (carrier + observation) | Blocks until it holds |
 |----|-------------------------|--------------------------------------------------|------------------------|
 | **G1** | Pre-live checks pass for this lane | `test-acceptance` / `forge test` exit 0 · `verify-constants-sync` prints `OK` · `preflight-check{,-l1}` print `OK` | any production tx (Stage 1) |
-| **G2** | Stage 1 *verified* on this network + CRE workflow live + trigger float funded | `verify-stage1` → `Script ran successfully` (incl. trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT`; the trigger fronts each sync's fees from its own balance, [docs/fees.md §Funding the float](docs/fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)) · `verify-cre-workflow` → status `ACTIVE`, owner = LOL multisig (Safe). ⚠️ This confirms the **registry owner**, not that the DON embeds the Safe as report author — the author gate is only *proven* by a live `CREReceiver.CallExecuted` (see G2-author below) | `migrate-stage2` on this network |
-| **G2-author** | The DON-embedded report author actually matches the pinned `expectedAuthor` (Safe) | one observed `CREReceiver.CallExecuted` on this lane from the live DON path (or, equivalently, exercised end-to-end on a **throwaway testnet workflow first** — CRE Early-Access residual (a), [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). **If reports are rejected `InvalidAuthor`, the DON is embedding a different address** (e.g. the `--unsigned` artifact uploader, not the Safe) → re-pin via `LOL setExpectedAuthor(<address the DON actually embeds>)` | trusting this lane's sync path (not a hard block on `migrate-stage2`, but resolve before relying on automated syncs) |
-| **G3** | **All 4** L2s migrated *and* validated | 4× `migrate-stage2` broadcast with no revert · 4× state-mate exit 0 | `migrate-l1` (the L1 seal) |
+| **G2** | Canary Stage 1 *verified* + a simulated sync observed on this network | `verify-test` → `Script ran successfully` (the three contracts are **deployer-owned**, `CustomSender` repointed to the new pool, new `SyncTrigger` holds `SYNC_ROLE`, Initial Owner still admin, trigger balance ≥ `L2_SYNC_TRIGGER_INITIAL_FLOAT` — [docs/fees.md §Funding the float](docs/fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)) · `simulate-sync` produced a `CREReceiver.CallExecuted` + `CustomSender.Sync` and pulled the seeded pool WETH | `handoff` on this network |
+| **G2-handoff** | Post-handoff state *verified* (pre-seal): infra is **LOL-owned + production-configured**, CRE workflow live | `verify-stage2` → `Script ran successfully` (pool/`SyncTrigger`/`CREReceiver` owner = LOL; `CREReceiver` forwarder = **real CRE Forwarder** + author = **LOL**; `SyncTrigger` delay = 12h, minAmount = 5e18; **Initial Owner still admin** — seal not run) · `verify-cre-workflow` → `ACTIVE`, owner = LOL Safe | `finalize` on this network |
+| **G2-author** | The DON-embedded report author matches the pinned `expectedAuthor` (Safe) — **the canary does NOT exercise this** (it simulates the forwarder with the *deployer* as author), so the real DON path is first proven **in production** | one observed `CREReceiver.CallExecuted` on this lane from the live DON path (the first production CRE sync). **If reports are rejected `InvalidAuthor`, the DON is embedding a different address** (e.g. the `--unsigned` artifact uploader, not the Safe) → re-pin via `LOL setExpectedAuthor(<address the DON actually embeds>)` | trusting this lane's automated sync path (resolve before relying on automated syncs) |
+| **G3** | **All 4** L2s *finalized* (sealed) *and* validated | 4× `finalize` broadcast with no revert · 4× state-mate exit 0 | `migrate-l1` (the L1 seal) |
 | **G4** | This network *validated* (this is the **Def of "done/green"**) | `test-<net>-upgrade-state-verify` exit 0, tail `✔ Total: ≥45 checks passed` | LOL liquidity seed **and** legacy-upkeep cancel for this network |
 
 ---
@@ -74,7 +81,7 @@ Run top-to-bottom; **Evidence** of each is its exit/print. Operator (any) SHALL 
 ```sh
 # a. Build + tests   (Evidence: each exits 0)
 forge build
-forge test --match-contract 'CREReceiverTest|SyncTriggerTest|L2GovernanceExecutorGuard'   # contract unit tests (verify; no RPC)
+forge test --match-contract 'CREReceiverTest|SyncTriggerTest|L2PinnedConstantsGuard'   # contract unit tests (verify; no RPC)
 just test-cre-workflow          # CRE TypeScript workflow (bun)
 just test-acceptance            # FORKS REHEARSAL (validate): deploy+migrate ×4 + L1 + state-mate + forge tests
 
@@ -109,16 +116,25 @@ until cast chain-id --rpc-url http://127.0.0.1:8650 >/dev/null 2>&1 && cast chai
 DEPLOYER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266; IO=0xb5c336a5c60D3482b29d83C742C65AE8351b91a8; DAO=0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c
 for u in http://127.0.0.1:8650 http://127.0.0.1:8651; do for a in $DEPLOYER $IO $DAO; do cast rpc --rpc-url $u anvil_setBalance $a 0x3635C9ADC5DEA00000 >/dev/null; done; done
 
-export L2_NETWORK=linea L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670   # CRE forwarder is pinned in code
-L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1            # → paste the 3 printed exports into the shell
-L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1           # Evidence: "Script ran successfully" = all read-backs pass
-ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
-  --sig 'runMigrateUnlocked()' --rpc-url http://127.0.0.1:8651 --broadcast --non-interactive --unlocked --sender $IO
+export L2_NETWORK=linea                                  # gov executor / old pool / CRE forwarder are pinned in code
+export L2_RPC_URL=http://127.0.0.1:8651
+export L2_LIDO_DEPLOYER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80   # anvil acct #0 == $DEPLOYER
+SCRIPT=script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript
+just deploy-test                                              # → paste the 4 printed exports (incl. L2_TEST_DEPLOYER) into the shell
+just fund-trigger                                             # Deployer: fund the SyncTrigger native fee float (separate tx from deploy-test)
+# Initial-Owner steps impersonate $IO on anvil via the *Unlocked variants (no IO key needed):
+forge script $SCRIPT --sig 'runActivateUnlocked()' --rpc-url $L2_RPC_URL --broadcast --non-interactive --unlocked --sender $IO
+just verify-test                                              # Evidence: "Script ran successfully" = canary Stage-1 read-backs pass (asserts the funded float)
+just seed-test-weth                                           # deposit + transfer test WETH into the pool
+cast rpc --rpc-url $L2_RPC_URL evm_increaseTime 120 >/dev/null && cast rpc --rpc-url $L2_RPC_URL evm_mine >/dev/null   # pass the test delay
+just simulate-sync                                            # onReport → triggerSync → sync (deployer simulates the CRE forwarder)
+just handoff                                                  # restore production config + transfer the 3 contracts to LOL
+forge script $SCRIPT --sig 'runFinalizeUnlocked()' --rpc-url $L2_RPC_URL --broadcast --non-interactive --unlocked --sender $IO
 # validate: write the fork's addresses to a temp .deployed.yaml + run the shared config/state/l2.yaml --only l2 with --inputs config/state/l2-<net>.inputs.yaml --deployed <temp> (see docs/development.md §dress rehearsal)
 pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 ```
 
-> Does **not** cover: real CRE workflow deploy/DON, real CCIP send→L1 (covered by `test-acceptance` fork tests), LOL seed, Aragon vote.
+> Does **not** cover: the **real** CRE forwarder/DON (`simulate-sync` stands in for it with the deployer as forwarder+author), the CCIP round-trip to L1 (covered by `test-acceptance` fork tests), LOL seed, Aragon vote.
 
 ---
 
@@ -126,7 +142,7 @@ pkill -f 'anvil .*-p 865[01]'                                  # cleanup
 
 ### Sequence overview (all stages)
 
-The full migration as ordered transactions per signer — companion to the Stage 1 / Stage 2 / L1 / seed steps detailed below.
+The full migration as ordered transactions per signer — companion to the canary-deploy / handoff / finalize / L1 / seed steps detailed below.
 
 ```mermaid
 %%{init: {"sequence": {"diagramMarginX": 8, "diagramMarginY": 8, "actorMargin": 24, "width": 90, "height": 56, "boxMargin": 6, "boxTextMargin": 4, "noteMargin": 6, "messageMargin": 12}}}%%
@@ -161,23 +177,45 @@ sequenceDiagram
     link L1PA: Ethereum Explorer @ https://etherscan.io/address/0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD
 
     rect rgb(236, 248, 255)
-    Note over LidoDep,CRERecv: L2 upgrade script run #1 — runDeploy (single signer: Lido Deployer)
-    LidoDep->>NewPool: deployPool(owner=LiqOwner)
-    LidoDep->>CRERecv: deployCREReceiver(forwarder=CREFwd, expectedAuthor=LOL multisig, allow=none yet)
-    LidoDep->>ST: deploySyncTrigger(forwarder=CRERecv, owner=LOL multisig, +fees/amounts/delay/maxGasLimit) — born configured
+    Note over LidoDep,CRERecv: 0→1 canary deploy — runDeployTest (single signer: Lido Deployer) — ALL DEPLOYER-OWNED
+    LidoDep->>NewPool: deployPool(owner=Deployer)
+    LidoDep->>CRERecv: deployCREReceiver(forwarder=Deployer, expectedAuthor=Deployer, allow=none yet)
+    LidoDep->>ST: deploySyncTrigger(forwarder=CRERecv, owner=Deployer, TEST minAmount/delay) — born configured
     LidoDep->>CRERecv: setAllowedCall(ST, triggerSync)
+    LidoDep->>ST: fund native fee float (fund-trigger — SEPARATE tx from runDeployTest)
+    end
+
+    rect rgb(243, 255, 239)
+    Note over initialOwner,ST: 0→1 activate — runActivate (single signer: initialOwner) — REVERSIBLE (admin kept)
+    initialOwner->>CS: setOraclePool(newPool)
+    initialOwner->>CS: grantRole(SYNC_ROLE, ST)
+    end
+
+    rect rgb(236, 248, 255)
+    Note over LidoDep,CS: Stage 1 canary sync — seed-test-weth + runSimulateSync (single signer: Lido Deployer)
+    LidoDep->>NewPool: transfer test WETH (>= test minAmount)
+    LidoDep->>CRERecv: onReport(metadata{author=Deployer}, report{ST, triggerSync}) — deployer stands in for the forwarder
+    CRERecv->>ST: triggerSync()
+    ST->>CS: sync() — WETH → L1 stake → wstETH back to NewPool
+    end
+
+    rect rgb(236, 248, 255)
+    Note over LidoDep,CRERecv: 1→2 handoff — runHandoff (single signer: Lido Deployer) — restore production config + transfer to LOL
+    LidoDep->>NewPool: sweep test residue
+    LidoDep->>CRERecv: setForwarder(real CRE Forwarder)<br/>setExpectedAuthor(LOL multisig)
+    LidoDep->>ST: setDelay(12h)<br/>setAmounts(5e18, 100e18)
+    LidoDep->>NewPool: transferOwnership(LOL multisig)
+    LidoDep->>ST: transferOwnership(LOL multisig)
     LidoDep->>CRERecv: transferOwnership(LOL multisig)
     end
 
     rect rgb(244, 244, 255)
-    Note over CREFwd,CRERecv: Deploy CRE workflow OWNED BY LOL multisig — 'cre workflow deploy --unsigned', calldata executed FROM the Safe
+    Note over CREFwd,CRERecv: LOL registers the production CRE workflow — 'cre workflow deploy --unsigned', calldata executed FROM the Safe
     Note over CRERecv: workflow owner = LOL multisig (Safe) = CREReceiver.expectedAuthor (ADR-0001)
     end
 
     rect rgb(243, 255, 239)
-    Note over initialOwner,L2PA: L2 upgrade script run #2 — runMigrate (single signer: initialOwner)
-    initialOwner->>CS: setOraclePool(newPool)
-    initialOwner->>CS: grantRole(SYNC_ROLE, ST)
+    Note over initialOwner,L2PA: 2→3 governance seal — runFinalize (single signer: initialOwner) — IRREVERSIBLE
     initialOwner->>CS: revokeRole(SYNC_ROLE, legacy automation(s))
     initialOwner->>CS: grantAdmin(GovExec)
     initialOwner->>CS: revokeAdmin(initialOwner)
@@ -194,7 +232,7 @@ sequenceDiagram
     Note over initialOwner: initialOwner no longer has admin rights on migrated contracts
 
     rect rgb(234, 255, 234)
-    Note over LiqOwner,NewPool: Post-migration: LOL multisig seeds new pool
+    Note over LiqOwner,NewPool: 3→4 post-migration: LOL multisig seeds new pool
     LiqOwner->>NewPool: provide initial wstETH liquidity
     Note over CS,ST: fastStake accrues in new pool, CRE triggers sync
     end
@@ -205,40 +243,184 @@ sequenceDiagram
 
 **Def — in-flight cutover (replaces "safe"/"correct-by-design").** `sync()` encodes the **recipient pool address into the CCIP message at call time**, immutable for the rest of the round-trip. ⇒ a round-trip started *before* Stage 2 that lands *after* it delivers wstETH to the **old** pool. **Recovery duty:** the **Initial Liquidity Owner** (old-pool owner) `sweep()`s it. The **new** pool is unaffected (seeded separately, §3). So no new-pool value is at risk and no message strands — that is the full content of "safe here."
 
-### Stage 1 — Duty: **Lido Deployer** SHALL, per network
+> **Full per-actor state machine:** [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md). The recipes below run it `0→1→2→3→4` with a `1→0` rollback; each is a single broadcast by one actor (do not co-locate keys).
+
+### 0→1 deploy + activate — Duty: **Lido Deployer**, then **Initial Owner**, per network
 
 ```sh
-just -E .env.<network> deploy-stage1        # deploys pool+trigger+receiver AND funds the trigger's fee float; PRINTS export L2_ORACLE_POOL/SYNC_TRIGGER/CRE_RECEIVER
-#   → Duty: append those 3 lines to .env.<network>; deploy-stage1 also (re)writes config/state/l2-<network>.deployed.yaml — review the diff & commit it
-#   The float (L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5 ETH, MigrationConstants) is sent from the
-#   Lido Deployer wallet — it must hold ≥ 0.5 ETH + deploy gas per lane. The trigger fronts
-#   maxFee+feeDtoO per sync FROM ITS OWN BALANCE; the script reverts (L2UpgradeFloatBelowFloor)
-#   if the constant doesn't cover one worst-case sync. See docs/fees.md §Funding the float.
-just -E .env.<network> verify-stage1        # verify (in-description): 19 read-backs incl. trigger float + guardrails that Stage 2 has NOT run
+just -E .env.<network> deploy-test          # Deployer: deploy pool+trigger+receiver OWNED BY THE DEPLOYER, with the
+#   deployer as the CREReceiver forwarder AND author, TEST minAmount/delay. Does NOT fund the trigger float
+#   (that is a separate step — see fund-trigger below). PRINTS
+#   export L2_ORACLE_POOL/SYNC_TRIGGER/CRE_RECEIVER/TEST_DEPLOYER → append all four to .env.<network>.
+just -E .env.<network> fund-trigger         # Deployer: fund the SyncTrigger native fee float, separate tx from deploy.
+#   The float (L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5 ETH) is sent from the Deployer wallet — it must hold
+#   ≥ 0.5 ETH + deploy gas + a little test WETH/ETH per lane. Reverts (L2UpgradeFloatBelowFloor) if the
+#   constant doesn't cover one worst-case sync. See docs/fees.md §Funding the float.
+just -E .env.<network> activate             # Initial Owner: setOraclePool(new) + grantRole(SYNC_ROLE, trigger).
+#   REVERSIBLE — admin + the legacy automation's SYNC_ROLE are left intact (so `rollback` is clean).
+just -E .env.<network> verify-test          # verify (in-description): infra deployer-owned, pool repointed,
+#   SYNC_ROLE granted, Initial Owner still admin, float funded. Run after fund-trigger + before simulate-sync
+#   (asserts the full float).
+just -E .env.<network> verify-sources       # publish pool+trigger+receiver SOURCE to the lane explorer
+#   (Etherscan v2; needs ETHERSCAN_API_KEY). Off the critical path, re-runnable + idempotent; reads the actual
+#   on-chain constructor args, and the same contracts persist to production, so this covers the prod deploy too.
+just -E .env.<network> diffyscan            # third-party cross-check of the published sources: diffyscan diffs the
+#   explorer copy against the deploy commit on GitHub (pinned via the '# deploy-commit:' stamp in
+#   config/state/l2-<net>.deployed.yaml). Needs diffyscan on PATH + GITHUB_API_TOKEN; run after verify-sources.
+```
 
+### Stage 1 — canary sync test — Duty: **Lido Deployer**, per network
+
+```sh
+just -E .env.<network> seed-test-weth       # deposit ETH→WETH + transfer ≥ test minAmount into the pool
+# … wait L2_SYNC_DELAY_TEST (default 60s) …
+just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly (deployer = forwarder + author):
+#   onReport → triggerSync → CustomSender.sync; fee fronted from the trigger float (no value on the call).
+```
+
+> **Non-destructive fork rehearsal (keyless).** `just -E .env.<network> test-<network>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an in-process fork of the live chain, binding to the real on-chain canary from `config/state/l2-<network>.deployed.yaml` (asserted deployer-owned via `verifyCanaryStage1` — **skips the deploy**). Binding is **bind-only**: the three canary addresses are required and a missing one is a hard failure (no fresh-deploy fallback). Costs no gas, mutates no real state — the fork sibling of `simulate-sync`. Point its RPC at a mainnet upstream; `L1_RPC_URL` required. See [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md).
+
+> **Rollback (1→0).** If the test is unsatisfactory: `just -E .env.<network> rollback` (Initial Owner) repoints `CustomSender` at the pinned predecessor OraclePool and revokes the new trigger's `SYNC_ROLE`. The legacy automation was never touched, so the predecessor system is fully restored. Reversibility is **control-plane only** — wstETH already synced to L1 + in-flight CCIP messages cannot be undone (the wstETH is `sweep`-recoverable from the test pool). Offered **only from Stage 1**; after handoff the contracts are LOL's.
+
+### Canary validation — all 4 lanes, run per network after `deploy-test`
+
+**Stage-1 canary deployments (live, 2026-07).** The three deployer-owned contracts (test params:
+`minAmount` 0.05 WETH, `delay` 60 s) landed at the **same addresses on all 4 networks** — a fresh
+deployer (`0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c`) with the same nonce sequence per lane. The
+authoritative copies (with the `# deploy-commit:` stamp diffyscan pins to) are
+`config/state/l2-<network>.deployed.yaml`. The deploy **parameters** the state-mate run checks against
+live in the sibling inputs configs: `config/state/l2-<network>.inputs.yaml` (per-lane production values —
+gas, sync amounts/delay, fee blobs, tokens, CCIP router/selector, governance actors) plus the shared
+canary overlay `config/state/l2.inputs.test-stage.yaml` (the 4 anchors deploy-test overrides: test
+`syncMinAmount`/`syncDelay` and the deployer standing in for owner + forwarder/author);
+`just verify-constants-sync` proves both match the pinned Solidity constants the deploy read.
+
+| Contract | Address (identical on Optimism · Arbitrum · Base · Linea) |
+|---|---|
+| OraclePool (`PausableImmutableOraclePool`) | `0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8` |
+| SyncTrigger | `0x1594705D5f9BbDb36453ACF15C94d041c0E02c62` |
+| CREReceiver | `0x29113eD7AE4C97Ee2F20A5511C852aa37C0d6b85` |
+
+| Network | deploy-commit | diffyscan source explorer |
+|---|---|---|
+| Optimism | `730cf53` | `optimism.blockscout.com` (override) |
+| Arbitrum | `ecbfcf5` | Etherscan v2 (default) |
+| Base | `ecbfcf5` | `base.blockscout.com` (override) |
+| Linea | `ecbfcf5` | Etherscan v2 (default) |
+
+Concrete per-network command lines for this deployment (state-mate first, then diffyscan; rationale
+for each in the numbered steps below):
+
+```sh
+# state-mate (canary profile) — Evidence: "Total: 82 checks", only the documented pre-activate /
+# pre-finalize groups failing (see step 1 below)
+just -E .env.optimism test-optimism-upgrade-state-verify-canary
+just -E .env.arbitrum test-arbitrum-upgrade-state-verify-canary
+just -E .env.base     test-base-upgrade-state-verify-canary
+just -E .env.linea    test-linea-upgrade-state-verify-canary
+
+# diffyscan — Evidence: exit 0, per-contract "0 diffs" for all three contracts.
+# ⚠ `just -E .env.<net>` REPLACES the default dotenv list, so the shared `.env` is NOT loaded —
+#   export ETHERSCAN_API_KEY (e.g. `set -a; source .env; set +a`) and GITHUB_API_TOKEN
+#   (fine-grained PAT ≤30 days WITH contents-read on lidofinance/l2-direct-staking) first.
+DIFFYSCAN_EXPLORER_HOSTNAME=optimism.blockscout.com just -E .env.optimism diffyscan
+just -E .env.arbitrum diffyscan
+DIFFYSCAN_EXPLORER_HOSTNAME=base.blockscout.com     just -E .env.base     diffyscan
+just -E .env.linea    diffyscan
+```
+
+**Evidence status (run 2026-07-16).** state-mate: all 4 lanes → `Total: 82 checks`, failures exactly
+the documented pre-`activate` expected set (8 on Optimism/Linea; 9 on Arbitrum/Base — the extra one is
+the documented `shouldSyncAmount` old-pool-holds-WETH case) — `activate` has not been run yet.
+diffyscan: on all 4 lanes the pool diffs green (11/11 identical files, both explorer schemes); the
+SyncTrigger + CREReceiver diffs abort at a GitHub 404 — the available PAT has no read grant on
+`lidofinance/l2-direct-staking`. Re-run with a repo-granted PAT to close the diffyscan evidence.
+
+One-time prep for a mainnet canary: locally set BOTH deployer anchors in the shared overlay
+`config/state/l2.inputs.test-stage.yaml` (`&l2LiquidityOwner`, `&l2CreForwarder`) to the real deployer
+(`L2_TEST_DEPLOYER` from deploy-test) — **do not commit** (the committed values are the Anvil dev-fork
+account; the file's own header documents this).
+
+```sh
+# 1. On-chain wiring + config — state-mate with the canary overlay (validate: live reads over RPC).
+#    Evidence: "Total: 82 checks". BEFORE activate exactly these check-failures are EXPECTED:
+#      · customSender.getOraclePool  → still the old pool          (clears at `activate`)
+#      · SYNC_ROLE(new trigger)      → false, twice: checks + ACL  (clears at `activate`)
+#      · syncTrigger.shouldSyncAmount→ ≠0 iff the OLD pool holds WETH (reads via the still-active old
+#        pool; e.g. 12.74 WETH pending on Arbitrum at deploy time)  (clears at `activate`)
+#      · DEFAULT_ADMIN = InitialOwner not GovExec (×3: two checks + ACL), legacy automation still holds
+#        SYNC_ROLE, proxyAdmin.owner = InitialOwner                 (all clear only at 3→4 `finalize`)
+#    AFTER activate only the finalize-gated group may remain; anything else is a real defect.
+just -E .env.<network> test-<network>-upgrade-state-verify-canary
+
+# 2. Stage-1 invariants (verify: read-backs) — run only AFTER fund-trigger + activate (asserts the float
+#    and the repointed pool, so it legitimately fails before those steps).
+just -E .env.<network> verify-test
+
+# 3. Source publication + third-party source diff.
+#    ⚠ Etherscan v2 FREE keys reject verification SUBMISSIONS per chain ("upgrade your api plan"):
+#    arbitrum + linea are on the free tier (verify-sources works as-is, done 2026-07-13); optimism +
+#    base need a paid/eligible key — reads work everywhere. Free-key fallback for the gated chains
+#    (used for optimism/arbitrum/base, 2026-07-13): POST the standard JSON to Sourcify
+#    (sourcify.dev/server/v2/verify/<chainId>/<addr>; forge 1.7.1's --verifier sourcify/blockscout are
+#    both broken), then Blockscout auto-imports the exact_match within minutes.
+just -E .env.<network> verify-sources        # Etherscan-family publication
+
+#    diffyscan: explorer copy vs the pinned '# deploy-commit:' in config/state/l2-<net>.deployed.yaml.
+#    Default (no override) reads Etherscan v2 — works wherever verify-sources published (arbitrum, linea).
+#    For the Sourcify/Blockscout lanes use the override: optimism.blockscout.com | arbitrum.blockscout.com
+#    | base.blockscout.com (Linea has NO *.blockscout.com instance).
+#    GITHUB_API_TOKEN must read lidofinance/l2-direct-staking (org policy: fine-grained PAT, ≤30-day
+#    lifetime); without it only the pool (all-public sources) can be diffed.
+DIFFYSCAN_EXPLORER_HOSTNAME=<network>.blockscout.com \
+  just -E .env.<network> diffyscan           # omit the override to read Etherscan v2
+
+# 4. Behavioral rehearsal on a fork of the live chain (keyless, non-destructive, binds to the real canary).
+just -E .env.<network> test-<network>-canary-acceptance
+
+# 5. Full integration suites (PoolUpgrade + CREIntegration, 36 tests/lane) BOUND to the deployed canary.
+#    Bind-only: the four L2_* address vars from .env.<network> are REQUIRED — a missing one is a hard
+#    failure, not a fresh-deploy fallback. Stages the live chain hasn't reached yet (activate → handoff
+#    → finalize) are pranked on the in-process fork, so the suites start from the real deployed
+#    bytecode+state and drive it to the sealed end state. The suites read the lane fork upstream from
+#    L2_<NETWORK>_RPC_URL and L1 from L1_RPC_URL. All four lanes green on the live canary 2026-07-16.
+#    NB `just test-acceptance` (G1) reruns these same suites — its environment must carry the four
+#    canary address vars too (source any .env.<network>; the addresses are lane-invariant).
+set -a; source .env.<network>; set +a           # loads the L2_ORACLE_POOL/L2_SYNC_TRIGGER/... quartet
+export L2_<NETWORK>_RPC_URL=$RPC_<NETWORK>_REMOTE L1_RPC_URL=$RPC_ETHEREUM
+forge test --match-contract '<Net>PoolUpgradeTest|<Net>CREIntegrationTest'
+```
+
+### 1→2 handoff — Duty: **Lido Deployer** (restore + transfer), then **LOL** (CRE workflow), per network
+
+```sh
+just -E .env.<network> handoff              # Deployer: sweep test residue; restore production config (setForwarder(real
+#   CRE), setExpectedAuthor(LOL), setDelay(12h), setAmounts(5e18,100e18)); top up the float; transferOwnership
+#   (pool, trigger, receiver → LOL). In-broadcast assertion against PRODUCTION values reverts if any restore was missed.
 just -E .env.<network> update-cre-config    # writes deployed addrs into cre config json
-just -E .env.<network> deploy-cre-workflow  # cre workflow deploy --unsigned; Duty: EXECUTE the emitted WorkflowRegistry calldata FROM THE LOL SAFE (CRE_WORKFLOW_OWNER, defaults to L2_LIQUIDITY_OWNER), then append printed CRE_WORKFLOW_ID= to .env
+just -E .env.<network> deploy-cre-workflow  # LOL: cre workflow deploy --unsigned; EXECUTE the WorkflowRegistry calldata FROM THE LOL SAFE (CRE_WORKFLOW_OWNER, defaults to L2_LIQUIDITY_OWNER), then append CRE_WORKFLOW_ID= to .env
 just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = LOL multisig (Safe = L2_LIQUIDITY_OWNER), status ACTIVE
+just -E .env.<network> verify-stage2        # verify: infra LOL-owned + production-configured, Initial Owner still admin (seal not run)
 ```
-> **Owner = LOL multisig, not the deployer.** `deploy-cre-workflow` runs `--unsigned`: it prints raw `WorkflowRegistry` calldata instead of broadcasting. Before printing, it reads `CREReceiver.getExpectedAuthor()` on-chain and **aborts if it ≠ `CRE_WORKFLOW_OWNER`** — so the workflow can't be registered under an owner the author gate would reject. Execute the calldata **from the LOL Safe**, so the Safe becomes the on-chain workflow owner and matches the `CREReceiver.expectedAuthor` pin (which Stage 1 already set to the Safe). The Lido Deployer EOA only broadcasts the contract deploy above; it is **not** the workflow owner. See [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md) / [DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold).
-> **Prove the author gate on testnet first (CRE Early Access).** A green `verify-cre-workflow` confirms the *registry owner* only. Whether the DON actually stamps the Safe address into `metadata.workflowOwner` (so `expectedAuthor` matches) is residual (a) — exercise the full DON → report → `CREReceiver.CallExecuted` path on a **throwaway testnet workflow** before mainnet. If reports come back `InvalidAuthor`, the DON is embedding a different address (likely the `--unsigned` artifact uploader); the fix is `LOL setExpectedAuthor(<that address>)`. This is gate **G2-author**.
-> **Guard (both stages).** `deploy-stage1` and `migrate-stage2` assert `L2_GOVERNANCE_EXECUTOR == <per-network LIDO_L2_GOVERNANCE_EXECUTOR>` and revert (`L2UpgradeWrongGovernanceExecutor`) on mismatch — a wrong executor can't be baked into the admin/`ProxyAdmin` handover (Stage 2; Stage 1 no longer assigns the executor — `SyncTrigger` goes to the LOL multisig). See [`DOC.md` §6.3](DOC.md#63-how-the-final-state-is-verified).
+> **Owner = LOL multisig, not the deployer.** `deploy-cre-workflow` runs `--unsigned`: it prints raw `WorkflowRegistry` calldata instead of broadcasting. Before printing, it reads `CREReceiver.getExpectedAuthor()` on-chain and **aborts if it ≠ `CRE_WORKFLOW_OWNER`** — so the workflow can't be registered under an owner the author gate would reject. Execute the calldata **from the LOL Safe**, so the Safe becomes the on-chain workflow owner and matches the `CREReceiver.expectedAuthor` pin (which `handoff` re-pins to the Safe — `deploy-test` pins it to the deployer for the simulated test). The Lido Deployer EOA only broadcasts the deploy/test/handoff txs above; it is **not** the workflow owner. See [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md) / [DOC.md §3.2](DOC.md#32-owners--actors-and-what-they-hold).
+> **The canary does not exercise the real DON author gate.** `simulate-sync` calls `onReport` with the **deployer** as forwarder + author — it never touches the real Keystone forwarder or the DON. A green `verify-cre-workflow` after handoff confirms only the *registry owner*. Whether the DON stamps the Safe into `metadata.workflowOwner` (so `expectedAuthor` matches) is first proven by the **first production** `CREReceiver.CallExecuted`. If reports come back `InvalidAuthor`, the DON is embedding a different address (likely the `--unsigned` artifact uploader); the fix is `LOL setExpectedAuthor(<that address>)`. This is gate **G2-author**.
+> **Guard.** The governance executor and predecessor OraclePool are sourced ONLY from the pinned per-network constants (`LIDO_L2_GOVERNANCE_EXECUTOR` / `L2_OLD_ORACLE_POOL`, cross-checked to `*.inputs.yaml` by `just verify-constants-sync`) — never from env — so a wrong executor can't be baked into the admin/`ProxyAdmin` handover (`finalize`; the canary infra is deployer-owned, then handed to the LOL multisig, never the executor). A network that has not pinned the executor reverts (`L2UpgradeGovernanceExecutorNotPinned`). See [`DOC.md` §6.3](DOC.md#63-how-the-final-state-is-verified).
 
-**Evidence for G2:** `verify-stage1` → `Script ran successfully`; `verify-cre-workflow` → `ACTIVE`. CRE workflow is deployed **before** Stage 2 so the new sync path is live the moment legacy `SYNC_ROLE` is revoked (minimises the no-sync window).
+**Evidence for G2-handoff:** `verify-stage2` → `Script ran successfully`; `verify-cre-workflow` → `ACTIVE`. The CRE workflow is registered at handoff so the production sync path is live before the seal; until the pool is seeded (§3) no real sync can fire (the deployer swept the test WETH).
 
-### Stage 2 — Duty: **Initial Owner** SHALL, per network (then L1 once)
+### 2→3 governance seal — Duty: **Initial Owner** SHALL, per network (then L1 once)
 
 ```sh
-just -E .env.<network> migrate-stage2       # setOraclePool(new); SYNC_ROLE→new trigger (revoke legacy); DEFAULT_ADMIN→GovExec; L2 ProxyAdmin→GovExec
+just -E .env.<network> finalize             # revoke legacy SYNC_ROLE; DEFAULT_ADMIN→GovExec; L2 ProxyAdmin→GovExec. IRREVERSIBLE.
 ```
-Requires **G2** for this network. **Evidence (in-tx, verify):** the script reads back **7** values after writing them; on any mismatch the broadcast **reverts** — there is no partial migration. A clean broadcast *is* the evidence the 7 post-conditions hold.
+Requires **G2-handoff** for this network. **Evidence (in-tx, verify):** `finalize` first re-asserts the LOL-owned, production-configured infra as an **interlock** (it reverts unless `handoff` completed), then reads back every post-condition; any mismatch **reverts** — there is no partial seal.
 
 ```sh
 just -E .env.<any-network> migrate-l1       # ONCE: L1 Receiver admin + L1 ProxyAdmin → Lido DAO Agent
 ```
-Requires **G3**. ⚠️ **The L1 seal is the action that ends external control of the shared receiver — run it LAST and keep the "all L2s migrated → L1 sealed" window short.** Until it lands, the external Initial Owner retains upgrade power over the receiver that serves every chain (see `DOC.md` §6.4).
+Requires **G3**. ⚠️ **The L1 seal is the action that ends external control of the shared receiver — run it LAST and keep the "all L2s sealed → L1 sealed" window short.** Until it lands, the external Initial Owner retains upgrade power over the receiver that serves every chain (see `DOC.md` §6.4). The Initial Owner's external-admin window now also spans the canary test (Stages 1–2) per lane — bound it.
 
-**Def — transaction count:** 11 deploy (10 contract txs + 1 trigger-float funding, all inside `deploy-stage1`) + 6 migrate per L2 (7 for Linea) + 3 on L1 = **72 total**.
+**Def — transaction count:** per lane the canary runs ~5 deploy + 1 activate + 1 simulated-sync (+ a WETH seed) in Stage 1, ~6 in `handoff`, then 4 in `finalize` (5 for Linea), plus 3 on L1. The exact count is not load-bearing — the **gates**, not a tx tally, decide admissibility.
 
 ---
 
@@ -247,6 +429,13 @@ Requires **G3**. ⚠️ **The L1 seal is the action that ends external control o
 ### Validate (any operator) → clears **G4** per network
 
 `validate` = observe the live contracts over RPC. **Evidence:** each exits 0; state-mate tails `✔ Total: ≥45 checks passed`.
+
+> **ℹ Production is the default — no edits needed for this G4 run.** `config/state/l2.yaml` ships the
+> production profile, so the recipes below verify the post-handoff state directly. (For the *pre-handoff*
+> canary state instead, run the `test-<net>-upgrade-state-verify-canary` variants, which add
+> `--overrides config/state/l2.inputs.test-stage.yaml`; full table in
+> [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md).) The table below is the
+> production expectation; the deployer ≠ LOL, so a stale canary overlay fails loudly — it cannot false-pass.
 
 ```sh
 just -E .env.optimism test-optimism-upgrade-state-verify
@@ -288,10 +477,15 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 > state-mate checks only the listed (role,address) pairs — the "complete role-member set" guarantee
 > above holds for the enumerable contracts (e.g. L1 Receiver count), not for it. To make this check real
 > on mainnet, wire the actual per-chain deployer and add an `l2LidoDeployer` row to `verify-constants-sync`.
+> The **canary profile's** deployer-as-owner / `getForwarder` / `getExpectedAuthor` is verified via the
+> shared overlay `config/state/l2.inputs.test-stage.yaml` (its two deployer addresses), not this anchor —
+> `l2LidoDeployer` is referenced live only in this `hasRole==false` check. Setting it to the real deployer
+> for a Stage-1 state-mate run likewise makes the check non-vacuous there (the deployer holds no `CustomSender` admin).
 
 ### Finalize (each requires **G4** for that network)
 
 - **Duty — LOL multisig** SHALL transfer initial wstETH to each **new** pool (1 ERC-20 transfer/net). Until seeded, `fastStake` reverts for lack of output liquidity. **Do not seed a network before its G4.**
+- **Optional (recommended) — operator** MAY prove the path with dust before committing the full seed above: `SMOKE_CONFIRM=yes just -E .env.<network> smoke-stake` seeds a little wstETH into the new pool, `fastStake`s a dust amount from a funded `L2_SMOKE_PRIVATE_KEY`, and verifies the staker's wstETH balance delta equals the emitted `FastStake.amountOut` (pool balances reconcile). A bare `just -E .env.<network> smoke-stake` is a read-only dry run of the same preconditions (moves nothing). It hard-aborts unless `CustomSender.getOraclePool()` is already the new pool, so it is meaningless before Stage 2 — run it post-**G4**. The dust seed simply becomes part of the pool reserve the full LOL seed tops up.
 - **Duty — Lido Deployer / ops** SHALL cancel the old Chainlink Automation upkeeps (and Linea's Gelato bot) **only after G4** confirms the new SyncTrigger is the sole `SYNC_ROLE` holder. Residuals to recover alongside: the cancelled upkeeps' LINK balance (withdrawable ~50 blocks after cancel) and the legacy `SyncAutomation` contracts' leftover ETH fee float (same treasury pattern as the new trigger — owner-only `sweep()`, `lib/chainlink-csr/contracts/automations/SyncAutomation.sol:237`; recovery falls to whoever owns each legacy automation).
 
 ### Watch (first weeks) — full table in [`docs/monitoring.md`](docs/monitoring.md)

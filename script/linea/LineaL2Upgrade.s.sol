@@ -69,4 +69,8 @@ contract LineaL2UpgradeScript is L2UpgradeScriptBase, LineaL2Defaults {
     function _expectedCREForwarder() internal pure override returns (address) {
         return C.CRE_FORWARDER;
     }
+
+    function _expectedOldOraclePool() internal pure override returns (address) {
+        return C.L2_OLD_ORACLE_POOL;
+    }
 }

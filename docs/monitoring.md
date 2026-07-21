@@ -9,6 +9,8 @@
 
 Post-migration monitoring for the shared L1 Receiver + the 4 L2 deployments. Signals marked **(×4)** apply per network; all four must be watched. The state-polling rows map directly to the state-mate configs in `config/state/` (shared `l2.yaml` wiring + per-network `.inputs`/`.deployed` siblings); the event-subscription rows should be wired into an indexer (Tenderly, Dune, or similar). Thresholds in parentheses are starting points — tune after the first week of observation.
 
+> **Runnable spot-check — `just postflight-monitor`.** A stop-gap until the indexer/dashboard wiring exists: it reads the *on-chain-readable* rows below (access-control subset + live wiring cross-checks, trapped funds, sync-liveness, capacity/float headroom) across all four lanes + L1 in one pass, adds best-effort recent-window scans of `CallExecuted` / `MessageFailed` / `Sync` (`MONITOR_WINDOW_HOURS`, default 24 — a snapshot, not coverage), and ends with a footer listing what it *cannot* read one-shot (the event subscriptions, CRE credit, and CCIP/Arbitrum dashboards). It is **not** a replacement for state-mate (the exhaustive §1 oracle) or the event/dashboard rows; it delegates fee/gas headroom (§5) to `just quote-ccip-fees` + `preflight-check` and the CRE registry check (§4) to `just verify-cre-workflow`. The SyncTrigger/CREReceiver rows need `config/state/l2-<net>.deployed.yaml`; absent it, they skip with a "run after deploy-test" note (CustomSender + the new pool are still derived live and cross-checked, so a stale `.deployed.yaml` is caught). Read-only; exits nonzero on any WARN/ALERT/SKIP.
+
 | Severity | Meaning | Response |
 | --- | --- | --- |
 | **CRITICAL** | Fund loss or access-control breach | Page on-call immediately |

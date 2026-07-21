@@ -8,6 +8,8 @@ config:
   - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
   - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
   - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
+  # Canary (Stage-1) overrides for these knobs live in the shared overlay config/state/l2.inputs.test-stage.yaml
+  # (state-mate --overrides), NOT here — these are the production values restored at handoff.
   - &maxGasLimit 3000000                 # 3M     SyncTrigger.getMaxGasLimit() — Linea EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit (lowest of the four)
   # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
   # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=500_000)  — Linea gasLimit is 500k
@@ -42,9 +44,18 @@ externals:
   #   VACUOUSLY on mainnet (this address never held a role here) — it does NOT prove the real deployer
   #   renounced admin. Intentionally NOT in verify-constants-sync (no Solidity address constant); the
   #   externals-coverage lint allowlists it. See RUNBOOK "Deployer-renounce check".
+  #   Canary (Stage-1): the deployer-as-owner/forwarder/author state is verified via the shared overlay
+  #   config/state/l2.inputs.test-stage.yaml (set its two deployer addresses locally for a mainnet canary),
+  #   NOT this anchor — l2.yaml references *l2LidoDeployer only in the customSender.hasRole==false check.
   - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
   - &l2OldOraclePool "0x6F357d53d6bE3238180316BA5F8f11467e164588"
   - &l2OldSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated l2-linea.deployed.yaml.
+  #   Pinned to LineaMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
+  - &l2CustomSenderImpl "0xBf96561e4519182CFA4cebBf95494D9CA5a316f9"
+  - &l2ProxyAdmin "0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192"
   # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
   #   network & Chainlink-operated. Pinned to LineaMigrationConstants.CRE_FORWARDER (verify-constants-sync).
   - &l2CreForwarder "0x9eF6468C5f37b976E57d52054c693269479A784d"
