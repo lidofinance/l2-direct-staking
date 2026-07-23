@@ -2232,13 +2232,17 @@ postflight-monitor:
 # only via a later swap) — not lost, but re-running adds more; size SMOKE_SEED_WSTETH accordingly.
 #
 # Required env: L2_NETWORK; RPC_<NET> (or legacy L2_RPC_URL); L2_SMOKE_PRIVATE_KEY (the canary signer —
-#   must already hold a little wstETH to seed AND native ETH for the dust stake + gas).
+#   must already hold a little wstETH to seed AND native ETH for the dust stake + gas; the wstETH
+#   requirement drops in stake-only mode, see SMOKE_SEED_WSTETH=0 below).
 # New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-test) win; when unset the
 #   new pool falls back to l2OraclePool in config/state/l2-<net>.deployed.yaml and the CustomSender to the
 #   l2CustomSender external in config/state/l2-<net>.inputs.yaml. Tokens, chain-id and the old pool also
 #   come from .inputs.yaml (no new hardcodes here, so verify-constants-sync is unaffected).
 # Tunables (all wei): SMOKE_STAKE_AMOUNT (default 1e15 = 0.001), SMOKE_SEED_WSTETH (default 2e15 = 0.002),
 #   SMOKE_MIN_OUT (default 0), SMOKE_GAS_BUFFER (default 1e15), SMOKE_STAKE_TOKEN=native|weth (default native).
+# SMOKE_SEED_WSTETH=0 = STAKE-ONLY mode: skip the seed tx and stake against the pool's EXISTING wstETH
+#   reserve (the [4/4] liquidity check moves from the seed amount to the live pool balance; the signer
+#   then needs no wstETH at all, only dust ETH + gas). Use once the pool is already funded.
 #
 # Usage:  just -E .env.<net> smoke-stake                    # dry run (read-only)
 #         SMOKE_CONFIRM=yes just -E .env.<net> smoke-stake  # execute (moves real funds)
@@ -2282,7 +2286,7 @@ smoke-stake:
     # New pool: env (printed by deploy-test) wins; else the freshly-generated .deployed.yaml anchor.
     POOL="${L2_ORACLE_POOL:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2OraclePool || true )}"
 
-    : "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (must hold a little wstETH to seed + native ETH for the dust stake + gas)}"
+    : "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (must hold a little wstETH to seed — unless SMOKE_SEED_WSTETH=0 — + native ETH for the dust stake + gas)}"
     SIGNER="$(cast wallet address --private-key "$L2_SMOKE_PRIVATE_KEY" 2>/dev/null | tr -d '\r\n')" || die "invalid L2_SMOKE_PRIVATE_KEY"
 
     STAKE_TOKEN="${SMOKE_STAKE_TOKEN:-native}"
@@ -2303,7 +2307,11 @@ smoke-stake:
     echo "  CustomSender:   $SENDER"
     echo "  WETH:           $WETH"
     echo "  wstETH:         $WSTETH"
-    echo "  Seed wstETH:    $SEED wei (~ $(cast from-wei "$SEED") wstETH)"
+    if [[ "$SEED" == "0" ]]; then
+      echo "  Seed wstETH:    0 (STAKE-ONLY — pool must already hold liquidity)"
+    else
+      echo "  Seed wstETH:    $SEED wei (~ $(cast from-wei "$SEED") wstETH)"
+    fi
     echo "  Dust stake:     $DUST wei (~ $(cast from-wei "$DUST") ETH) via $STAKE_TOKEN"
     echo "  Min amount out: $MIN_OUT wei"
     echo "===================================================================="
@@ -2349,7 +2357,12 @@ smoke-stake:
     [[ "$p_paused" == "false" ]] || die "pool is paused (paused()=$p_paused) — swap is whenNotPaused; unpause before the canary"
     echo "      PASS TOKEN_IN=WETH, TOKEN_OUT=wstETH, SENDER ok, paused=false, fee=$p_fee (PRECISION 1e18)"
 
-    # ── [4/4] Signer funded + seed covers the expected output ──
+    # Pre-seed pool snapshot (also confirms the pool balances are readable; the wstETH reserve
+    # doubles as the liquidity source checked in stake-only mode).
+    pool_wst0="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
+    pool_weth0="$(rdcall "$WETH" 'balanceOf(address)(uint256)' "$POOL")"
+
+    # ── [4/4] Signer funded + seed (or existing pool reserve) covers the expected output ──
     echo "[4/4] CHECK signer balances + expected output"
     sig_wst="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$SIGNER")"
     sig_eth="$(parse_num "$(cast balance "$SIGNER" --rpc-url "$L2_RPC_URL" 2>/dev/null || echo 0)")"
@@ -2365,8 +2378,16 @@ smoke-stake:
     fi
     echo "      INFO signer wstETH=$sig_wst wei (~ $(cast from-wei "$sig_wst")); native ETH=$sig_eth wei (~ $(cast from-wei "$sig_eth"))"
     if [[ -n "$expected_out" ]]; then echo "      INFO oracle=$oracle price=$price -> expected out ~ $expected_out wei (~ $(cast from-wei "$expected_out") wstETH)"; else echo "      WARN oracle price unreadable; expected-output check skipped (verification still uses the measured delta)"; fi
-    ge "$sig_wst" "$SEED" || die "signer wstETH $sig_wst < seed $SEED — acquire a little wstETH on $L2_NETWORK first"
-    if [[ -n "$expected_out" ]]; then ge "$SEED" "$expected_out" || die "seed $SEED < expected output $expected_out — raise SMOKE_SEED_WSTETH (swap would revert OraclePoolInsufficientTokenOut)"; fi
+    if [[ "$SEED" == "0" ]]; then
+      # Stake-only: no seed tx, so the pool's LIVE reserve must cover the output — and with no seed
+      # as guaranteed headroom, an unreadable oracle price is a hard stop here, not a warning.
+      [[ -n "$expected_out" ]] || die "stake-only mode (SMOKE_SEED_WSTETH=0) needs a readable oracle price to size the expected output — aborting"
+      echo "      INFO pool wstETH reserve=$pool_wst0 wei (~ $(cast from-wei "$pool_wst0")) [stake-only: no seed]"
+      ge "$pool_wst0" "$expected_out" || die "pool wstETH reserve $pool_wst0 < expected output $expected_out — swap would revert OraclePoolInsufficientTokenOut; seed the pool (SMOKE_SEED_WSTETH>0) or lower SMOKE_STAKE_AMOUNT"
+    else
+      ge "$sig_wst" "$SEED" || die "signer wstETH $sig_wst < seed $SEED — acquire a little wstETH on $L2_NETWORK first (or SMOKE_SEED_WSTETH=0 to stake against existing pool liquidity)"
+      if [[ -n "$expected_out" ]]; then ge "$SEED" "$expected_out" || die "seed $SEED < expected output $expected_out — raise SMOKE_SEED_WSTETH (swap would revert OraclePoolInsufficientTokenOut)"; fi
+    fi
     if [[ "$STAKE_TOKEN" == native ]]; then
       ge "$sig_eth" "$(echo "$DUST + $GAS_BUFFER" | bc)" || die "signer native ETH $sig_eth < dust $DUST + gas buffer $GAS_BUFFER — top up (or lower SMOKE_GAS_BUFFER)"
     else
@@ -2375,17 +2396,21 @@ smoke-stake:
       ge "$sig_weth" "$DUST" || die "SMOKE_STAKE_TOKEN=weth but signer WETH $sig_weth < dust $DUST — wrap some ETH->WETH or use native"
       echo "      INFO signer WETH=$sig_weth wei (~ $(cast from-wei "$sig_weth"))"
     fi
-    echo "      PASS signer funded (seed + dust + gas covered)"
-
-    # Pre-seed pool snapshot (also confirms the pool balances are readable).
-    pool_wst0="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
-    pool_weth0="$(rdcall "$WETH" 'balanceOf(address)(uint256)' "$POOL")"
+    if [[ "$SEED" == "0" ]]; then
+      echo "      PASS signer funded (dust + gas) + pool reserve covers the output"
+    else
+      echo "      PASS signer funded (seed + dust + gas covered)"
+    fi
 
     if [[ "${SMOKE_CONFIRM:-}" != "yes" ]]; then
       echo "===================================================================="
       echo "DRY RUN OK — all preconditions passed; no funds moved."
       echo "  Re-run to EXECUTE:  SMOKE_CONFIRM=yes just -E .env.$L2_NETWORK smoke-stake"
-      echo "  Would (1) transfer $SEED wei wstETH -> pool $POOL"
+      if [[ "$SEED" == "0" ]]; then
+        echo "  Would (1) skip the seed (stake-only — pool reserve $pool_wst0 wei wstETH covers the output)"
+      else
+        echo "  Would (1) transfer $SEED wei wstETH -> pool $POOL"
+      fi
       echo "        (2) fastStake $DUST wei via $STAKE_TOKEN, expecting ~ ${expected_out:-?} wei wstETH to $SIGNER"
       echo "===================================================================="
       exit 0
@@ -2395,13 +2420,19 @@ smoke-stake:
     echo "EXECUTE — moving funds"
     SEND=(cast send --rpc-url "$L2_RPC_URL" --private-key "$L2_SMOKE_PRIVATE_KEY" --json)
 
-    echo "  -> seed: wstETH.transfer($POOL, $SEED)"
-    seed_rcpt="$("${SEND[@]}" "$WSTETH" 'transfer(address,uint256)' "$POOL" "$SEED")" || die "seed transfer failed"
-    seed_tx="$(printf '%s' "$seed_rcpt" | jq -r '.transactionHash')"
-    [[ "$(printf '%s' "$seed_rcpt" | jq -r '.status')" == "0x1" ]] || die "seed tx reverted ($seed_tx)"
-    pool_wst1="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
-    [[ "$pool_wst1" == "$(echo "$pool_wst0 + $SEED" | bc)" ]] || die "pool wstETH after seed = $pool_wst1, expected $(echo "$pool_wst0 + $SEED" | bc) (tx $seed_tx)"
-    echo "     seeded: tx=$seed_tx ; pool wstETH $pool_wst0 -> $pool_wst1"
+    if [[ "$SEED" == "0" ]]; then
+      seed_tx="(skipped)"
+      pool_wst1="$pool_wst0"
+      echo "  -> seed: skipped (SMOKE_SEED_WSTETH=0 — staking against existing pool reserve $pool_wst0 wei)"
+    else
+      echo "  -> seed: wstETH.transfer($POOL, $SEED)"
+      seed_rcpt="$("${SEND[@]}" "$WSTETH" 'transfer(address,uint256)' "$POOL" "$SEED")" || die "seed transfer failed"
+      seed_tx="$(printf '%s' "$seed_rcpt" | jq -r '.transactionHash')"
+      [[ "$(printf '%s' "$seed_rcpt" | jq -r '.status')" == "0x1" ]] || die "seed tx reverted ($seed_tx)"
+      pool_wst1="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$POOL")"
+      [[ "$pool_wst1" == "$(echo "$pool_wst0 + $SEED" | bc)" ]] || die "pool wstETH after seed = $pool_wst1, expected $(echo "$pool_wst0 + $SEED" | bc) (tx $seed_tx)"
+      echo "     seeded: tx=$seed_tx ; pool wstETH $pool_wst0 -> $pool_wst1"
+    fi
 
     # Window start: staker wstETH immediately before the stake tx (= after seed).
     staker_before="$(rdcall "$WSTETH" 'balanceOf(address)(uint256)' "$SIGNER")"
@@ -2446,9 +2477,17 @@ smoke-stake:
     echo "===================================================================="
     echo "OK SMOKE-STAKE PASSED — $L2_NETWORK"
     echo "  staker $SIGNER received $delta wei wstETH (~ $(cast from-wei "$delta"))"
-    echo "  seed tx:     $seed_tx   (+$SEED wei wstETH -> pool)"
+    if [[ "$SEED" == "0" ]]; then
+      echo "  seed tx:     (skipped — stake-only against existing pool reserve)"
+    else
+      echo "  seed tx:     $seed_tx   (+$SEED wei wstETH -> pool)"
+    fi
     echo "  stake tx:    $stake_tx   ($DUST wei $STAKE_TOKEN -> fastStake)"
-    echo "  pool wstETH: $pool_wst0 -> $pool_wst1 (seed) -> $pool_wst2 (after stake)"
+    if [[ "$SEED" == "0" ]]; then
+      echo "  pool wstETH: $pool_wst0 -> $pool_wst2 (after stake)"
+    else
+      echo "  pool wstETH: $pool_wst0 -> $pool_wst1 (seed) -> $pool_wst2 (after stake)"
+    fi
     echo "  pool WETH:   $pool_weth0 -> $pool_weth2 (+$DUST)"
     [[ -n "$price" ]] && echo "  oracle price: $price (expected out ~ ${expected_out:-?} wei)"
     echo "===================================================================="
