@@ -12,10 +12,6 @@ default: &default
       url: "${L2_OPTIMISM_RPC_URL}"
     - chain-name: ethereum-mainnet
       url: "${L1_RPC_URL}"
-    - chain-name: ethereum-testnet-sepolia-optimism-1
-      url: "${L2_OPTIMISM_SEPOLIA_RPC_URL}"
-    - chain-name: ethereum-testnet-sepolia
-      url: "${L1_SEPOLIA_RPC_URL}"
 
 # ==========================================================================
 # simulate/test deliberately do NOT set workflow-owner-address: local simulation

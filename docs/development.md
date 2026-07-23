@@ -23,7 +23,7 @@ The operator procedure is in **[`RUNBOOK.md`](../RUNBOOK.md)**. This table is on
 - Shared harness:
   - `test/helpers/UpgradeTestBase.sol`
   - `test/helpers/PoolUpgradeTests.sol`
-- Network-specific suites (17 tests each):
+- Network-specific suites (20 tests each):
   - `test/OptimismPoolUpgrade.t.sol`
   - `test/ArbitrumPoolUpgrade.t.sol`
   - `test/BasePoolUpgrade.t.sol`
@@ -50,11 +50,11 @@ Notes:
 
 ## CRE tests
 
-- `test/CREReceiverTest.t.sol` — 35 unit tests for the CREReceiver contract (no fork required; incl. the argument-less call-lock)
+- `test/CREReceiverTest.t.sol` — 40 unit tests for the CREReceiver contract (no fork required; incl. the argument-less call-lock)
 - `test/CREIntegrationTest.t.sol` — 10 fork-based integration tests per network (Optimism, Arbitrum, Base, Linea = 40 total), covering the full CRE Forwarder → CREReceiver → SyncTrigger → sync path. Includes `test_productionExpectedAuthorIsLolMultisig`, which asserts the production deploy pins `expectedAuthor` to the **LOL multisig** (== owner == CRE workflow owner, ≠ the Stage-1 deployer EOA) and that a Safe-authored report is accepted while a deployer-authored report is rejected (ADR-0001)
 - `test/helpers/CREIntegrationTests.sol` — shared CRE test logic (same pattern as `PoolUpgradeTests.sol`)
-- `cre-workflows/sync-automation/main.test.ts` — 11 TypeScript tests for workflow encoding/decoding logic
-- `test/L2GovernanceExecutorGuard.t.sol` — RPC-free guard test for the migration's `L2_GOVERNANCE_EXECUTOR` validation (mainnet rejects a wrong executor; Sepolia opts out) — see [DOC.md §6.3](../DOC.md#63-how-the-final-state-is-verified)
+- `cre-workflows/sync-automation/main.test.ts` — 9 TypeScript tests for workflow encoding/decoding logic
+- `test/L2PinnedConstantsGuard.t.sol` — RPC-free guard test: the governance executor, predecessor OraclePool, and CRE forwarder resolve straight from the per-network constants (never env); a production lane returns its pinned values and an unpinned network reverts — see [DOC.md §6.3](../DOC.md#63-how-the-final-state-is-verified)
 
 ```sh
 # Unit tests only (no RPC required)
@@ -87,19 +87,20 @@ And one glue command that runs all phases on a dedicated nested fork:
 
 Purpose of each phase:
 - `migrate`: executes `OptimismL2UpgradeScript` against the target RPC and persists migration outputs.
-- `update-config`: regenerates `script/optimism/state-mate/optimism.yaml` from template.
+- `update-config`: regenerates the deployed-address sibling `config/state/l2-optimism.deployed.yaml` from the resolved addresses (the shared wiring `config/state/l2.yaml` and the `l2-optimism.inputs.yaml` sibling are static, hand-maintained).
 - `verify`: runs `state-mate` checks against an arbitrary RPC.
 
 Required env:
 - `L2_LIDO_DEPLOYER_PRIVATE_KEY`
-- `L2_GOVERNANCE_EXECUTOR`
+
+(The governance executor is pinned in `OptimismMigrationConstants.sol` and read by the recipe/script — not env.)
 
 RPC env:
 - For `test-optimism-upgrade-state`: one upstream source: `L2_STATE_MATE_UPSTREAM_RPC_URL` or `LOCAL_L2_OPTIMISM_RPC_URL` or `L2_OPTIMISM_RPC_URL`.
 - For split commands: pass `[rpc_url]`, or set `L2_STATE_MATE_RPC_URL` (fallback: migration output file, then `LOCAL_L2_OPTIMISM_RPC_URL`, `L2_OPTIMISM_RPC_URL`).
 
 Optional env:
-- `L2_LIQUIDITY_OWNER` (defaults to `L2_GOVERNANCE_EXECUTOR`)
+- `L2_LIQUIDITY_OWNER` (defaults to the pinned `LIDO_L2_GOVERNANCE_EXECUTOR` constant)
 - `INITIAL_OWNER_PRIVATE_KEY` (if omitted, migration uses unlocked/impersonated `INITIAL_OWNER` on anvil-compatible RPCs)
 - `INITIAL_OWNER` (defaults to `OptimismMigrationConstants.INITIAL_OWNER`)
 - `L2_STATE_MATE_FORK_PORT` (default: `8651`)
@@ -115,7 +116,7 @@ just test-optimism-upgrade-state
 Operational notes:
 - The glue command prefers `L2_STATE_MATE_UPSTREAM_RPC_URL`, then `LOCAL_L2_OPTIMISM_RPC_URL`, then `L2_OPTIMISM_RPC_URL`.
 - If `LOCAL_L2_OPTIMISM_RPC_URL` is set but no local fork is listening there, the nested Anvil fork will fail to start; either run `just rpc-start-l2-optimism` first or override `L2_STATE_MATE_UPSTREAM_RPC_URL`.
-- `test-optimism-upgrade-state-update-config` rewrites the tracked file `script/optimism/state-mate/optimism.yaml`, so expect a worktree diff after running it.
+- `test-optimism-upgrade-state-update-config` rewrites the tracked file `config/state/l2-optimism.deployed.yaml`, so expect a worktree diff after running it.
 
 ## Test layers (overview)
 
@@ -124,9 +125,8 @@ Four independent layers of pre-prod validation, increasing in realism:
 | Layer | Exercises | Recipe |
 | --- | --- | --- |
 | Forge fork tests + Chainlink Local CCIP simulator | Per-network L2/L1 migration logic + CCIP routing + CRE allow-list against mainnet forks | `just test-acceptance`, `just test-<net>-upgrade`, `just test-cre-integration` |
-| state-mate post-condition diff | ≥45 live-RPC assertions per network vs canonical `*.yaml` | `just test-<net>-upgrade-state-verify` |
-| Per-network anvil-fork dress rehearsal (below) | The exact `deploy-stage1 → verify-stage1 → migrate-stage2 → state-verify` recipe sequence on an anvil fork of one L2 + L1 | manual (below) |
-| Sepolia rehearsal | Real Sepolia + Optimism Sepolia, same script shape | the `sepolia-*` recipes in the `justfile` |
+| state-mate post-condition diff | ≥45 live-RPC assertions per network vs the shared `config/state/l2.yaml` + per-lane `.inputs`/`.deployed` siblings | `just test-<net>-upgrade-state-verify` |
+| Per-network anvil-fork dress rehearsal (below) | The exact canary recipe sequence (`deploy-test → verify-test → activate → simulate-sync → handoff → finalize → state-verify`) on an anvil fork of one L2 + L1 | manual (below) |
 
 ## CCIP fork simulation (Chainlink Local)
 
@@ -136,7 +136,7 @@ The pool-upgrade end-to-end test (`test_upgradeSyncRoutesAcrossL2AndL1CCIPLayer`
 
 ## Per-network anvil-fork dress rehearsal
 
-Distinct from `just test-acceptance` (which runs the combined Stage 1+2 across all four networks at once), this exercises the **exact recipe sequence** an operator runs on mainnet — `deploy-stage1 → verify-stage1 → migrate-stage2 → test-<net>-upgrade-state-verify` — against an anvil fork of one L2 + Ethereum mainnet. It confirms the recipes wire env/args correctly end-to-end, that Stage-1 broadcast-JSON parsing emits the right `export` addresses, and that the canonical state-mate template renders + passes against the post-migration fork. The walkthrough uses **Linea** (substitute the network + its `script/<net>/<Net>MigrationConstants.sol` to rehearse the others).
+Distinct from `just test-acceptance` (which drives the canary state machine across all four networks at once), this exercises the **exact recipe sequence** an operator runs on mainnet — `deploy-test → verify-test → activate → simulate-sync → handoff → finalize → test-<net>-upgrade-state-verify` — against an anvil fork of one L2 + Ethereum mainnet. It confirms the recipes wire env/args correctly end-to-end, that the deploy broadcast-JSON parsing emits the right `export` addresses, and that the canonical state-mate template renders + passes against the post-finalize fork. The walkthrough uses **Linea** (substitute the network + its `script/<net>/<Net>MigrationConstants.sol` to rehearse the others). On a fork the cold Initial-Owner key is absent, so the Initial-Owner steps (`activate`, `finalize`) call the `*Unlocked` script entrypoints directly under an impersonated sender instead of the keyed recipes.
 
 **Prereqs:** `.env` with `L1_RPC_URL` + `L2_LINEA_RPC_URL`; `L2_LIDO_DEPLOYER_PRIVATE_KEY` (any funded EOA works on a fork — anvil dev key `0xf39F…2266` is the convention); `forge`/`cast`/`anvil`/`jq`/`yq`/`node`/`yarn`; `lib/state-mate/node_modules` populated (`corepack yarn install --immutable` inside `lib/state-mate`).
 
@@ -166,46 +166,74 @@ for url in http://127.0.0.1:8650 http://127.0.0.1:8651; do
 
 Expected: chain-id on :8650 → `1`, on :8651 → `59144`.
 
-**2. Stage 1 — `deploy-stage1`** on the Linea fork (paste the three printed `export` lines into the shell):
+**2. Stage 0→1 — `deploy-test`** (Lido Deployer) on the Linea fork (paste the printed `export` lines into the shell):
 
 ```sh
 export L2_NETWORK=linea
-export L2_GOVERNANCE_EXECUTOR=0x74Be82F00CC867614803ffd7f36A2a4aF0405670   # LineaMigrationConstants
-export L2_CRE_FORWARDER=0x000000000000000000000000000000000000dEaD          # placeholder — CRE Forwarder not exercised on a fork
-L2_RPC_URL=http://127.0.0.1:8651 just deploy-stage1
-# → export L2_ORACLE_POOL=…  L2_SYNC_TRIGGER=…  L2_CRE_RECEIVER=…
+# Governance executor, old pool, and CRE forwarder are pinned per network in code (LineaMigrationConstants) — no env needed
+L2_RPC_URL=http://127.0.0.1:8651 just deploy-test
+# → export L2_ORACLE_POOL=…  L2_SYNC_TRIGGER=…  L2_CRE_RECEIVER=…  L2_TEST_DEPLOYER=…
 ```
 
-**3. Verify Stage 1** (read-only): `L2_RPC_URL=http://127.0.0.1:8651 just verify-stage1` — a clean exit means all 18 Stage-1 post-condition reads passed (immutables, allow-list, expectedAuthor, plus guardrails that Stage 2 has *not* yet run).
+The three contracts are deployed **deployer-owned**, with the deployer wired as the `CREReceiver` forwarder + author and the **test** `minAmount`/`delay` from the `config/state/l2.inputs.test-stage.yaml` overlay, so the deployer can drive a real sync before any handoff.
 
-**4. Stage 2 — `migrate-stage2`** (impersonated Initial Owner). The fork lacks the cold key, so call `runMigrateUnlocked()` directly:
+**3. Verify Stage 0→1** (read-only): `L2_RPC_URL=http://127.0.0.1:8651 just verify-test` — a clean exit means the canary post-condition reads passed (immutables, allow-list, deployer-as-forwarder/author, pool repointed not yet, seal not run).
+
+**4. Stage 0→1 — `activate`** (impersonated Initial Owner): repoint CustomSender at the new pool and grant the new SyncTrigger `SYNC_ROLE`. The fork lacks the cold key, so call `runActivateUnlocked()` directly:
 
 ```sh
 export INITIAL_OWNER=0xb5c336a5c60D3482b29d83C742C65AE8351b91a8
 cast rpc --rpc-url http://127.0.0.1:8651 anvil_impersonateAccount "$INITIAL_OWNER" >/dev/null
-ALLOW_UNSAFE_COMBINED_RUN=1 forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
-  --sig 'runMigrateUnlocked()' --rpc-url http://127.0.0.1:8651 \
+forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
+  --sig 'runActivateUnlocked()' --rpc-url http://127.0.0.1:8651 \
   --broadcast --non-interactive --unlocked --sender "$INITIAL_OWNER"
 ```
 
-`ALLOW_UNSAFE_COMBINED_RUN=1` is required because the production guard trips on Linea's mainnet chain-id (59144) inherited by the fork; `runMigrateUnlocked()` runs only Stage 2 (Stage 1 already happened in step 2). Successful broadcast lands the seven in-transaction post-conditions (new pool wired, `SYNC_ROLE` rotated, `DEFAULT_ADMIN` rotated, ProxyAdmin owner transferred).
+This is reversible — `runRollbackUnlocked()` (repoint old pool + revoke `SYNC_ROLE`) undoes it without governance.
 
-**5. State-mate against the fork.** The tracked `linea.yaml` pins production-target addresses, so render the template into a temp dir with the freshly-deployed addresses and run state-mate directly:
+**5. Stage 1 — simulate a sync** (Lido Deployer): seed the pool past the test `minAmount`, wait the test `delay`, then drive `CREReceiver.onReport` directly (the deployer is the canary forwarder + author):
 
 ```sh
-mkdir -p /tmp/linea-rehearsal && cp -R script/linea/state-mate/abi /tmp/linea-rehearsal/
-sed -e "s|__L2_CUSTOM_SENDER__|0x328de900860816d29D1367F6903a24D8ed40C997|g" \
-    -e "s|__L2_PROXY_ADMIN__|0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192|g" \
-    -e "s|__INITIAL_OWNER__|$INITIAL_OWNER|g" -e "s|__L2_GOVERNANCE_EXECUTOR__|$L2_GOVERNANCE_EXECUTOR|g" \
-    -e "s|__L2_LIQUIDITY_OWNER__|0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6|g" -e "s|__L2_LIDO_DEPLOYER__|$DEPLOYER|g" \
-    -e "s|__L2_ORACLE_POOL__|$L2_ORACLE_POOL|g" -e "s|__L2_SYNC_TRIGGER__|$L2_SYNC_TRIGGER|g" -e "s|__L2_CRE_RECEIVER__|$L2_CRE_RECEIVER|g" \
-    script/linea/state-mate/linea-l2-upgrade.template.yaml > /tmp/linea-rehearsal/linea.yaml
-(cd lib/state-mate && L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 corepack yarn start /tmp/linea-rehearsal/linea.yaml --only l2)
+L2_RPC_URL=http://127.0.0.1:8651 just seed-test-weth
+cast rpc --rpc-url http://127.0.0.1:8651 evm_increaseTime 61 >/dev/null
+cast rpc --rpc-url http://127.0.0.1:8651 evm_mine >/dev/null
+L2_RPC_URL=http://127.0.0.1:8651 just simulate-sync
 ```
 
-Expected tail: `✔ Total: 46 checks passed` (5 `getForwarder` / fee-blob / timestamp checks emit `⚠ skipped` because they're set after CRE workflow deploy, which the fork rehearsal does not cover).
+A successful broadcast runs `onReport → triggerSync → CustomSender.sync` — the end-to-end proof the canary exists to provide.
 
-**6. L1 admin migration** on the L1 fork (no impersonated variant in `L1UpgradeScript`, so issue the three calls via `cast send --unlocked`):
+**6. Stage 1→2 — `handoff`** (Lido Deployer): sweep test residue, restore production config (real CRE forwarder + LOL author + production delay/amounts), top up the float, and transfer all three contracts to the LOL multisig:
+
+```sh
+L2_RPC_URL=http://127.0.0.1:8651 just handoff
+# optional: L2_RPC_URL=http://127.0.0.1:8651 just verify-stage2   (LOL-owned + production-configured, seal not run)
+```
+
+**7. Stage 2→3 — `finalize`** (impersonated Initial Owner): the irreversible governance seal — revoke old automation(s), migrate CustomSender admin + L2 ProxyAdmin to the governance executor. Call `runFinalizeUnlocked()` directly:
+
+```sh
+forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
+  --sig 'runFinalizeUnlocked()' --rpc-url http://127.0.0.1:8651 \
+  --broadcast --non-interactive --unlocked --sender "$INITIAL_OWNER"
+```
+
+**8. State-mate against the fork.** All four lanes share one wiring file, `config/state/l2.yaml`, parametrized per lane by its `--inputs`/`--deployed` siblings. The committed `l2-linea.deployed.yaml` holds the production-target addresses; for the fork, write the freshly-deployed addresses to a throwaway `.deployed.yaml` and override the committed sibling with `--deployed` (the static `l2-linea.inputs.yaml` must be passed explicitly, since sibling auto-discovery is basename-keyed for the shared file; the `abi/` dir is auto-discovered from the shared config's directory):
+
+```sh
+mkdir -p /tmp/linea-rehearsal
+bash script/shared/write-deployed-yaml.sh /tmp/linea-rehearsal/linea.deployed.yaml \
+    0x328de900860816d29D1367F6903a24D8ed40C997 0xBf96561e4519182CFA4cebBf95494D9CA5a316f9 0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192 \
+    "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"
+ROOT="$(git rev-parse --show-toplevel)"
+(cd lib/state-mate && L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 \
+  corepack yarn start "$ROOT/config/state/l2.yaml" \
+    --inputs "$ROOT/config/state/l2-linea.inputs.yaml" \
+    --deployed /tmp/linea-rehearsal/linea.deployed.yaml --only l2)
+```
+
+Expected: all L2 checks pass against the **production** profile (this is the post-`finalize` state — LOL-owned, governance-sealed, real CRE forwarder, production delay/amounts). `getFeeOtoD`/`getFeeDtoO`/`getForwarder` are asserted; only deployment-time/runtime values (`getLastExecution`, the governance action-set counters) emit `⚠ skipped`.
+
+**9. L1 admin migration** on the L1 fork (no impersonated variant in `L1UpgradeScript`, so issue the three calls via `cast send --unlocked`):
 
 ```sh
 L1_RECEIVER=0x6F357d53d6bE3238180316BA5F8f11467e164588
@@ -217,6 +245,6 @@ cast send --unlocked --from "$INITIAL_OWNER" --rpc-url http://127.0.0.1:8650 "$L
 cast send --unlocked --from "$INITIAL_OWNER" --rpc-url http://127.0.0.1:8650 "$L1_PROXY_ADMIN_ADDR" "transferOwnership(address)" "$LIDO_DAO_AGENT"
 ```
 
-**7. Cleanup:** `pkill -f 'anvil .*-p 8650'; pkill -f 'anvil .*-p 8651'; rm -rf /tmp/linea-rehearsal /tmp/rehearsal-l*.log`
+**10. Cleanup:** `pkill -f 'anvil .*-p 8650'; pkill -f 'anvil .*-p 8651'; rm -rf /tmp/linea-rehearsal /tmp/rehearsal-l*.log`
 
-**The rehearsal does NOT cover** (same gaps as `test-acceptance` and the Sepolia rehearsal): the CRE workflow deploy + registration (real `WorkflowRegistry` + live DON — the fork uses the `0x…dEaD` forwarder placeholder, so `getForwarder` checks show as state-mate `⚠ skipped`); a real CCIP send → L1 receive (the step-0 forge fork tests cover that via the Chainlink Local simulator); the LOL multisig wstETH seed; the Aragon DAO vote (the fork just impersonates `LIDO_DAO_AGENT`).
+**The rehearsal does NOT cover** (same gaps as `test-acceptance`): the CRE workflow deploy + registration (real `WorkflowRegistry` + live DON — `handoff` rewires the receiver to the per-network pinned forwarder constant, but no live DON originates reports on the fork); a real CCIP send → L1 receive (the step-0 forge fork tests cover that via the Chainlink Local simulator); the LOL multisig wstETH seed; the Aragon DAO vote (the fork just impersonates `LIDO_DAO_AGENT`).

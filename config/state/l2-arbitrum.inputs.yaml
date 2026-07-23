@@ -1,0 +1,66 @@
+---
+# Single review surface for every Arbitrum deploy parameter (sibling of the shared config/state/l2.yaml wiring).
+# Mirrors script/arbitrum/ArbitrumMigrationConstants.sol; kept in lockstep by `just verify-constants-sync`;
+# the wiring config's `checks:` cross-check each one against live chain state.
+config:
+  # ── Project-chosen SyncTrigger knobs (decoded sub-params shown for review) ──
+  - &minProcessMessageGas 75000          # CustomSender.MIN_PROCESS_MESSAGE_GAS
+  - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
+  - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
+  - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
+  # Canary (Stage-1) overrides for these knobs live in the shared overlay config/state/l2.inputs.test-stage.yaml
+  # (state-mate --overrides), NOT here — these are the production values restored at handoff.
+  - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Arbitrum FeeQuoter maxPerMsgGasLimit
+  # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
+  # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=1_000_000)
+  - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"
+  # feeDtoO = FeeCodec.encodeArbitrumL1toL2(maxSubmissionCost=0.001e18, maxGas=100_000, gasPriceBid=50_000_000)
+  - &feeDtoO "0x00000000000000000003920acbffd00000000186a00000000002faf080"
+  # getMaxFees() derived: native = maxFee(0.125e18) + DtoO feeAmount(0.001005e18) = 0.126005e18 (LINK payment not supported)
+  - &maxNativeFee 126005000000000000
+  # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
+  - &l2GovExecutorName "ArbitrumBridgeExecutor" # governanceExecutor.name → ABI selector
+  - &lineaMessageService null # not a Linea executor; shared LINEA_MESSAGE_SERVICE check is skipped here
+  # Arbitrum's executor has no OVM_L2_CROSS_DOMAIN_MESSENGER getter; null → the shared check is skipped.
+  - &ovmL2CrossDomainMessenger null
+  # NOTE: L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18 — see optimism.inputs.yaml note (deploy input, not a
+  # state-mate check: the trigger's balance drifts as it fronts per-sync fees).
+
+externals:
+  # ── Fixed third-party / external facts ──
+  # ⚠ Cross-chain address reuse: a hex below can be a DIFFERENT contract on another chain/role
+  #   (deterministic deploys) — e.g. l2PriceOracle / l2OldOraclePool / the L1 adapters recur across
+  #   lanes. Always resolve via THIS lane's *MigrationConstants.sol; full reuse map in docs/audit-scope.md.
+  - &l2ChainId 42161
+  - &ethMainnetCcipChainSelector 5009297550715157269
+  - &l1LidoCustomReceiverBytes32 "0x0000000000000000000000006f357d53d6be3238180316ba5f8f11467e164588"
+  - &initialOwner "0xb5c336a5c60D3482b29d83C742C65AE8351b91a8"
+  - &l2GovernanceExecutor "0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29"
+  - &lidoDaoAgent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+  - &l2LiquidityOwner "0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61"
+  # ⚠ DEV-FORK deployer only (Anvil acct #0) — NOT the real mainnet deployer (the real key is supplied
+  #   via L2_LIDO_DEPLOYER_PRIVATE_KEY env, never committed). The wiring check
+  #   hasRole(DEFAULT_ADMIN_ROLE, *l2LidoDeployer)==false is meaningful on a dev fork but passes
+  #   VACUOUSLY on mainnet (this address never held a role here) — it does NOT prove the real deployer
+  #   renounced admin. Intentionally NOT in verify-constants-sync (no Solidity address constant); the
+  #   externals-coverage lint allowlists it. See RUNBOOK "Deployer-renounce check".
+  #   Canary (Stage-1): the deployer-as-owner/forwarder/author state is verified via the shared overlay
+  #   config/state/l2.inputs.test-stage.yaml (set its two deployer addresses locally for a mainnet canary),
+  #   NOT this anchor — l2.yaml references *l2LidoDeployer only in the customSender.hasRole==false check.
+  - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  - &l2OldOraclePool "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
+  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated l2-arbitrum.deployed.yaml.
+  #   Pinned to ArbitrumMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x72229141D4B016682d3618ECe47c046f30Da4AD1"
+  - &l2CustomSenderImpl "0x220F64A4793Bc8aca7330ceCc4ae4e2F3B5Bc664"
+  - &l2ProxyAdmin "0x5B42aEbFe95247f1d22e282831e2A513bF050217"
+  # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
+  #   network & Chainlink-operated. Pinned to ArbitrumMigrationConstants.CRE_FORWARDER (verify-constants-sync).
+  - &l2CreForwarder "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"
+  - &l2Weth "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+  - &l2Wsteth "0x5979D7b546E38E414F7E9822514be443A4800529"
+  - &l2LinkToken "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4"
+  - &l2CcipRouter "0x141fa059441E0ca23ce184B6A78bafD2A517DdE8"
+  - &l2PriceOracle "0x328de900860816d29D1367F6903a24D8ed40C997"

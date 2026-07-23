@@ -1,0 +1,69 @@
+---
+# Single review surface for every Optimism deploy parameter (sibling of the shared config/state/l2.yaml wiring).
+# state-mate concatenates this file (anchors first) ahead of the wiring config, so the
+# `*aliases` in optimism.yaml resolve here. Values mirror script/optimism/OptimismMigrationConstants.sol
+# and are kept in lockstep by `just verify-constants-sync`; the wiring config's `checks:` cross-check
+# each one against live chain state.
+config:
+  # ── Project-chosen SyncTrigger knobs (decoded sub-params shown for review) ──
+  - &minProcessMessageGas 75000          # CustomSender.MIN_PROCESS_MESSAGE_GAS
+  - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
+  - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
+  - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
+  # Canary (Stage-1) overrides for these knobs live in the shared overlay config/state/l2.inputs.test-stage.yaml
+  # (state-mate --overrides), NOT here — these are the production values restored at handoff.
+  - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Optimism EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit
+  # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
+  # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=1_000_000)
+  - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"
+  # feeDtoO = FeeCodec.encodeOptimismL1toL2(originL2Gas=100_000)  — OP-stack feeAmount is always 0
+  - &feeDtoO "0x0000000000000000000000000000000000000186a0"
+  # getMaxFees() derived from the blobs: native = maxFee + DtoO(0) = 0.125e18 (LINK payment not supported)
+  - &maxNativeFee 125000000000000000
+  # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
+  - &l2GovExecutorName "OptimismBridgeExecutor" # governanceExecutor.name → ABI selector (OP-stack)
+  - &lineaMessageService null # not a Linea executor; shared LINEA_MESSAGE_SERVICE check is skipped here
+  # NOTE: L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18 is a deploy input but is intentionally NOT a
+  # state-mate check — the trigger's ETH balance drifts down as it fronts per-sync fees, so no
+  # stable equality holds post-deploy. It is verified at deploy time (L2UpgradeActions float-floor
+  # post-condition) and by the SyncTrigger provenance fork test. Shown here for operator review only.
+
+externals:
+  # ── Fixed third-party / external facts ──
+  # ⚠ Cross-chain address reuse: a hex below can be a DIFFERENT contract on another chain/role
+  #   (deterministic deploys) — e.g. l2PriceOracle / l2OldOraclePool / the L1 adapters recur across
+  #   lanes. Always resolve via THIS lane's *MigrationConstants.sol; full reuse map in docs/audit-scope.md.
+  - &l2ChainId 10
+  - &ethMainnetCcipChainSelector 5009297550715157269
+  - &l1LidoCustomReceiverBytes32 "0x0000000000000000000000006f357d53d6be3238180316ba5f8f11467e164588"
+  - &initialOwner "0xb5c336a5c60D3482b29d83C742C65AE8351b91a8"
+  - &l2GovernanceExecutor "0xEfa0dB536d2c8089685630fafe88CF7805966FC3"
+  - &lidoDaoAgent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+  - &ovmL2CrossDomainMessenger "0x4200000000000000000000000000000000000007"
+  - &l2LiquidityOwner "0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61"
+  # ⚠ DEV-FORK deployer only (Anvil acct #0) — NOT the real mainnet deployer (the real key is supplied
+  #   via L2_LIDO_DEPLOYER_PRIVATE_KEY env, never committed). The wiring check
+  #   hasRole(DEFAULT_ADMIN_ROLE, *l2LidoDeployer)==false is meaningful on a dev fork but passes
+  #   VACUOUSLY on mainnet (this address never held a role here) — it does NOT prove the real deployer
+  #   renounced admin. Intentionally NOT in verify-constants-sync (no Solidity address constant); the
+  #   externals-coverage lint allowlists it. See RUNBOOK "Deployer-renounce check".
+  #   Canary (Stage-1): the deployer-as-owner/forwarder/author state is verified via the shared overlay
+  #   config/state/l2.inputs.test-stage.yaml (set its two deployer addresses locally for a mainnet canary),
+  #   NOT this anchor — l2.yaml references *l2LidoDeployer only in the customSender.hasRole==false check.
+  - &l2LidoDeployer "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  - &l2OldOraclePool "0x6F357d53d6bE3238180316BA5F8f11467e164588"
+  - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated l2-optimism.deployed.yaml.
+  #   Pinned to OptimismMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
+  - &l2CustomSenderImpl "0x65498495DdC07c52E12EEe3c44D3a1166eed8703"
+  - &l2ProxyAdmin "0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192"
+  # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
+  #   network & Chainlink-operated. Pinned to OptimismMigrationConstants.CRE_FORWARDER (verify-constants-sync).
+  - &l2CreForwarder "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"
+  - &l2Weth "0x4200000000000000000000000000000000000006"
+  - &l2Wsteth "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb"
+  - &l2LinkToken "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6"
+  - &l2CcipRouter "0x3206695CaE29952f4b0c22a169725a865bc8Ce0f"
+  - &l2PriceOracle "0x301cBCDA894c932E9EDa3Cf8878f78304e69E367"

@@ -1,0 +1,142 @@
+---
+# Post-migration L1 (Ethereum mainnet) state-mate verification.
+# Shared across all four L2 lanes — runs once via `just verify-l1-state-mate`.
+#
+# Post-Stage-2 L1 assertions:
+#   - L1 LidoCustomReceiver: DEFAULT_ADMIN_ROLE rotated from Initial Owner → Lido DAO Agent;
+#                            per-lane adapter + sender wiring stable; proxy impl pinned.
+#   - L1 ProxyAdmin: owner transferred to Lido DAO Agent.
+#
+# Canonical source for addresses: script/l1/L1MigrationConstants.sol and the per-net
+# script/<net>/<Net>MigrationConstants.sol. `just verify-constants-sync` cross-checks.
+
+# All parameters live in the sibling l1.inputs.yaml (config: knobs + externals: third-party facts),
+# auto-discovered and concatenated anchors-first so the *aliases below resolve. The L1 Stage-2 step
+# only migrates OWNERSHIP of pre-existing contracts; it deploys nothing new — so the receiver, its
+# implementation, and the ProxyAdmin are fixed externals (in l1.inputs.yaml), not deploy outputs.
+
+roles:
+  - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+misc:
+  - &EIP1967_IMPLEMENTATION_SLOT "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+  - &EIP1967_ADMIN_SLOT "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
+
+# This migration deploys nothing of its own on L1 (it only re-owns the pre-existing upstream
+# contracts, which are externals in l1.inputs.yaml). The empty section satisfies the schema's
+# required `deployed:` key.
+deployed:
+  l1: []
+  l2: []
+
+l1:
+  rpcUrl: L1_RPC_URL
+  chainId: 1
+  contracts:
+    lidoCustomReceiver:
+      name: LidoCustomReceiver
+      address: *l1LidoCustomReceiver
+      proxyName: TransparentUpgradeableProxy
+      implementation: *l1LidoCustomReceiverImpl
+      proxyChecks: {}
+      checks:
+        CCIP_ROUTER: *l1CcipRouter
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
+        MIN_FAILED_MESSAGE_GAS: *minFailedMessageGas
+        WNATIVE: *l1Weth
+        WSTETH: *l1Wsteth
+        hasRole:
+          - args: [*DEFAULT_ADMIN_ROLE, *lidoDaoAgent]
+            result: true
+          - args: [*DEFAULT_ADMIN_ROLE, *initialOwner]
+            result: false
+        getAdapter:
+          - args: [*optimismCcipChainSelector]
+            result: *l1OptimismAdapter
+          - args: [*arbitrumCcipChainSelector]
+            result: *l1ArbitrumAdapter
+          - args: [*baseCcipChainSelector]
+            result: *l1BaseAdapter
+          - args: [*lineaCcipChainSelector]
+            result: *l1LineaAdapter
+        getSender:
+          - args: [*optimismCcipChainSelector]
+            result: *l2OptimismSenderBytes32
+          - args: [*arbitrumCcipChainSelector]
+            result: *l2ArbitrumSenderBytes32
+          - args: [*baseCcipChainSelector]
+            result: *l2BaseSenderBytes32
+          - args: [*lineaCcipChainSelector]
+            result: *l2LineaSenderBytes32
+        supportsInterface:
+          - args: ["0x01ffc9a7"] # IERC165
+            result: true
+        getFailedMessageHash: null # per-message; not pinnable in static yaml
+        getRoleAdmin: null         # always DEFAULT_ADMIN_ROLE on AccessControl
+      implementationChecks:
+        # Implementation is uninitialized (initializer disabled in constructor) —
+        # immutables still readable; admin role unset.
+        CCIP_ROUTER: *l1CcipRouter
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
+        MIN_FAILED_MESSAGE_GAS: *minFailedMessageGas
+        WNATIVE: *l1Weth
+        WSTETH: *l1Wsteth
+        hasRole:
+          - args: [*DEFAULT_ADMIN_ROLE, *lidoDaoAgent]
+            result: false
+          - args: [*DEFAULT_ADMIN_ROLE, *initialOwner]
+            result: false
+        getAdapter: null
+        getSender: null
+        getFailedMessageHash: null
+        getRoleAdmin: null
+        supportsInterface: null
+      storage:
+        - slot: *EIP1967_IMPLEMENTATION_SLOT
+          expected: *l1LidoCustomReceiverImpl
+          label: implementation
+        - slot: *EIP1967_ADMIN_SLOT
+          expected: *l1ProxyAdmin
+          label: admin
+
+    proxyAdmin:
+      name: ProxyAdmin
+      address: *l1ProxyAdmin
+      checks:
+        UPGRADE_INTERFACE_VERSION: "5.0.0"
+        owner: *lidoDaoAgent
+
+    optimismAdapter:
+      name: OptimismLegacyAdapterL1toL2
+      address: *l1OptimismAdapter
+      checks:
+        DELEGATOR: *l1LidoCustomReceiver
+        L1_TOKEN: *l1Wsteth
+        L1_ERC20_BRIDGE: *l1OptimismStandardBridge
+        L2_TOKEN: *l2OptimismWsteth
+
+    arbitrumAdapter:
+      name: ArbitrumLegacyAdapterL1toL2
+      address: *l1ArbitrumAdapter
+      checks:
+        DELEGATOR: *l1LidoCustomReceiver
+        L1_TOKEN: *l1Wsteth
+        L1_GATEWAY_ROUTER: *l1ArbitrumGatewayRouter
+        L1_TOKEN_GATEWAY: *l1ArbitrumTokenGateway
+
+    baseAdapter:
+      name: BaseLegacyAdapterL1toL2
+      address: *l1BaseAdapter
+      checks:
+        DELEGATOR: *l1LidoCustomReceiver
+        L1_TOKEN: *l1Wsteth
+        L1_ERC20_BRIDGE: *l1BaseStandardBridge
+        L2_TOKEN: *l2BaseWsteth
+
+    lineaAdapter:
+      name: LineaAdapterL1toL2
+      address: *l1LineaAdapter
+      checks:
+        DELEGATOR: *l1LidoCustomReceiver
+        TOKEN: *l1Wsteth
+        TOKEN_BRIDGE: *l1LineaTokenBridge

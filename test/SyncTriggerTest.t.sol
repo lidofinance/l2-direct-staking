@@ -2,15 +2,17 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {SyncTrigger} from "src/SyncTrigger.sol";
-import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
 
 /// @notice Minimal mock for ICustomSender — just enough for SyncTrigger constructor + sync
 contract MockCustomSender {
+    bytes32 public constant SYNC_ROLE = keccak256("SYNC_ROLE");
+
     address public immutable WNATIVE;
     address public immutable LINK_TOKEN;
     address public oraclePool;
@@ -21,6 +23,8 @@ contract MockCustomSender {
     uint256 public lastSyncValue;
     bytes32 public lastFeeOtoDHash;
     bytes32 public lastFeeDtoOHash;
+
+    mapping(address => bool) internal _syncRole;
 
     constructor(address wnative_, address linkToken_) {
         WNATIVE = wnative_;
@@ -37,6 +41,16 @@ contract MockCustomSender {
 
     function setShouldRevertSync(bool v) external {
         shouldRevertSync = v;
+    }
+
+    /// @dev Mirrors AccessControl.hasRole on the real CustomSender, reached via the IAccessControl
+    ///      cast in SyncTrigger.canSync.
+    function hasRole(bytes32 role, address account) external view returns (bool) {
+        return role == SYNC_ROLE && _syncRole[account];
+    }
+
+    function setSyncRole(address account, bool granted) external {
+        _syncRole[account] = granted;
     }
 
     function sync(uint64 destChainSelector, uint256 amount, bytes calldata feeOtoD, bytes calldata feeDtoO)
@@ -79,13 +93,30 @@ contract MockERC20 {
     }
 }
 
+/// @notice Has no receive/payable-fallback, so any native transfer to it fails — used to
+///         exercise the SyncTriggerNativeTransferFailed path in sweep.
+contract RejectEther {}
+
+/// @notice Stand-in for the non-pausable base OraclePool: has code but no `paused()`, so the
+///         try/catch in SyncTrigger._isPaused falls through to "not paused".
+contract MockPool {}
+
+/// @notice Stand-in for PausableImmutableOraclePool: exposes a toggleable `paused()`.
+contract MockPausablePool {
+    bool public paused;
+
+    function setPaused(bool v) external {
+        paused = v;
+    }
+}
+
 /**
  * @title SyncTriggerTest
  * @notice Unit tests for SyncTrigger contract covering:
  *   - Construction & initial state
  *   - Admin setters (setForwarder, setDelay, setAmounts, setFeeOtoD, setFeeDtoO, sweep)
  *   - Access control on all admin functions
- *   - shouldSync view logic
+ *   - shouldSyncAmount (due-ness + amount) / canSync (executability) view logic
  *   - triggerSync execution + edge cases
  */
 contract SyncTriggerTest is Test {
@@ -94,6 +125,8 @@ contract SyncTriggerTest is Test {
     event AmountsSet(uint128 minAmount, uint128 maxAmount);
     event FeeOtoDSet(bytes fee);
     event FeeDtoOSet(bytes fee);
+    event MaxGasLimitSet(uint32 maxGasLimit);
+    event Swept(address indexed token, address indexed recipient, uint256 amount);
 
     SyncTrigger internal trigger;
     MockCustomSender internal sender;
@@ -104,14 +137,21 @@ contract SyncTriggerTest is Test {
     address internal owner;
     uint64 internal constant DEST_CHAIN = 1;
 
+    // Default constructor config. Values deliberately differ from the per-setter-test values
+    // (1 hours / 1 & 10 ether / 1_000_000) so the setter "updates" tests stay non-tautological.
+    uint48 internal constant DEFAULT_DELAY = 12 hours;
+    uint128 internal constant DEFAULT_MIN_AMOUNT = 5 ether;
+    uint128 internal constant DEFAULT_MAX_AMOUNT = 50 ether;
+    uint32 internal constant DEFAULT_MAX_GAS_LIMIT = 7_000_000;
+
     function setUp() public {
         owner = address(this);
         weth = new MockERC20();
         link = new MockERC20();
         sender = new MockCustomSender(address(weth), address(link));
-        oraclePool = makeAddr("oraclePool");
+        oraclePool = address(new MockPool());
         sender.setOraclePool(oraclePool);
-        trigger = new SyncTrigger(address(sender), DEST_CHAIN, owner);
+        trigger = _deploy(_defaultInitParams());
     }
 
     // ─── Construction ──────────────────────────────────────────────────
@@ -121,41 +161,169 @@ contract SyncTriggerTest is Test {
         assertEq(trigger.DEST_CHAIN_SELECTOR(), DEST_CHAIN);
         assertEq(trigger.WNATIVE(), address(weth));
         assertEq(trigger.owner(), owner);
-        // the max LINK approval is load-bearing: LINK-paid CCIP fees fail without it.
-        assertEq(link.allowance(address(trigger), address(sender)), type(uint256).max, "LINK max approval");
+        // LINK fee payment is removed — the constructor grants no LINK allowance (regression guard).
+        assertEq(link.allowance(address(trigger), address(sender)), 0, "no LINK approval");
     }
 
-    function test_constructor_initializesDeactivated() public {
-        assertEq(trigger.getDelay(), type(uint48).max);
+    function test_constructor_storesConfig() public {
+        // Born fully configured from InitParams — no deactivated defaults.
         assertEq(trigger.getLastExecution(), uint48(block.timestamp));
-        assertEq(trigger.getForwarder(), address(0));
+        assertEq(trigger.getForwarder(), forwarder);
+        assertEq(trigger.getDelay(), DEFAULT_DELAY);
         (uint128 min, uint128 max) = trigger.getAmounts();
-        assertEq(min, 0);
-        assertEq(max, 0);
+        assertEq(min, DEFAULT_MIN_AMOUNT);
+        assertEq(max, DEFAULT_MAX_AMOUNT);
+        assertEq(keccak256(trigger.getFeeOtoD()), keccak256(_defaultFeeOtoD()));
+        assertEq(keccak256(trigger.getFeeDtoO()), keccak256(_defaultFeeDtoO()));
+        assertEq(trigger.getMaxGasLimit(), DEFAULT_MAX_GAS_LIMIT);
     }
 
     function test_constructor_revertsOnZeroSender() public {
-        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidParameters.selector);
-        new SyncTrigger(address(0), DEST_CHAIN, owner);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidParameters.selector);
+        new SyncTrigger(address(0), DEST_CHAIN, owner, _defaultInitParams());
     }
 
     function test_constructor_revertsOnZeroChainSelector() public {
-        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidParameters.selector);
-        new SyncTrigger(address(sender), 0, owner);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidParameters.selector);
+        new SyncTrigger(address(sender), 0, owner, _defaultInitParams());
+    }
+
+    function test_constructor_revertsOnMaxGasLimitBelowFloor() public {
+        // _setMaxGasLimit runs first; a ceiling below MIN_PROCESS_MESSAGE_GAS reverts.
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.maxGasLimit = 74_999;
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidParameters.selector);
+        _deploy(p);
+    }
+
+    function test_constructor_revertsOnFeeOtoDWrongLength() public {
+        // exactly 21 bytes required; BOTH under- and over-length must revert (the explicit length
+        // guard preserves decodeCCIP's exact-21 semantics through the memory decoder).
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.feeOtoD = new bytes(20);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(20), uint256(21)));
+        _deploy(p);
+
+        p.feeOtoD = new bytes(22);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(22), uint256(21)));
+        _deploy(p);
+    }
+
+    function test_constructor_revertsOnFeeOtoDGasBelowFloor() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.feeOtoD = FeeCodec.encodeCCIP(0.1 ether, false, 74_999);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidParameters.selector);
+        _deploy(p);
+    }
+
+    function test_constructor_revertsWhenFeeOtoDGasAboveMaxGasLimit() public {
+        // proves the constructor seeds maxGasLimit BEFORE feeOtoD: feeOtoD's gasLimit is validated
+        // against the just-set ceiling.
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.maxGasLimit = 500_000;
+        p.feeOtoD = FeeCodec.encodeCCIP(0.1 ether, false, 500_001);
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerGasLimitAboveMax.selector, uint32(500_001), uint32(500_000))
+        );
+        _deploy(p);
+    }
+
+    function test_constructor_revertsOnFeeDtoOTooShort() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.feeDtoO = new bytes(16);
+        vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(16), uint256(17)));
+        _deploy(p);
+    }
+
+    function test_constructor_revertsOnZeroMinAmount() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.minAmount = 0;
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerInvalidAmounts.selector, uint128(0), p.maxAmount)
+        );
+        _deploy(p);
+    }
+
+    function test_constructor_revertsWhenMinGtMax() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.minAmount = 10 ether;
+        p.maxAmount = 1 ether;
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerInvalidAmounts.selector, uint128(10 ether), uint128(1 ether))
+        );
+        _deploy(p);
+    }
+
+    function test_constructor_revertsBelowMinDelay() public {
+        // the rate-limiter cannot be disabled: a sub-MIN_DELAY construction delay (here 0, also the old
+        // "no throttle" value) reverts. MIN_DELAY itself is accepted (boundary below).
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.delay = 0;
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerDelayBelowMin.selector, uint48(0), trigger.MIN_DELAY())
+        );
+        _deploy(p);
+    }
+
+    function test_constructor_acceptsMinDelay() public {
+        // boundary: delay == MIN_DELAY is accepted (strict `<` floor).
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.delay = trigger.MIN_DELAY();
+        SyncTrigger t = _deploy(p);
+        assertEq(t.getDelay(), trigger.MIN_DELAY());
+    }
+
+    function test_constructor_revertsOnZeroForwarder() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.forwarder = address(0);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidForwarder.selector);
+        _deploy(p);
+    }
+
+    function test_constructor_emitsConfigEvents() public {
+        // The constructor configures via the same internal setters the owner uses, emitting each
+        // canonical *Set event in body order. Ownable's OwnershipTransferred is emitted first by the
+        // base constructor, so locate the first config event and assert the six follow contiguously.
+        vm.recordLogs();
+        _deploy(_defaultInitParams());
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bytes32[6] memory expected = [
+            keccak256("MaxGasLimitSet(uint32)"),
+            keccak256("FeeOtoDSet(bytes)"),
+            keccak256("FeeDtoOSet(bytes)"),
+            keccak256("AmountsSet(uint128,uint128)"),
+            keccak256("DelaySet(uint48)"),
+            keccak256("ForwarderSet(address)")
+        ];
+
+        uint256 start = type(uint256).max;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == expected[0]) {
+                start = i;
+                break;
+            }
+        }
+        assertTrue(start != type(uint256).max, "MaxGasLimitSet emitted");
+        assertEq(logs.length - start, expected.length, "six config events are the last logs, in order");
+        for (uint256 i = 0; i < expected.length; i++) {
+            assertEq(logs[start + i].topics[0], expected[i], "config event order");
+        }
     }
 
     // ─── setForwarder ──────────────────────────────────────────────────
 
     function test_setForwarder_updatesForwarder() public {
-        trigger.setForwarder(forwarder);
-        assertEq(trigger.getForwarder(), forwarder);
+        address newForwarder = makeAddr("newForwarder");
+        trigger.setForwarder(newForwarder);
+        assertEq(trigger.getForwarder(), newForwarder);
     }
 
     function test_setForwarder_revertsOnZero() public {
         // setting the forwarder to address(0) would brick triggerSync (onlyForwarder
         // compares against address(0)); the guard rejects it, aligning with CREReceiver.
         trigger.setForwarder(forwarder);
-        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidForwarder.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidForwarder.selector);
         trigger.setForwarder(address(0));
         assertEq(trigger.getForwarder(), forwarder);
     }
@@ -185,11 +353,34 @@ contract SyncTriggerTest is Test {
         trigger.setDelay(1 hours);
     }
 
-    function test_setDelay_revertsOnZero() public {
-        // delay == 0 would permanently defeat the time-based rate limiter (the threshold
-        // check is always true); deactivation uses type(uint48).max, never 0.
-        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidDelay.selector);
+    function test_setDelay_revertsBelowMin() public {
+        // the rate-limiter cannot be disabled: 0 (and any sub-minute value) reverts, so multiple
+        // triggerSync calls can never land in one block/minute.
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerDelayBelowMin.selector, uint48(0), trigger.MIN_DELAY())
+        );
         trigger.setDelay(0);
+
+        uint48 belowMin = trigger.MIN_DELAY() - 1;
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerDelayBelowMin.selector, belowMin, trigger.MIN_DELAY())
+        );
+        trigger.setDelay(belowMin);
+    }
+
+    function test_setDelay_acceptsMinDelay() public {
+        // boundary: delay == MIN_DELAY is accepted (strict `<` floor).
+        uint48 minDelay = trigger.MIN_DELAY();
+        vm.expectEmit(false, false, false, true);
+        emit DelaySet(minDelay);
+        trigger.setDelay(minDelay);
+        assertEq(trigger.getDelay(), minDelay);
+    }
+
+    function test_setDelay_acceptsLargeDelay() public {
+        // any value at/above the floor is settable, up to the full uint48 range — no value is special-cased.
+        trigger.setDelay(type(uint48).max);
+        assertEq(trigger.getDelay(), type(uint48).max);
     }
 
     function test_setDelay_revertsIfNotOwner() public {
@@ -208,12 +399,12 @@ contract SyncTriggerTest is Test {
     }
 
     function test_setAmounts_revertsOnZeroMin() public {
-        vm.expectRevert(abi.encodeWithSelector(ISyncTrigger.SyncTriggerInvalidAmounts.selector, 0, 10 ether));
+        vm.expectRevert(abi.encodeWithSelector(SyncTrigger.SyncTriggerInvalidAmounts.selector, 0, 10 ether));
         trigger.setAmounts(0, 10 ether);
     }
 
     function test_setAmounts_revertsWhenMinGtMax() public {
-        vm.expectRevert(abi.encodeWithSelector(ISyncTrigger.SyncTriggerInvalidAmounts.selector, 10 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(SyncTrigger.SyncTriggerInvalidAmounts.selector, 10 ether, 1 ether));
         trigger.setAmounts(10 ether, 1 ether);
     }
 
@@ -274,10 +465,10 @@ contract SyncTriggerTest is Test {
 
     function test_setFeeOtoD_revertsOnGasLimitBelowSenderFloor() public {
         // a decodable 21-byte blob whose gasLimit is below CustomSender.MIN_PROCESS_MESSAGE_GAS
-        // would make every sync revert with CustomSenderInsufficientGas while shouldSync stays
+        // would make every sync revert with CustomSenderInsufficientGas while shouldSyncAmount stays
         // true; the setter must reject it.
         bytes memory lowGas = FeeCodec.encodeCCIP(0.1 ether, false, 74_999);
-        vm.expectRevert(ISyncTrigger.SyncTriggerInvalidParameters.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidParameters.selector);
         trigger.setFeeOtoD(lowGas);
     }
 
@@ -323,59 +514,177 @@ contract SyncTriggerTest is Test {
         trigger.sweep(address(0), makeAddr("r"), 1);
     }
 
-    // ─── shouldSync ────────────────────────────────────────────────────
-
-    function test_shouldSync_falseWhenDeactivated() public {
-        // default delay is type(uint48).max ("deactivated"). The threshold
-        // uint256(lastExecution) + delay is unreachable, so shouldSync cleanly returns
-        // (false, 0) instead of overflow-reverting (the off-chain CRE eth_call probe needs
-        // a clean "no sync", not a revert).
-        trigger.setAmounts(1 ether, 10 ether);
-        weth.mint(oraclePool, 5 ether);
-        (bool needed, uint256 amount) = trigger.shouldSync();
-        assertFalse(needed);
-        assertEq(amount, 0);
+    function test_sweep_native_emitsEvent() public {
+        address recipient = makeAddr("recipient");
+        vm.deal(address(trigger), 3 ether);
+        vm.expectEmit(true, true, false, true);
+        emit Swept(address(0), recipient, 3 ether);
+        trigger.sweep(address(0), recipient, 3 ether);
     }
 
-    function test_shouldSync_falseBeforeDelay() public {
+    function test_sweep_erc20_emitsEvent() public {
+        address recipient = makeAddr("recipient");
+        weth.mint(address(trigger), 5 ether);
+        vm.expectEmit(true, true, false, true);
+        emit Swept(address(weth), recipient, 5 ether);
+        trigger.sweep(address(weth), recipient, 5 ether);
+    }
+
+    function test_sweep_native_revertsWhenRecipientRejects() public {
+        // inlined native transfer uses a low-level call and reverts on failure (recipient with
+        // no receive/fallback), replacing the former TokenHelperNativeTransferFailed.
+        RejectEther rejecter = new RejectEther();
+        vm.deal(address(trigger), 1 ether);
+        vm.expectRevert(SyncTrigger.SyncTriggerNativeTransferFailed.selector);
+        trigger.sweep(address(0), address(rejecter), 1 ether);
+    }
+
+    function test_sweep_zeroAmountIsNoop() public {
+        // a zero amount is a no-op: no balance moves AND no misleading Swept(_,_,0) event for indexers to
+        // chase. Preserves the former TokenHelper.transfer behavior after inlining; mirrors
+        // CREReceiver.withdrawETH's amount==0 short-circuit and its event-absence assertion.
+        address recipient = makeAddr("recipient");
+        vm.deal(address(trigger), 2 ether);
+        vm.recordLogs();
+        trigger.sweep(address(0), recipient, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 0, "no event for a zero-amount no-op");
+        assertEq(recipient.balance, 0, "no native moved");
+        assertEq(address(trigger).balance, 2 ether, "trigger balance untouched");
+    }
+
+    function test_sweep_native_revertsOnZeroRecipient() public {
+        // a low-level call to the code-less zero address SUCCEEDS, so without the guard this
+        // would silently burn the native float. The guard turns it into a clean revert,
+        // mirroring CREReceiver.withdrawETH.
+        vm.deal(address(trigger), 1 ether);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidRecipient.selector);
+        trigger.sweep(address(0), address(0), 1 ether);
+        assertEq(address(trigger).balance, 1 ether, "native float untouched");
+    }
+
+    function test_sweep_erc20_revertsOnZeroRecipient() public {
+        // the guard precedes the token branch, so the ERC20 path is rejected too (not all
+        // tokens revert on transfer to address(0)).
+        weth.mint(address(trigger), 5 ether);
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidRecipient.selector);
+        trigger.sweep(address(weth), address(0), 5 ether);
+        assertEq(weth.balanceOf(address(trigger)), 5 ether, "token balance untouched");
+    }
+
+    function test_sweep_revertsOnZeroRecipientEvenWhenZeroAmount() public {
+        // the recipient guard is validation-first: it runs before the amount==0 short-circuit,
+        // so address(0) is never a valid recipient regardless of amount.
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidRecipient.selector);
+        trigger.sweep(address(0), address(0), 0);
+    }
+
+    // ─── shouldSyncAmount ──────────────────────────────────────────────
+
+    function test_shouldSyncAmount_largeDelayDoesNotOverflow() public {
+        // a very large delay (here the largest representable, with no special meaning) must not make the
+        // uint256-widened threshold overflow-revert: shouldSyncAmount stays TOTAL and returns 0 until the
+        // window elapses, so the off-chain CRE eth_call probe gets a clean "no sync" rather than a revert.
+        trigger.setDelay(type(uint48).max);
+        weth.mint(oraclePool, 10 ether); // above DEFAULT_MIN_AMOUNT, so only the delay holds it back
+        assertEq(trigger.shouldSyncAmount(), 0);
+    }
+
+    function test_shouldSyncAmount_zeroWithinMinDelayWindow() public {
+        // the smallest legal delay still throttles: at MIN_DELAY a funded pool is NOT due until the
+        // window elapses (the old "zero delay → due immediately" path is no longer constructable).
+        _configureForSync(1 ether, 10 ether, trigger.MIN_DELAY());
+        weth.mint(oraclePool, 10 ether); // >= min
+        assertEq(trigger.shouldSyncAmount(), 0, "not due within the min-delay window");
+
+        vm.warp(block.timestamp + trigger.MIN_DELAY());
+        assertGt(trigger.shouldSyncAmount(), 0, "due once the min-delay window elapses");
+    }
+
+    function test_shouldSyncAmount_zeroBeforeDelay() public {
         _configureForSync(1 ether, 10 ether, 1 hours);
         weth.mint(oraclePool, 5 ether);
         // Don't warp — still within delay
-        (bool needed,) = trigger.shouldSync();
-        assertFalse(needed);
+        assertEq(trigger.shouldSyncAmount(), 0);
     }
 
-    function test_shouldSync_falseWhenBelowMin() public {
+    function test_shouldSyncAmount_zeroWhenBelowMin() public {
         _configureForSync(5 ether, 10 ether, 1 hours);
         weth.mint(oraclePool, 4 ether); // below min
         vm.warp(block.timestamp + 1 hours);
-        (bool needed,) = trigger.shouldSync();
-        assertFalse(needed);
+        assertEq(trigger.shouldSyncAmount(), 0);
     }
 
-    function test_shouldSync_trueAtExactMin() public {
-        _configureForSync(5 ether, 10 ether, 1 hours);
-        weth.mint(oraclePool, 5 ether); // exactly min
-        vm.warp(block.timestamp + 1 hours);
-        (bool needed, uint256 amount) = trigger.shouldSync();
-        assertTrue(needed);
-        assertEq(amount, 5 ether);
+    function test_shouldSyncAmount_nonzeroAtExactMin() public {
+        // shouldSyncAmount is the due-ness + amount signal: nonzero ⇔ delay elapsed + pool >= min.
+        // _armTriggerSync also funds the float + sets fees + grants SYNC_ROLE, so canSync holds too.
+        _armTriggerSync(5 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        assertEq(trigger.shouldSyncAmount(), 5 ether, "due at exact min, amount == pool");
+        assertTrue(trigger.canSync(), "executable when fully armed");
     }
 
-    function test_shouldSync_capsAtMax() public {
-        _configureForSync(5 ether, 10 ether, 1 hours);
-        weth.mint(oraclePool, 50 ether); // well above max
-        vm.warp(block.timestamp + 1 hours);
-        (bool needed, uint256 amount) = trigger.shouldSync();
-        assertTrue(needed);
-        assertEq(amount, 10 ether);
+    function test_shouldSyncAmount_capsAtMax() public {
+        _armTriggerSync(5 ether, 10 ether, 1 hours, 50 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        assertEq(trigger.shouldSyncAmount(), 10 ether);
+    }
+
+    // ─── canSync executability (LOW-2: float / SYNC_ROLE / pool pause) ──
+
+    function test_canSync_trueAtExactFloat() public {
+        // native fees → maxNativeFee = 0.15 ether; fund the float to exactly that boundary.
+        _armDueSync(_encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        vm.deal(address(trigger), 0.15 ether);
+        sender.setSyncRole(address(trigger), true);
+
+        assertTrue(trigger.canSync(), "all preconditions met at the float boundary");
+        assertGt(trigger.shouldSyncAmount(), 0, "and the sync is due");
+    }
+
+    function test_canSync_falseWithoutSyncRole_total() public {
+        // Right after construction the trigger holds no SYNC_ROLE on the sender, so canSync returns
+        // false WITHOUT reverting — the DON's per-tick eth_call stays total. SYNC_ROLE is the first
+        // gate, so this returns before any fee read.
+        assertFalse(trigger.canSync());
+    }
+
+    function test_canSync_falseWhenNativeFloatBelowMax() public {
+        _armDueSync(_encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        vm.deal(address(trigger), 0.15 ether - 1); // one wei short of maxNativeFee
+        sender.setSyncRole(address(trigger), true);
+
+        assertFalse(trigger.canSync(), "blocked by native float");
+        assertEq(trigger.shouldSyncAmount(), 5 ether, "still due (executability is separate), the need stands");
+    }
+
+    function test_canSync_falseWhenSyncRoleMissing() public {
+        _armDueSync(_encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        vm.deal(address(trigger), 1 ether);
+        // SYNC_ROLE deliberately not granted (revocation is a documented kill switch).
+
+        assertFalse(trigger.canSync(), "blocked by missing SYNC_ROLE");
+        assertGt(trigger.shouldSyncAmount(), 0, "still due");
+    }
+
+    function test_canSync_falseWhenPoolPaused() public {
+        MockPausablePool pausablePool = new MockPausablePool();
+        sender.setOraclePool(address(pausablePool));
+        _armDueSync(_encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        weth.mint(address(pausablePool), 5 ether); // the need reads from the live pool
+        vm.deal(address(trigger), 1 ether);
+        sender.setSyncRole(address(trigger), true);
+
+        assertTrue(trigger.canSync(), "executable while unpaused");
+
+        pausablePool.setPaused(true);
+        assertFalse(trigger.canSync(), "blocked by pool pause");
+        assertGt(trigger.shouldSyncAmount(), 0, "still due");
     }
 
     // ─── triggerSync ───────────────────────────────────────────────────
 
     function test_triggerSync_revertsIfNotForwarder() public {
         vm.prank(makeAddr("random"));
-        vm.expectRevert(ISyncTrigger.SyncTriggerOnlyForwarder.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerOnlyForwarder.selector);
         trigger.triggerSync();
     }
 
@@ -385,7 +694,7 @@ contract SyncTriggerTest is Test {
         // Pool has no WETH, so amount is 0
         vm.warp(block.timestamp + 1 hours);
         vm.prank(forwarder);
-        vm.expectRevert(ISyncTrigger.SyncTriggerSyncNotNeeded.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerSyncNotNeeded.selector);
         trigger.triggerSync();
     }
 
@@ -416,30 +725,7 @@ contract SyncTriggerTest is Test {
         trigger.triggerSync();
 
         // the revert rolled back the _lastExecution update — the trigger stays armed.
-        (bool needed,) = trigger.shouldSync();
-        assertTrue(needed, "still armed after failed sync");
-    }
-
-    function test_triggerSync_linkFees_sendsZeroValue() public {
-        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, true), _encodeFee(0.05 ether, true));
-
-        vm.prank(forwarder);
-        trigger.triggerSync();
-
-        // Both legs paid in LINK → no native value should accompany the sync call.
-        assertEq(sender.lastSyncValue(), 0, "no native fee when both legs pay in LINK");
-        assertEq(sender.lastSyncAmount(), 5 ether, "synced amount");
-    }
-
-    function test_triggerSync_mixedFees_forwardsOnlyNativeLeg() public {
-        uint128 maxFeeOtoD = 0.1 ether;
-        // OtoD native, DtoO in LINK → only the OtoD leg contributes native value.
-        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(maxFeeOtoD, false), _encodeFee(0.05 ether, true));
-
-        vm.prank(forwarder);
-        trigger.triggerSync();
-
-        assertEq(sender.lastSyncValue(), maxFeeOtoD, "only native OtoD leg forwarded");
+        assertGt(trigger.shouldSyncAmount(), 0, "still armed after failed sync");
     }
 
     function test_triggerSync_capsAtMax() public {
@@ -459,8 +745,55 @@ contract SyncTriggerTest is Test {
 
         // Same delay window → _lastExecution was just set, so a second call is rate-limited.
         vm.prank(forwarder);
-        vm.expectRevert(ISyncTrigger.SyncTriggerSyncNotNeeded.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerSyncNotNeeded.selector);
         trigger.triggerSync();
+    }
+
+    function test_triggerSync_blocksImmediateRetriggerEvenAtMinDelay() public {
+        // The MIN_DELAY floor (the smallest legal delay) is enough to forbid a same-block retrigger: the
+        // old "delay == 0 → unbounded back-to-back syncs in one block" path is no longer constructable,
+        // so the rate-limiter holds regardless of DON cadence.
+        _armTriggerSync(1 ether, 10 ether, trigger.MIN_DELAY(), 25 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+        assertEq(sender.lastSyncAmount(), 10 ether, "first sync caps at maxAmount");
+
+        // No warp, same block: _lastExecution + MIN_DELAY > now, so the second call is rate-limited.
+        vm.prank(forwarder);
+        vm.expectRevert(SyncTrigger.SyncTriggerSyncNotNeeded.selector);
+        trigger.triggerSync();
+    }
+
+    function test_triggerSync_revertsOnInsufficientFloat() public {
+        // native fees → nativeAmount = 0.1 + 0.05 = 0.15 ether; starve the float just below it.
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        vm.deal(address(trigger), 0.15 ether - 1);
+
+        vm.prank(forwarder);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SyncTrigger.SyncTriggerInsufficientFloat.selector, uint256(0.15 ether), uint256(0.15 ether - 1)
+            )
+        );
+        trigger.triggerSync();
+
+        // the revert rolled back _lastExecution — the sync stays DUE (a top-up self-heals it).
+        // shouldSyncAmount stays nonzero (due-ness ignores the float); canSync is false (the starved
+        // float fails its executability check), which is why the DON suppresses the report rather than
+        // spam reverts.
+        assertGt(trigger.shouldSyncAmount(), 0, "still due while the float is starved");
+        assertFalse(trigger.canSync(), "canSync false while the float is starved");
+    }
+
+    function test_triggerSync_succeedsAtExactFloat() public {
+        // boundary: balance == nativeAmount must pass (strict `<` check).
+        _armTriggerSync(1 ether, 10 ether, 1 hours, 5 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        vm.deal(address(trigger), 0.15 ether);
+
+        vm.prank(forwarder);
+        trigger.triggerSync();
+        assertEq(sender.lastSyncValue(), 0.15 ether, "exact float fronted");
     }
 
     // ─── getMaxFees ────────────────────────────────────────────────────
@@ -468,36 +801,121 @@ contract SyncTriggerTest is Test {
     function test_getMaxFees_nativeBoth() public {
         trigger.setFeeOtoD(_encodeFee(0.1 ether, false));
         trigger.setFeeDtoO(_encodeFee(0.05 ether, false));
-        (uint256 maxNativeFee, uint256 maxLinkFee) = trigger.getMaxFees();
-        assertEq(maxNativeFee, 0.15 ether, "native sum");
-        assertEq(maxLinkFee, 0, "no link fee");
+        assertEq(trigger.getMaxFees(), 0.15 ether, "native sum");
     }
 
-    function test_getMaxFees_linkBoth() public {
+    // ─── payInLink rejection (LINK fee payment removed) ──────────────────
+
+    function test_setFeeOtoD_revertsOnPayInLink() public {
+        vm.expectRevert(SyncTrigger.SyncTriggerPayInLinkNotSupported.selector);
         trigger.setFeeOtoD(_encodeFee(0.1 ether, true));
+    }
+
+    function test_setFeeDtoO_revertsOnPayInLink() public {
+        vm.expectRevert(SyncTrigger.SyncTriggerPayInLinkNotSupported.selector);
         trigger.setFeeDtoO(_encodeFee(0.05 ether, true));
-        (uint256 maxNativeFee, uint256 maxLinkFee) = trigger.getMaxFees();
-        assertEq(maxNativeFee, 0, "no native fee");
-        assertEq(maxLinkFee, 0.15 ether, "link sum");
     }
 
-    function test_getMaxFees_mixed() public {
-        trigger.setFeeOtoD(_encodeFee(0.1 ether, false)); // native
-        trigger.setFeeDtoO(_encodeFee(0.05 ether, true)); // link
-        (uint256 maxNativeFee, uint256 maxLinkFee) = trigger.getMaxFees();
-        assertEq(maxNativeFee, 0.1 ether, "native OtoD leg");
-        assertEq(maxLinkFee, 0.05 ether, "link DtoO leg");
+    function test_constructor_revertsOnPayInLinkFeeOtoD() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.feeOtoD = _encodeFee(0.1 ether, true);
+        vm.expectRevert(SyncTrigger.SyncTriggerPayInLinkNotSupported.selector);
+        _deploy(p);
     }
 
-    // ─── getAmountToSync (public wrapper) ──────────────────────────────
+    function test_constructor_revertsOnPayInLinkFeeDtoO() public {
+        SyncTrigger.InitParams memory p = _defaultInitParams();
+        p.feeDtoO = _encodeFee(0.05 ether, true);
+        vm.expectRevert(SyncTrigger.SyncTriggerPayInLinkNotSupported.selector);
+        _deploy(p);
+    }
 
-    function test_getAmountToSync_returnsAmount() public {
-        _configureForSync(1 ether, 10 ether, 1 hours);
-        weth.mint(oraclePool, 5 ether);
-        vm.warp(block.timestamp + 1 hours);
-        (, uint256 expected) = trigger.shouldSync();
-        assertEq(trigger.getAmountToSync(), expected, "wrapper matches shouldSync");
-        assertEq(trigger.getAmountToSync(), 5 ether);
+    // ─── maxGasLimit ───────────────────────────────────────────────────
+
+    function test_constructor_storesMaxGasLimit() public {
+        // maxGasLimit is now a required constructor param (no uncapped default).
+        assertEq(trigger.getMaxGasLimit(), DEFAULT_MAX_GAS_LIMIT);
+    }
+
+    function test_setMaxGasLimit_updates() public {
+        trigger.setMaxGasLimit(1_000_000);
+        assertEq(trigger.getMaxGasLimit(), 1_000_000);
+    }
+
+    function test_setMaxGasLimit_emitsEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit MaxGasLimitSet(1_000_000);
+        trigger.setMaxGasLimit(1_000_000);
+    }
+
+    function test_setMaxGasLimit_revertsBelowSenderFloor() public {
+        // a ceiling below MIN_PROCESS_MESSAGE_GAS would make every feeOtoD unsettable.
+        vm.expectRevert(SyncTrigger.SyncTriggerInvalidParameters.selector);
+        trigger.setMaxGasLimit(74_999);
+    }
+
+    function test_setMaxGasLimit_revertsIfNotOwner() public {
+        vm.prank(makeAddr("nonOwner"));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("nonOwner")));
+        trigger.setMaxGasLimit(1_000_000);
+    }
+
+    function test_setFeeOtoD_revertsWhenGasLimitAboveMax() public {
+        // a chain-blind over-bump (gasLimit above the per-lane ceiling) must fail loudly at set-time,
+        // not silently inside every sync (MessageGasLimitTooHigh) while shouldSyncAmount stays nonzero.
+        trigger.setMaxGasLimit(500_000);
+        bytes memory overCap = FeeCodec.encodeCCIP(0.1 ether, false, 500_001);
+        vm.expectRevert(abi.encodeWithSelector(SyncTrigger.SyncTriggerGasLimitAboveMax.selector, uint32(500_001), uint32(500_000)));
+        trigger.setFeeOtoD(overCap);
+    }
+
+    function test_setFeeOtoD_allowsGasLimitAtMax() public {
+        // boundary: gasLimit == maxGasLimit is accepted (strict `>` check).
+        trigger.setMaxGasLimit(500_000);
+        bytes memory atCap = FeeCodec.encodeCCIP(0.1 ether, false, 500_000);
+        trigger.setFeeOtoD(atCap);
+        assertEq(keccak256(trigger.getFeeOtoD()), keccak256(atCap));
+    }
+
+    function test_setMaxGasLimit_revertsWhenBelowStoredFeeOtoDGasLimit() public {
+        // the feeOtoD.gasLimit <= maxGasLimit invariant must hold in BOTH directions: LOWERING the
+        // ceiling below an already-stored feeOtoD gasLimit must fail loudly, not silently re-open the
+        // C-1 stall (shouldSyncAmount stays nonzero while every sync reverts MessageGasLimitTooHigh in CCIP).
+        trigger.setFeeOtoD(FeeCodec.encodeCCIP(0.1 ether, false, 1_000_000)); // stored gasLimit = 1M
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerGasLimitAboveMax.selector, uint32(1_000_000), uint32(900_000))
+        );
+        trigger.setMaxGasLimit(900_000);
+        assertEq(trigger.getMaxGasLimit(), DEFAULT_MAX_GAS_LIMIT, "ceiling unchanged after revert");
+    }
+
+    function test_setMaxGasLimit_allowsLoweringToStoredFeeOtoDGasLimit() public {
+        // boundary: a ceiling exactly equal to the stored gasLimit is accepted (strict `>` check).
+        trigger.setFeeOtoD(FeeCodec.encodeCCIP(0.1 ether, false, 900_000));
+        trigger.setMaxGasLimit(900_000);
+        assertEq(trigger.getMaxGasLimit(), 900_000);
+    }
+
+    function test_setMaxGasLimit_lowerAboveStoredFeeOtoD_thenRejectsOverCap() public {
+        // Lowering the ceiling ABOVE the stored feeOtoD gasLimit (75_000 from construction) succeeds;
+        // the bound then re-binds on the next setFeeOtoD, rejecting an over-cap blob.
+        trigger.setMaxGasLimit(100_000);
+        assertEq(trigger.getMaxGasLimit(), 100_000);
+        vm.expectRevert(
+            abi.encodeWithSelector(SyncTrigger.SyncTriggerGasLimitAboveMax.selector, uint32(100_001), uint32(100_000))
+        );
+        trigger.setFeeOtoD(FeeCodec.encodeCCIP(0.1 ether, false, 100_001));
+    }
+
+    // ─── shouldSyncAmount (amount while blocked) ───────────────────────
+
+    function test_shouldSyncAmount_reportsAmountWhileBlocked() public {
+        // shouldSyncAmount reports the due amount independently of executability. Arm a DUE sync with
+        // fees set but leave the float unfunded (canSync false) — the amount is still reported, so the
+        // DON can distinguish a blocked lane (amount > 0, !canSync) from an idle one.
+        _armDueSync(_encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
+        assertFalse(trigger.canSync(), "float unfunded -> not executable");
+        assertEq(trigger.shouldSyncAmount(), 5 ether, "the need is reported regardless");
     }
 
     // ─── receive ───────────────────────────────────────────────────────
@@ -521,6 +939,36 @@ contract SyncTriggerTest is Test {
         return FeeCodec.encodeCCIP(maxFee, payInLink, 1_000_000);
     }
 
+    /// @dev The constructor-seeded feeOtoD. gasLimit is the sender floor (75_000) so the
+    ///      maxGasLimit-lowering tests are never blocked by the stored feeOtoD's gasLimit.
+    function _defaultFeeOtoD() internal pure returns (bytes memory) {
+        return FeeCodec.encodeCCIP(0.1 ether, false, 75_000);
+    }
+
+    /// @dev The constructor-seeded feeDtoO (21 bytes; only the first 17 are read by decodeFee).
+    function _defaultFeeDtoO() internal pure returns (bytes memory) {
+        return FeeCodec.encodeCCIP(0.05 ether, false, 75_000);
+    }
+
+    /// @dev A fully-valid InitParams the constructor accepts. Strict construction means every field
+    ///      must be valid, so revert tests start from this and override a single field.
+    function _defaultInitParams() internal view returns (SyncTrigger.InitParams memory) {
+        return SyncTrigger.InitParams({
+            forwarder: forwarder,
+            delay: DEFAULT_DELAY,
+            minAmount: DEFAULT_MIN_AMOUNT,
+            maxAmount: DEFAULT_MAX_AMOUNT,
+            feeOtoD: _defaultFeeOtoD(),
+            feeDtoO: _defaultFeeDtoO(),
+            maxGasLimit: DEFAULT_MAX_GAS_LIMIT
+        });
+    }
+
+    /// @dev Deploys a SyncTrigger with the fixed identity/owner args + the given storage params.
+    function _deploy(SyncTrigger.InitParams memory p) internal returns (SyncTrigger) {
+        return new SyncTrigger(address(sender), DEST_CHAIN, owner, p);
+    }
+
     /// @dev Arms the trigger for a successful triggerSync: amounts, delay, forwarder, both fee
     ///      buffers, a funded pool, native ETH on the trigger to front the CCIP fee, and a warp
     ///      past `delay`.
@@ -539,6 +987,19 @@ contract SyncTriggerTest is Test {
         trigger.setFeeDtoO(feeDtoO);
         weth.mint(oraclePool, poolBalance);
         vm.deal(address(trigger), 100 ether); // ample native float to front any fee
+        sender.setSyncRole(address(trigger), true); // a fully-armed trigger holds SYNC_ROLE → canSync executable
         vm.warp(block.timestamp + delay);
+    }
+
+    /// @dev Arms the trigger so a sync is DUE (amounts, delay, fees, funded pool, warp past delay),
+    ///      but leaves the executability levers (native float, SYNC_ROLE, pool pause) to the
+    ///      individual canSync tests. Uses 1/10 ether min/max and a 5-ether pool → amount == 5 ether.
+    function _armDueSync(bytes memory feeOtoD, bytes memory feeDtoO) internal {
+        trigger.setAmounts(1 ether, 10 ether);
+        trigger.setDelay(1 hours);
+        trigger.setFeeOtoD(feeOtoD);
+        trigger.setFeeDtoO(feeDtoO);
+        weth.mint(oraclePool, 5 ether);
+        vm.warp(block.timestamp + 1 hours);
     }
 }

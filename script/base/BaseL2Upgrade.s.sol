@@ -13,10 +13,6 @@ import {BaseMigrationConstants as C} from "script/base/BaseMigrationConstants.so
  *      Inheritable by tests and scripts.
  */
 contract BaseL2Defaults is L2UpgradeActions {
-    function defaultL2Config(address initialOwner, address governanceExecutor) public pure returns (L2UpgradeConfig memory cfg) {
-        return defaultL2Config(initialOwner, governanceExecutor, C.LIQUIDITY_OWNER);
-    }
-
     function defaultL2Config(address initialOwner, address governanceExecutor, address liquidityOwner)
         public
         pure
@@ -34,8 +30,8 @@ contract BaseL2Defaults is L2UpgradeActions {
             fee: 0,
             destChainSelector: L1.ETH_CCIP_CHAIN_SELECTOR,
             destinationMaxFee: C.L2_SYNC_DESTINATION_MAX_FEE,
-            destinationPayInLink: C.L2_SYNC_DESTINATION_PAY_IN_LINK,
             destinationGasLimit: C.L2_SYNC_DESTINATION_GAS_LIMIT,
+            maxGasLimit: C.L2_SYNC_MAX_GAS_LIMIT,
             feeDtoO: FeeCodec.encodeBaseL1toL2(C.L2_SYNC_ORIGIN_L2_GAS),
             minSyncAmount: C.L2_SYNC_MIN_AMOUNT,
             maxSyncAmount: C.L2_SYNC_MAX_AMOUNT,
@@ -68,5 +64,13 @@ contract BaseL2UpgradeScript is L2UpgradeScriptBase, BaseL2Defaults {
 
     function _expectedGovernanceExecutor() internal pure override returns (address) {
         return C.LIDO_L2_GOVERNANCE_EXECUTOR;
+    }
+
+    function _expectedCREForwarder() internal pure override returns (address) {
+        return C.CRE_FORWARDER;
+    }
+
+    function _expectedOldOraclePool() internal pure override returns (address) {
+        return C.L2_OLD_ORACLE_POOL;
     }
 }

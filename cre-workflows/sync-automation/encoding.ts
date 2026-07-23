@@ -33,31 +33,68 @@ export function encodeReportPayload(targetAddress: string): Hex {
   );
 }
 
-/**
- * Decodes the shouldSync return value.
- */
-export function decodeShouldSyncResult(data: `0x${string}`): {
-  syncNeeded: boolean;
-  amount: bigint;
-} {
-  const decoded = decodeFunctionResult({
-    abi: SyncTriggerABI,
-    functionName: "shouldSync",
-    data,
-  });
+// ─── shouldSyncAmount (due-ness + amount) ────────────────────────────────────
 
-  return {
-    syncNeeded: decoded[0] as boolean,
-    amount: decoded[1] as bigint,
-  };
+/** Encodes the shouldSyncAmount() call data (no arguments). */
+export function encodeShouldSyncAmountCall(): Hex {
+  return encodeFunctionData({ abi: SyncTriggerABI, functionName: "shouldSyncAmount" });
 }
 
 /**
- * Encodes the shouldSync call data (no arguments).
+ * Decodes shouldSyncAmount() — the WETH amount a sync would move RIGHT NOW (capped at `maxAmount`), or
+ * 0 when a sync is not DUE (the `delay` rate-limit has not elapsed, or the pool holds less than
+ * `minAmount`). A nonzero return is both the due-ness signal AND the amount, so one read serves both.
+ * Executability is a separate predicate, see {decodeCanSyncResult}.
  */
-export function encodeShouldSyncCall(): Hex {
-  return encodeFunctionData({
+export function decodeShouldSyncAmountResult(data: `0x${string}`): bigint {
+  return decodeFunctionResult({
     abi: SyncTriggerABI,
-    functionName: "shouldSync",
-  });
+    functionName: "shouldSyncAmount",
+    data,
+  }) as bigint;
+}
+
+// ─── canSync (executability) ────────────────────────────────────────────────
+
+/** Encodes the canSync() call data (no arguments). */
+export function encodeCanSyncCall(): Hex {
+  return encodeFunctionData({ abi: SyncTriggerABI, functionName: "canSync" });
+}
+
+/**
+ * Decodes canSync() — whether a due sync would actually SUCCEED on-chain right now: the fee float covers
+ * getMaxFees(), this trigger still holds SYNC_ROLE, and the OraclePool is not paused. Polled alongside
+ * shouldSync so the DON suppresses a due-but-blocked tick instead of submitting a guaranteed-revert report.
+ */
+export function decodeCanSyncResult(data: `0x${string}`): boolean {
+  return decodeFunctionResult({
+    abi: SyncTriggerABI,
+    functionName: "canSync",
+    data,
+  }) as boolean;
+}
+
+// ─── routing ────────────────────────────────────────────────────────────────
+
+/** Terminal routing of a cron tick, derived purely from the shouldSyncAmount()/canSync() predicates. */
+export type SyncAction = "execute" | "blocked" | "no-action";
+
+/**
+ * Routes a cron tick to one of three terminal branches from the two on-chain predicates:
+ *  - "execute"   — due && executable: submit the triggerSync report.
+ *  - "blocked"   — due && !executable: a sync IS due but an executability precondition is unmet
+ *                  (fee float / SYNC_ROLE / pool pause). Skip — submitting would guarantee a revert
+ *                  every tick (the silent DON spam this split exists to prevent); off-chain monitoring
+ *                  surfaces the stall.
+ *  - "no-action" — !due: nothing to sync (delay not elapsed / pool below min).
+ *
+ * Extracted as a pure function so the handler's branch routing is unit-testable outside the CRE WASM
+ * runtime (the rest of onCronTrigger — EVMClient, Runtime, Runner — is not).
+ */
+export function decideSyncAction(result: {
+  due: boolean;
+  executable: boolean;
+}): SyncAction {
+  if (!result.due) return "no-action";
+  return result.executable ? "execute" : "blocked";
 }

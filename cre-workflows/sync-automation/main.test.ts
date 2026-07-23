@@ -20,8 +20,11 @@ import {
 import { SyncTriggerABI } from "./abi";
 import {
   encodeReportPayload,
-  decodeShouldSyncResult,
-  encodeShouldSyncCall,
+  encodeShouldSyncAmountCall,
+  decodeShouldSyncAmountResult,
+  encodeCanSyncCall,
+  decodeCanSyncResult,
+  decideSyncAction,
 } from "./encoding";
 
 // ─── Test constants ────────────────────────────────────────────────────────
@@ -29,52 +32,69 @@ import {
 const MOCK_TARGET = "0x328de900860816d29D1367F6903a24D8ed40C997";
 const FIVE_ETHER = BigInt("5000000000000000000");
 
-// ─── encodeShouldSyncCall ─────────────────────────────────────────────────
+const encodeBool = (v: boolean): Hex => encodeAbiParameters([{ type: "bool" }], [v]);
+const encodeUint = (v: bigint): Hex => encodeAbiParameters([{ type: "uint256" }], [v]);
 
-describe("encodeShouldSyncCall", () => {
-  test("encodes shouldSync() with no arguments", () => {
-    const result = encodeShouldSyncCall();
+// ─── shouldSyncAmount (due-ness + amount) ────────────────────────────────────
 
-    // Should be a valid hex string starting with the shouldSync selector
+describe("encodeShouldSyncAmountCall", () => {
+  test("encodes shouldSyncAmount() with no arguments", () => {
+    const result = encodeShouldSyncAmountCall();
     expect(result.startsWith("0x")).toBe(true);
 
-    // Decode it back to verify
-    const decoded = decodeFunctionData({
-      abi: SyncTriggerABI,
-      data: result,
-    });
-
-    expect(decoded.functionName).toBe("shouldSync");
+    const decoded = decodeFunctionData({ abi: SyncTriggerABI, data: result });
+    expect(decoded.functionName).toBe("shouldSyncAmount");
   });
 });
 
-// ─── decodeShouldSyncResult ───────────────────────────────────────────────
-
-describe("decodeShouldSyncResult", () => {
-  test("decodes syncNeeded=true with amount", () => {
-    // Simulate what the contract would return:
-    // shouldSync returns (bool syncNeeded, uint256 amount)
-    const encoded = encodeAbiParameters(
-      [{ type: "bool" }, { type: "uint256" }],
-      [true, FIVE_ETHER],
-    );
-
-    const result = decodeShouldSyncResult(encoded);
-
-    expect(result.syncNeeded).toBe(true);
-    expect(result.amount).toBe(FIVE_ETHER);
+describe("decodeShouldSyncAmountResult", () => {
+  test("decodes the pending amount when due", () => {
+    expect(decodeShouldSyncAmountResult(encodeUint(FIVE_ETHER))).toBe(FIVE_ETHER);
   });
 
-  test("decodes syncNeeded=false with zero amount", () => {
-    const encoded = encodeAbiParameters(
-      [{ type: "bool" }, { type: "uint256" }],
-      [false, 0n],
-    );
+  test("decodes 0 (not due) — the workflow reads this as due=false", () => {
+    expect(decodeShouldSyncAmountResult(encodeUint(0n))).toBe(0n);
+  });
+});
 
-    const result = decodeShouldSyncResult(encoded);
+// ─── canSync (executability) ────────────────────────────────────────────────
 
-    expect(result.syncNeeded).toBe(false);
-    expect(result.amount).toBe(0n);
+describe("encodeCanSyncCall", () => {
+  test("encodes canSync() with no arguments", () => {
+    const result = encodeCanSyncCall();
+    expect(result.startsWith("0x")).toBe(true);
+
+    const decoded = decodeFunctionData({ abi: SyncTriggerABI, data: result });
+    expect(decoded.functionName).toBe("canSync");
+  });
+});
+
+describe("decodeCanSyncResult", () => {
+  test("decodes executable=true", () => {
+    expect(decodeCanSyncResult(encodeBool(true))).toBe(true);
+  });
+
+  test("decodes executable=false", () => {
+    expect(decodeCanSyncResult(encodeBool(false))).toBe(false);
+  });
+});
+
+// ─── decideSyncAction (handler branch routing) ─────────────────────────────
+
+describe("decideSyncAction", () => {
+  test("routes due && executable to execute", () => {
+    expect(decideSyncAction({ due: true, executable: true })).toBe("execute");
+  });
+
+  test("routes due && !executable to blocked, NOT the report path", () => {
+    // The exact DON-spam-prevention branch: a due sync whose executability precondition is unmet must
+    // route to "blocked" (skip, submit no report) — never into the report-submitting "execute" path.
+    expect(decideSyncAction({ due: true, executable: false })).toBe("blocked");
+  });
+
+  test("routes !due to no-action (executability is irrelevant when not due)", () => {
+    expect(decideSyncAction({ due: false, executable: false })).toBe("no-action");
+    expect(decideSyncAction({ due: false, executable: true })).toBe("no-action");
   });
 });
 
@@ -122,24 +142,18 @@ describe("encodeReportPayload", () => {
 // ─── End-to-end encoding round-trip ────────────────────────────────────────
 
 describe("encoding round-trip", () => {
-  test("shouldSync result → report payload → decodable on-chain", () => {
-    // 1. Simulate shouldSync return: syncNeeded=true, amount=6 ether
-    const syncAmount = BigInt("6000000000000000000");
+  test("due + executable → report payload → decodable on-chain", () => {
+    // 1. Simulate the two predicate reads (as the workflow does): a nonzero shouldSyncAmount is due.
+    const amount = decodeShouldSyncAmountResult(encodeUint(FIVE_ETHER));
+    const due = amount !== 0n;
+    expect(due).toBe(true);
+    expect(decodeCanSyncResult(encodeBool(true))).toBe(true);
+    expect(decideSyncAction({ due, executable: true })).toBe("execute");
 
-    const shouldSyncReturnData = encodeAbiParameters(
-      [{ type: "bool" }, { type: "uint256" }],
-      [true, syncAmount],
-    );
-
-    // 2. Decode the shouldSync result (as the workflow does)
-    const checkResult = decodeShouldSyncResult(shouldSyncReturnData);
-    expect(checkResult.syncNeeded).toBe(true);
-    expect(checkResult.amount).toBe(syncAmount);
-
-    // 3. Encode the report payload (as the workflow does)
+    // 2. Encode the report payload (as the workflow does).
     const reportPayload = encodeReportPayload(MOCK_TARGET);
 
-    // 4. Decode as the CREReceiver would: abi.decode(report, (address, bytes))
+    // 3. Decode as the CREReceiver would: abi.decode(report, (address, bytes)).
     const [target, callData] = decodeAbiParameters(
       [
         { name: "target", type: "address" },
@@ -150,7 +164,7 @@ describe("encoding round-trip", () => {
 
     expect(getAddress(target as string)).toBe(getAddress(MOCK_TARGET));
 
-    // 5. The callData should be triggerSync()
+    // 4. The callData should be triggerSync().
     const innerDecoded = decodeFunctionData({
       abi: SyncTriggerABI,
       data: callData as Hex,
@@ -163,12 +177,10 @@ describe("encoding round-trip", () => {
 // ─── ABI sanity checks ────────────────────────────────────────────────────
 
 describe("ABI sanity", () => {
-  test("shouldSync selector is correct", () => {
-    const encoded = encodeShouldSyncCall();
-
-    // shouldSync() selector = keccak256("shouldSync()")[:4]
-    // Just verify it's a 4-byte selector (0x + 8 hex chars)
-    expect(encoded.length).toBe(10);
+  test("view predicates encode to 4-byte selectors", () => {
+    // selector = keccak256("<sig>()")[:4] → "0x" + 8 hex chars
+    expect(encodeShouldSyncAmountCall().length).toBe(10);
+    expect(encodeCanSyncCall().length).toBe(10);
   });
 
   test("triggerSync selector is correct", () => {

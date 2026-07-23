@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 import {IReceiver} from "src/cre/interfaces/IReceiver.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -73,6 +74,7 @@ contract CREReceiverTest is Test {
     event ForwarderUpdated(address indexed previousForwarder, address indexed newForwarder);
     event ExpectedAuthorUpdated(address indexed previousAuthor, address indexed newAuthor);
     event AllowedCallUpdated(address indexed target, bytes4 indexed selector, bool allowed);
+    event ETHWithdrawn(address indexed to, uint256 amount);
 
     CREReceiver internal receiver;
     MockTarget internal target;
@@ -125,6 +127,16 @@ contract CREReceiverTest is Test {
         vm.expectEmit(true, true, false, false);
         emit ExpectedAuthorUpdated(address(0), expectedAuthor);
         new CREReceiver(forwarder, expectedAuthor, address(target), PING);
+    }
+
+    function test_constructor_revertsOnCodelessAllowedTarget() public {
+        // the constructor seed routes through _setAllowedCall, which rejects a code-less target: a bare
+        // `.call` to an address with no code returns success=true with empty returndata, so allow-listing
+        // one would make onReport a silent no-op (report marked delivered, CallExecuted emitted, sync
+        // never fires). makeAddr returns an EOA-style address with no code.
+        address noCode = makeAddr("noCodeTarget");
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.TargetHasNoCode.selector, noCode));
+        new CREReceiver(forwarder, expectedAuthor, noCode, PING);
     }
 
     // ─── onReport: access control ──────────────────────────────────────
@@ -381,6 +393,22 @@ contract CREReceiverTest is Test {
         receiver.setAllowedCall(address(target), DO_SOMETHING, true);
     }
 
+    function test_setAllowedCall_revertsOnCodelessTarget() public {
+        // same guard as the constructor seed (shared _setAllowedCall): ENABLING a call to a code-less
+        // target is rejected so the silent no-op dispatch can never be configured.
+        address noCode = makeAddr("noCodeTarget");
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.TargetHasNoCode.selector, noCode));
+        receiver.setAllowedCall(noCode, DO_SOMETHING, true);
+    }
+
+    function test_setAllowedCall_allowsRemovingCodelessTarget() public {
+        // removals (allowed=false) are unconstrained — only enabling requires code, so a target that
+        // later loses its code can still be de-listed.
+        address noCode = makeAddr("noCodeTarget");
+        receiver.setAllowedCall(noCode, DO_SOMETHING, false); // must NOT revert
+        assertFalse(receiver.isCallAllowed(noCode, DO_SOMETHING));
+    }
+
     // ─── ERC165 ────────────────────────────────────────────────────────
 
     function test_supportsInterface_IReceiver() public {
@@ -417,6 +445,14 @@ contract CREReceiverTest is Test {
         assertEq(address(receiver).balance, 1 ether);
     }
 
+    function test_withdrawETH_emitsEvent() public {
+        vm.deal(address(receiver), 2 ether);
+        address payable recipient = payable(makeAddr("recipient"));
+        vm.expectEmit(true, false, false, true);
+        emit ETHWithdrawn(recipient, 1 ether);
+        receiver.withdrawETH(recipient, 1 ether);
+    }
+
     function test_withdrawETH_revertsIfNotOwner() public {
         vm.deal(address(receiver), 1 ether);
         vm.prank(makeAddr("nonOwner"));
@@ -435,6 +471,26 @@ contract CREReceiverTest is Test {
     function test_withdrawETH_revertsOnInsufficientBalance() public {
         vm.expectRevert(CREReceiver.ETHTransferFailed.selector);
         receiver.withdrawETH(payable(makeAddr("recipient")), 1 ether);
+    }
+
+    function test_withdrawETH_zeroAmountIsNoop() public {
+        // a zero amount is a no-op: nothing transferred, and (crucially) no misleading ETHWithdrawn(to, 0)
+        // for indexers to chase. Mirrors SyncTrigger.sweep's amount==0 short-circuit.
+        vm.deal(address(receiver), 2 ether);
+        address payable recipient = payable(makeAddr("recipient"));
+        vm.recordLogs();
+        receiver.withdrawETH(recipient, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 0, "no event for a zero-amount no-op");
+        assertEq(recipient.balance, 0, "nothing transferred");
+        assertEq(address(receiver).balance, 2 ether, "receiver balance untouched");
+    }
+
+    function test_withdrawETH_revertsOnZeroRecipientEvenWhenZeroAmount() public {
+        // validation-first: the recipient guard runs before the amount==0 short-circuit, so address(0)
+        // is never valid regardless of amount.
+        vm.expectRevert(CREReceiver.InvalidRecipientAddress.selector);
+        receiver.withdrawETH(payable(address(0)), 0);
     }
 
     // ─── Reentrancy ────────────────────────────────────────────────────

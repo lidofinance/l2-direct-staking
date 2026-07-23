@@ -12,7 +12,7 @@ import {ICustomSender} from "@csr/interfaces/ICustomSender.sol";
 import {ICustomReceiver} from "@csr/interfaces/ICustomReceiver.sol";
 import {IOraclePool} from "@csr/interfaces/IOraclePool.sol";
 import {FeeCodec} from "@csr/libraries/FeeCodec.sol";
-import {ISyncTrigger} from "src/interfaces/ISyncTrigger.sol";
+import {SyncTrigger} from "src/SyncTrigger.sol";
 import {CREReceiver} from "src/cre/CREReceiver.sol";
 
 import {UpgradeTestBase, MockBridgeAdapter} from "test/helpers/UpgradeTestBase.sol";
@@ -404,7 +404,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     }
 
     function test_deployedSyncTriggerIsOperational() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         assertEq(
@@ -414,29 +414,29 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
 
         address forwarder = makeAddr("chainlinkForwarder");
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(forwarder);
         assertEq(syncTrigger.getForwarder(), forwarder, "forwarder should be configured");
 
-        (bool syncBeforeDelay,) = syncTrigger.shouldSync();
-        assertFalse(syncBeforeDelay, "sync should not be needed before delay");
+        assertEq(syncTrigger.shouldSyncAmount(), 0, "sync should not be needed before delay");
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
         uint256 expectedSyncAmount = stakeAmount > uint256(L2_SYNC_MAX_AMOUNT) ? L2_SYNC_MAX_AMOUNT : stakeAmount;
         {
-            (bool syncNeeded, uint256 amount) = syncTrigger.shouldSync();
-            assertTrue(syncNeeded, "sync should be needed after delay and min amount");
-            assertEq(amount, expectedSyncAmount, "amount should equal expected sync amount");
+            assertEq(
+                syncTrigger.shouldSyncAmount(),
+                expectedSyncAmount,
+                "sync should be needed after delay; amount should equal expected sync amount"
+            );
         }
 
-        (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
-        assertEq(maxLinkFee, 0, "sync should not require LINK fee");
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
         vm.deal(address(syncTrigger), maxNativeFee);
 
         address unauthorizedForwarder = makeAddr("notForwarder");
         vm.prank(unauthorizedForwarder);
-        vm.expectRevert(ISyncTrigger.SyncTriggerOnlyForwarder.selector);
+        vm.expectRevert(SyncTrigger.SyncTriggerOnlyForwarder.selector);
         syncTrigger.triggerSync();
 
         uint48 lastExecutionBefore = syncTrigger.getLastExecution();
@@ -452,37 +452,36 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertGt(syncTrigger.getLastExecution(), lastExecutionBefore, "last execution should move forward");
 
         {
-            (bool syncAfterTrigger,) = syncTrigger.shouldSync();
-            assertFalse(syncAfterTrigger, "sync should be false immediately after trigger");
+            assertEq(syncTrigger.shouldSyncAmount(), 0, "sync should be false immediately after trigger");
         }
     }
 
     function test_consecutiveSyncCycles() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         address forwarder = makeAddr("cycleForwarder");
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(forwarder);
 
         // Use a short delay to avoid CCIP StaleTokenPrice on double-warp;
         // delay enforcement is already tested by other tests.
         uint48 shortDelay = 60;
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setDelay(shortDelay);
 
-        (uint256 maxNativeFee,) = syncTrigger.getMaxFees();
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
 
         // ── Cycle 1: accumulate WETH, wait delay, sync ──
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + shortDelay);
 
+        // Fund the float so the upcoming triggerSync can pay (shouldSyncAmount itself ignores the float).
+        vm.deal(address(syncTrigger), maxNativeFee);
+
         {
-            (bool needed, uint256 amount) = syncTrigger.shouldSync();
-            assertTrue(needed, "cycle 1: sync should be needed");
-            assertGt(amount, 0, "cycle 1: amount should be > 0");
+            assertGt(syncTrigger.shouldSyncAmount(), 0, "cycle 1: sync should be due (amount > 0)");
         }
 
-        vm.deal(address(syncTrigger), maxNativeFee);
         vm.prank(forwarder);
         syncTrigger.triggerSync();
 
@@ -490,8 +489,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(exec1, uint48(block.timestamp), "cycle 1: lastExecution should update");
 
         {
-            (bool neededAfter,) = syncTrigger.shouldSync();
-            assertFalse(neededAfter, "cycle 1: sync should be false right after trigger");
+            assertEq(syncTrigger.shouldSyncAmount(), 0, "cycle 1: sync should be false right after trigger");
         }
 
         // ── Cycle 2: accumulate more WETH, wait delay, sync again ──
@@ -507,20 +505,17 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         }
 
         {
-            (bool neededEarly,) = syncTrigger.shouldSync();
-            assertFalse(neededEarly, "cycle 2: sync should be false before delay");
+            assertEq(syncTrigger.shouldSyncAmount(), 0, "cycle 2: sync should be false before delay");
         }
 
         vm.warp(block.timestamp + shortDelay);
+        vm.deal(address(syncTrigger), maxNativeFee); // re-fund the float (cycle 1's sync consumed it)
 
         {
-            (bool needed, uint256 amount) = syncTrigger.shouldSync();
-            assertTrue(needed, "cycle 2: sync should be needed");
-            assertGt(amount, 0, "cycle 2: amount should be > 0");
+            assertGt(syncTrigger.shouldSyncAmount(), 0, "cycle 2: sync should be due (amount > 0)");
         }
 
         uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
-        vm.deal(address(syncTrigger), maxNativeFee);
         vm.prank(forwarder);
         syncTrigger.triggerSync();
 
@@ -529,26 +524,25 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     }
 
     function test_syncTriggerRevertsWithInsufficientFees() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
 
         address forwarder = makeAddr("feeTestForwarder");
-        vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+        vm.prank(lidoL2LiquidityOwner);
         syncTrigger.setForwarder(forwarder);
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        (bool syncNeeded,) = syncTrigger.shouldSync();
-        assertTrue(syncNeeded, "sync should be needed");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be needed");
 
         // The migration funds the trigger's fee float (production parity). Drain it so this test
         // exercises the float-ran-dry path: with a 0 balance, triggerSync must revert
         // when it tries to forward the native CCIP fee from its own balance.
         uint256 floatBalance = address(syncTrigger).balance;
         if (floatBalance > 0) {
-            vm.prank(LIDO_L2_GOVERNANCE_EXECUTOR);
+            vm.prank(lidoL2LiquidityOwner);
             syncTrigger.sweep(address(0), makeAddr("floatSink"), floatBalance);
         }
         assertEq(address(syncTrigger).balance, 0, "sync trigger should have no ETH");
@@ -558,33 +552,28 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         syncTrigger.triggerSync();
     }
 
-    /// @dev Stage 2 must refuse a mis-wired or half-configured Stage 1 BEFORE any
-    ///      irreversible write (oracle-pool repoint, SYNC_ROLE grant, admin revoke, ProxyAdmin
-    ///      handover). Here Stage 1 is deployed correctly, but Stage 2 is handed a creReceiver the
-    ///      trigger's forwarder does not point at — the precondition fails and nothing is mutated.
-    function test_executeMigrationStepsRevertsOnMiswiredStage1() public {
-        vm.selectFork(l2Fork);
+    /// @dev The canary governance seal must refuse a mis-wired Stage 1 BEFORE any irreversible write
+    ///      (old-automation revoke, admin revoke, ProxyAdmin handover). Here the canary is deployed +
+    ///      activated correctly, but finalize is handed a creReceiver the trigger's forwarder does not
+    ///      point at — the opening {_assertSyncInfrastructure} interlock fails and nothing is sealed.
+    function test_canaryFinalizeRevertsOnMiswiredStage1() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,,) = _bindCanaryL2();
+
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        address realForwarder = creForwarder;
 
-        PausableImmutableOraclePool newPool = _deployL2Pool(cfg);
-
-        address creForwarder = makeAddr("creForwarder");
-        vm.deal(LIDO_L2_GOVERNANCE_EXECUTOR, cfg.syncTriggerInitialFloat);
-        vm.startPrank(LIDO_L2_GOVERNANCE_EXECUTOR);
-        (address syncTrigger,) =
-            deploySyncInfrastructure(cfg, LIDO_L2_GOVERNANCE_EXECUTOR, creForwarder, cfg.liquidityOwner);
-        vm.stopPrank();
-
-        // Call via `this.` so executeMigrationSteps runs as a single external call and the
-        // precondition revert is caught atomically (expectRevert latches onto the next external call).
+        // Call via `this.` so finalizeGovernanceSeal runs as a single external call and the interlock
+        // revert is caught atomically (expectRevert latches onto the next external call). The trigger's
+        // forwarder points at the real (deployer-wired) CREReceiver, so the mismatched wrongReceiver trips
+        // "syncTrigger forwarder" before the irreversible seal in {_sealAdminAndProxy}.
         address wrongReceiver = makeAddr("wrongReceiver");
         vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger forwarder"));
-        this.executeMigrationSteps(cfg, address(newPool), syncTrigger, wrongReceiver, creForwarder);
+        this.finalizeGovernanceSeal(cfg, address(newPool), address(syncTrigger), wrongReceiver, realForwarder);
     }
 
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 amountBelowMin = uint256(L2_SYNC_MIN_AMOUNT) - 1;
         assertEq(
@@ -593,32 +582,32 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
             "pool should have WETH below min threshold"
         );
 
-        (bool syncNeeded,) = _shouldSyncAfterDelay(syncTrigger);
+        bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertFalse(syncNeeded, "sync should stay false when balance is below min");
     }
 
     function test_syncTriggerTriggersAtExactMinAmount() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 exactMinAmount = uint256(L2_SYNC_MIN_AMOUNT);
         assertEq(
             _provisionPoolAndAccumulateWeth(newPool, exactMinAmount), exactMinAmount, "pool should have exact min WETH"
         );
 
-        (bool syncNeeded, uint256 amount) = _shouldSyncAfterDelay(syncTrigger);
+        bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertTrue(syncNeeded, "sync should trigger at exact min amount");
-        assertEq(amount, exactMinAmount, "amount should be the exact min amount");
+        assertEq(syncTrigger.shouldSyncAmount(), exactMinAmount, "amount should be the exact min amount");
     }
 
     function test_syncTriggerCapsAtMaxAmount() public {
-        (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndLoadSyncTrigger();
 
         uint256 balanceAboveMax = uint256(L2_SYNC_MAX_AMOUNT) + 1 ether;
         deal(L2_WETH, address(newPool), balanceAboveMax);
 
-        (bool syncNeeded, uint256 amount) = _shouldSyncAfterDelay(syncTrigger);
+        bool syncNeeded = _shouldSyncAfterDelay(syncTrigger);
         assertTrue(syncNeeded, "sync should trigger when balance is above max");
-        assertEq(amount, uint256(L2_SYNC_MAX_AMOUNT), "amount should cap at max");
+        assertEq(syncTrigger.shouldSyncAmount(), uint256(L2_SYNC_MAX_AMOUNT), "amount should cap at max");
     }
 
     function test_upgradeSyncRoutesAcrossL2AndL1CCIPLayer() public {
@@ -780,7 +769,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
         assertEq(
             newCREReceiver.getForwarder(),
-            makeAddr("creForwarder"),
+            creForwarder,
             "CREReceiver forwarder should be set"
         );
 
@@ -805,7 +794,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     function test_productionDeployFundsSyncTriggerFloatForFirstSync() public {
         (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver) =
             _deployAndMigrateL2Production();
-        ISyncTrigger syncTrigger = ISyncTrigger(newSyncTrigger);
+        SyncTrigger syncTrigger = SyncTrigger(payable(newSyncTrigger));
 
         // Accounting: the deploy funded exactly the configured constant.
         L2UpgradeConfig memory cfg =
@@ -814,15 +803,21 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertEq(newSyncTrigger.balance, initialFloat, "deploy should fund exactly the configured float");
 
         // Floor invariant: the float covers at least one worst-case sync (mirrors fundSyncTrigger's guard).
-        (uint256 maxNativeFee, uint256 maxLinkFee) = syncTrigger.getMaxFees();
-        assertEq(maxLinkFee, 0, "no LINK leg expected in current config");
+        uint256 maxNativeFee = syncTrigger.getMaxFees();
         assertGe(initialFloat, maxNativeFee, "float must cover one worst-case sync");
+
+        // Fee non-drift: the deploy-script copy of the native fee total (the inherited {_maxFees}, the path
+        // `verify-constants-sync` exercises) must agree with the live on-chain `SyncTrigger.getMaxFees()`
+        // for the real per-lane production blobs. This is the tested cross-check that replaces the deleted
+        // shared {FeeSplit} library's structural single-source guarantee (the two copies are also pinned to
+        // the same `<net>.inputs.yaml` anchors by verify-constants-sync + state-mate).
+        uint256 scriptNativeFee = _maxFees(_encodeFeeOtoD(cfg), cfg.feeDtoO);
+        assertEq(scriptNativeFee, maxNativeFee, "fee drift: deploy script vs SyncTrigger");
 
         _provisionPoolAndAccumulateWeth(newPool, uint256(L2_SYNC_MIN_AMOUNT) + 1 ether);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        (bool syncNeeded,) = syncTrigger.shouldSync();
-        assertTrue(syncNeeded, "sync should be needed");
+        assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be needed");
 
         // First sync, paid solely from the script-funded float (forwarder = CREReceiver in production wiring).
         vm.prank(address(newCREReceiver));
@@ -833,22 +828,178 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         assertGt(newSyncTrigger.balance, initialFloat - maxNativeFee, "maxFee excess should refund to the trigger");
     }
 
+    // ──────────────── Canary flow (deployer-simulated CRE) ───────────────
+
+    /// @notice Full canary path: deploy deployer-owned + deployer-as-CRE → activate → simulate a sync via
+    ///         CREReceiver.onReport → handoff to LOL (restore real forwarder/author + production params) →
+    ///         seal governance. The end-state must match what the standard migration lands on.
+    function test_canaryDeployerSimulatedSyncAndHandoff() public {
+        // Stage-1 invariants are already hard-asserted inside the bind (with the live delay/min-amount).
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver, address deployer) =
+            _bindCanaryL2();
+
+        // Seed WETH above the canary min, wait the live canary delay, then drive a sync via onReport.
+        uint256 seed = 0.1 ether;
+        deal(L2_WETH, address(newPool), seed);
+        vm.warp(block.timestamp + syncTrigger.getDelay() + 1);
+        assertEq(syncTrigger.shouldSyncAmount(), seed, "canary: sync due for the seeded WETH");
+
+        // Deployer is the configured forwarder AND author; craft the Keystone report and call onReport.
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), deployer);
+        bytes memory report = abi.encode(address(syncTrigger), abi.encodePacked(SyncTrigger.triggerSync.selector));
+        vm.prank(deployer);
+        creReceiver.onReport(metadata, report);
+        assertEq(IERC20(L2_WETH).balanceOf(address(newPool)), 0, "canary sync should pull the pool WETH");
+
+        // Stage 1→2 (Deployer): sweep residue, restore production config, transfer to LOL.
+        address realForwarder = creForwarder;
+        L2UpgradeConfig memory prodCfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        vm.deal(deployer, prodCfg.syncTriggerInitialFloat); // headroom for the float top-up
+        vm.startPrank(deployer);
+        sweepTestResidue(prodCfg, address(newPool), deployer);
+        handoffToLiquidityOwner(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        vm.stopPrank();
+
+        verifyCanaryStage2(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+
+        // Stage 2→3 (Initial Owner): the irreversible governance seal.
+        vm.startPrank(INITIAL_OWNER);
+        finalizeGovernanceSeal(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        vm.stopPrank();
+
+        // Final production state — the same invariants the standard migration lands on.
+        assertEq(newPool.owner(), lidoL2LiquidityOwner, "pool owner = LOL");
+        assertEq(Ownable(address(syncTrigger)).owner(), lidoL2LiquidityOwner, "trigger owner = LOL");
+        assertEq(Ownable(address(creReceiver)).owner(), lidoL2LiquidityOwner, "receiver owner = LOL");
+        assertEq(creReceiver.getExpectedAuthor(), lidoL2LiquidityOwner, "author restored to LOL");
+        assertEq(creReceiver.getForwarder(), realForwarder, "forwarder restored to real");
+        (uint128 minA, uint128 maxA) = syncTrigger.getAmounts();
+        assertEq(minA, L2_SYNC_MIN_AMOUNT, "min restored to production");
+        assertEq(maxA, L2_SYNC_MAX_AMOUNT, "max = production");
+        assertEq(syncTrigger.getDelay(), L2_SYNC_DELAY, "delay restored to production");
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, LIDO_L2_GOVERNANCE_EXECUTOR),
+            "admin = governance executor"
+        );
+        assertFalse(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "initial owner admin revoked"
+        );
+        assertEq(Ownable(L2_PROXY_ADMIN).owner(), LIDO_L2_GOVERNANCE_EXECUTOR, "L2 ProxyAdmin = governance executor");
+        _verifyOldAutomationsRevoked();
+    }
+
+    /// @notice Behavioral canary acceptance against the REAL on-chain deployed addresses (bind-only —
+    ///         the env addresses are required): bind to the deployer-owned canary, seed WETH above the
+    ///         on-chain min, wait the on-chain delay, drive a sync via CREReceiver.onReport as the
+    ///         deployer, and assert the pool WETH is pulled. The non-destructive, keyless fork sibling of
+    ///         the on-chain `simulate-sync` real-broadcast path. Driven by `just test-<net>-canary-acceptance`.
+    function test_canarySyncOnDeployedAddresses() public {
+        (PausableImmutableOraclePool pool, SyncTrigger trigger, CREReceiver receiver, address deployer) =
+            _bindCanaryL2();
+
+        // Seed above the on-chain canary min (deal SETS the balance, so the drain-to-0 assert is
+        // deterministic even against a live pool that already holds WETH); the seed is far below any lane
+        // maxAmount, so the full seed syncs in one shot.
+        (uint128 minA,) = trigger.getAmounts();
+        uint256 seed = uint256(minA) + 0.05 ether;
+        deal(L2_WETH, address(pool), seed);
+
+        // Warp past the on-chain delay (relative to now, +1) so a possibly-recent on-chain lastExecution
+        // cannot leave the sync un-due.
+        vm.warp(block.timestamp + trigger.getDelay() + 1);
+        assertGt(trigger.shouldSyncAmount(), 0, "canary: sync should be due for the seeded WETH");
+
+        // Deployer is the configured forwarder AND author; craft the Keystone report and call onReport
+        // (byte-identical to runSimulateSync / test_canaryDeployerSimulatedSyncAndHandoff).
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), deployer);
+        bytes memory report = abi.encode(address(trigger), abi.encodePacked(SyncTrigger.triggerSync.selector));
+        vm.prank(deployer);
+        receiver.onReport(metadata, report);
+
+        assertEq(IERC20(L2_WETH).balanceOf(address(pool)), 0, "canary sync should pull the seeded pool WETH");
+    }
+
+    /// @notice 1→0 rollback: after activation, the Initial Owner repoints CustomSender at the old pool and
+    ///         revokes the new SyncTrigger's SYNC_ROLE. The old automation was never touched, so the
+    ///         predecessor system is fully restored.
+    function test_canaryRollbackRestoresOldPool() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger,,) = _bindCanaryL2();
+
+        assertEq(ICustomSender(L2_CUSTOM_SENDER).getOraclePool(), address(newPool), "pool activated");
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(syncTrigger)), "trigger has SYNC_ROLE");
+
+        // The legacy automations' LIVE role state (which of the pinned addresses actually still holds
+        // SYNC_ROLE varies by lane — e.g. Linea's holder is the Gelato bot, not the Chainlink upkeep):
+        // rollback must PRESERVE it, whatever it is, so capture before and compare after.
+        bool chainlinkHadRole = L2_OLD_CHAINLINK_AUTOMATION != address(0)
+            && IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION);
+        bool gelatoHadRole = L2_OLD_GELATO_AUTOMATION != address(0)
+            && IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION);
+        assertTrue(
+            chainlinkHadRole || gelatoHadRole, "some legacy automation still holds SYNC_ROLE pre-rollback"
+        );
+
+        vm.startPrank(INITIAL_OWNER);
+        rollbackActivation(_canaryCfg(), L2_OLD_ORACLE_POOL, address(syncTrigger));
+        vm.stopPrank();
+
+        assertEq(ICustomSender(L2_CUSTOM_SENDER).getOraclePool(), L2_OLD_ORACLE_POOL, "rolled back to old pool");
+        assertFalse(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(syncTrigger)), "trigger SYNC_ROLE revoked"
+        );
+        if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
+            assertEq(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION),
+                chainlinkHadRole,
+                "chainlink automation SYNC_ROLE preserved for clean rollback"
+            );
+        }
+        if (L2_OLD_GELATO_AUTOMATION != address(0)) {
+            assertEq(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION),
+                gelatoHadRole,
+                "gelato automation SYNC_ROLE preserved for clean rollback"
+            );
+        }
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "admin still initial owner"
+        );
+    }
+
+    /// @notice Sealing before the LOL handoff must revert: the infra is still deployer-owned, so the
+    ///         {finalizeGovernanceSeal} interlock fails (owner != LOL) before any irreversible write.
+    function test_canaryFinalizeRevertsBeforeHandoff() public {
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger, CREReceiver creReceiver,) = _bindCanaryL2();
+        L2UpgradeConfig memory prodCfg =
+            _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+        address realForwarder = creForwarder;
+
+        // `this.` so the external call is what expectRevert latches onto; the interlock reverts first.
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger owner"));
+        this.finalizeGovernanceSeal(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "admin untouched after revert"
+        );
+    }
+
     // ──────────────── Internal test helpers ──────────────────────────────
 
     function _deployAndLoadSyncTrigger()
         internal
-        returns (PausableImmutableOraclePool newPool, ISyncTrigger syncTrigger)
+        returns (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger)
     {
         address syncTriggerAddress;
         (newPool, syncTriggerAddress) = _deployAndMigrateL2WithSyncTrigger();
-        syncTrigger = ISyncTrigger(syncTriggerAddress);
+        syncTrigger = SyncTrigger(payable(syncTriggerAddress));
     }
 
-    function _shouldSyncAfterDelay(ISyncTrigger syncTrigger)
+    function _shouldSyncAfterDelay(SyncTrigger syncTrigger)
         internal
-        returns (bool syncNeeded, uint256 amount)
+        returns (bool syncNeeded)
     {
         vm.warp(block.timestamp + L2_SYNC_DELAY);
-        (syncNeeded, amount) = syncTrigger.shouldSync();
+        syncNeeded = syncTrigger.shouldSyncAmount() > 0;
     }
 }

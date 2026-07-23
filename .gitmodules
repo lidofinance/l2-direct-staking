@@ -14,3 +14,4 @@
 [submodule "lib/state-mate"]
 	path = lib/state-mate
 	url = https://github.com/lidofinance/state-mate
+	branch = feat/separate-deployed

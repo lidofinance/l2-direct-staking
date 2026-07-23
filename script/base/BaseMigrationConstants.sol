@@ -7,6 +7,12 @@ library BaseMigrationConstants {
     // L2 governance executor
     address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x0E37599436974a25dDeEdF795C848d30Af46eaCF;
 
+    // Chainlink CRE Keystone forwarder (production) — the sole caller of CREReceiver.onReport().
+    // Fixed per network and Chainlink-operated, so it is pinned here rather than supplied via env.
+    // Source: Chainlink CRE production forwarder directory. Cross-checked against the l2CreForwarder
+    // state-mate anchor by `just verify-constants-sync`.
+    address internal constant CRE_FORWARDER = 0xF8344CFd5c43616a4366C34E3EEE75af79a74482;
+
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61;
 
@@ -29,8 +35,11 @@ library BaseMigrationConstants {
 
     // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
-    bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 1_000_000;
+    // FeeOtoD gasLimit ceiling = Base's FeeQuoter maxPerMsgGasLimit (docs/fees.md §lane caps,
+    // verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this — config-time guard
+    // for the over-bump footgun (audit-scope C-1).
+    uint32 internal constant L2_SYNC_MAX_GAS_LIMIT = 7_000_000;
     uint32 internal constant L2_SYNC_ORIGIN_L2_GAS = 100_000;
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;

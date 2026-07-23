@@ -13,10 +13,6 @@ import {ArbitrumMigrationConstants as C} from "script/arbitrum/ArbitrumMigration
  *      Inheritable by tests and scripts.
  */
 contract ArbitrumL2Defaults is L2UpgradeActions {
-    function defaultL2Config(address initialOwner, address governanceExecutor) public pure returns (L2UpgradeConfig memory cfg) {
-        return defaultL2Config(initialOwner, governanceExecutor, C.LIQUIDITY_OWNER);
-    }
-
     function defaultL2Config(address initialOwner, address governanceExecutor, address liquidityOwner)
         public
         pure
@@ -34,8 +30,8 @@ contract ArbitrumL2Defaults is L2UpgradeActions {
             fee: 0,
             destChainSelector: L1.ETH_CCIP_CHAIN_SELECTOR,
             destinationMaxFee: C.L2_SYNC_DESTINATION_MAX_FEE,
-            destinationPayInLink: C.L2_SYNC_DESTINATION_PAY_IN_LINK,
             destinationGasLimit: C.L2_SYNC_DESTINATION_GAS_LIMIT,
+            maxGasLimit: C.L2_SYNC_MAX_GAS_LIMIT,
             feeDtoO: FeeCodec.encodeArbitrumL1toL2(
                 C.L2_SYNC_ORIGIN_MAX_SUBMISSION_COST, C.L2_SYNC_ORIGIN_MAX_GAS, C.L2_SYNC_ORIGIN_GAS_PRICE_BID
             ),
@@ -70,5 +66,13 @@ contract ArbitrumL2UpgradeScript is L2UpgradeScriptBase, ArbitrumL2Defaults {
 
     function _expectedGovernanceExecutor() internal pure override returns (address) {
         return C.LIDO_L2_GOVERNANCE_EXECUTOR;
+    }
+
+    function _expectedCREForwarder() internal pure override returns (address) {
+        return C.CRE_FORWARDER;
+    }
+
+    function _expectedOldOraclePool() internal pure override returns (address) {
+        return C.L2_OLD_ORACLE_POOL;
     }
 }

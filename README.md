@@ -6,9 +6,9 @@ Migrate Direct Staking ownership, admin roles, and liquidity management to Lido 
 
 **Contracts mutated** (per network):
 - **L1** (shared): `LidoCustomReceiver` — admin → Lido DAO Agent; `ProxyAdmin` — owner → Lido DAO Agent
-- **L2**: `CustomSenderReferral` — admin → L2 Governance Executor, oracle pool swapped, legacy automation(s) revoked from `SYNC_ROLE`; `ProxyAdmin` — owner → L2 Governance Executor; old `OraclePool` — no longer wired into the sender, ownership unchanged: Initial Liquidity Owner `0x2897A1…b18c` retains full control via `sweep()` to settle pre-migration liquidity and any wstETH that lands from a sync round-trip in flight at the migration boundary (the round-trip's recipient pool is fixed at `sync()`-time and immutable thereafter, so in-flight wstETH lands in the **old** pool and is recovered by its owner via `sweep()` — see [`DOC.md` §5.1](DOC.md#51-in-flight-round-trips-are-correct-by-design)). LOL multisig owns only the **new** pool.
+- **L2**: `CustomSenderReferral` — admin → L2 Governance Executor, oracle pool swapped, legacy automation(s) revoked from `SYNC_ROLE`; `ProxyAdmin` — owner → L2 Governance Executor; old `OraclePool` — no longer wired into the sender, ownership unchanged: Initial Liquidity Owner `0x2897A1…b18c` retains full control via `sweep()` to settle pre-migration liquidity and any wstETH that lands from a sync round-trip in flight at the migration boundary (the round-trip's recipient pool is fixed at `sync()`-time and immutable thereafter, so in-flight wstETH lands in the **old** pool and is recovered by its owner via `sweep()` — see [`DOC.md` §5.1](DOC.md#51-in-flight-round-trips-are-correct-by-design)). Of the two pools, the LOL multisig owns the **new** one (not the old).
 
-**Contracts deployed** (per network): new `OraclePool`, `SyncTrigger`, `CREReceiver`
+**Contracts deployed** (per network): new `OraclePool`, `SyncTrigger`, `CREReceiver` — all owned by the **LOL multisig** (`SyncTrigger`'s `SYNC_ROLE` on `CustomSender` stays admin'd by the L2 Governance Executor)
 
 # Documentation
 
@@ -20,9 +20,12 @@ viewpoint that matches your task:
 | Doc | Viewpoint — stakeholder · concern | Canonical content |
 |---|---|---|
 | **[RUNBOOK.md](RUNBOOK.md)** | Operator · the migration *recipe / run* | 3-phase checklist (pre-live checks → live run → post-migration validation) with gates `G1–G4`, duties, evidence, and the migration sequence diagram. |
+| **[docs/runbook-liquidity-provider.md](docs/runbook-liquidity-provider.md)** | Liquidity provider (LOL Safe) · new-pool operations | Seed, monitor, top up, and recover wstETH liquidity on the new OraclePool — FPF-structured LP runbook with gates `LP-G0–G4`, duties, and sunset procedure. |
 | **[DOC.md](DOC.md)** | Architect / reviewer · the *resulting state* | Networks, components & provenance, access control & ownership, diagrams, the sync operation, fee **rationale** (§5.2), migration safety notes. |
-| **[docs/fees.md](docs/fees.md)** | Fee-tuning governance · economics reference | The four fee quantities, byte layouts, the Glamsterdam headroom bump, and each bridge's refund/failure behavior. |
+| **[docs/fees.md](docs/fees.md)** | Fee-tuning owner (LOL) · economics reference | The four fee quantities, byte layouts, the Glamsterdam headroom bump, and each bridge's refund/failure behavior. |
+| **[docs/otod-fee-amount-sensitivity.md](docs/otod-fee-amount-sensitivity.md)** | Fee-tuning owner (LOL) · fee-vs-amount finding | Whether the OtoD fee scales with the bridged amount (yes on OP/Linea at 5 bps uncapped, flat on Arb/Base), how the 100 WETH cap contains it, and the `maxAmount`↔`maxFee` tuning coupling. |
 | **[docs/cre.md](docs/cre.md)** | CRE operator · workflow lifecycle | CRE workflow setup / deploy / funding / levers + the workflow-owner lost-vs-compromised recovery procedure. |
+| **[docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md)** | Migration operator · the canary deploy flow | The 5-state deploy machine (deployer-owned test → simulated CRE sync → handoff to LOL → governance seal) with per-actor transitions and the 1→0 rollback. |
 | **[docs/development.md](docs/development.md)** | Developer · build / test / scripts | The direct `forge script` reference and the four test layers (unit / CRE / fork-integration / dress rehearsal). |
 | **[docs/monitoring.md](docs/monitoring.md)** | On-call / SRE · post-migration alerts | The ongoing Signal · Expected · Severity→Response table once a network is live. |
 | **[docs/adr/0001-…](docs/adr/0001-cre-workflow-owner-multisig.md)** | Decision record | Why the CRE workflow owner is the LOL multisig (Safe), the rejected EOA alternative, and the recovery primitive. |

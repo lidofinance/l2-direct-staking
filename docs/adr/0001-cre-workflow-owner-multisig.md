@@ -44,8 +44,10 @@ The strict distinctions that frame the decision (A.7): the failure kinds **lost*
 **Register the `sync-automation` workflow under the LOL multisig (Safe) — the same Safe that already owns
 each `CREReceiver` — and pin `expectedAuthor` to that Safe address on all four L2s.**
 
-- The Stage-1 deploy scripts pin `CREReceiver._expectedAuthor = cfg.liquidityOwner` (the LOL multisig),
-  *not* the Lido Deployer EOA (`script/shared/L2UpgradeScriptBase.s.sol::_deployAll`).
+- After the canary handoff, `CREReceiver._expectedAuthor` is pinned to `cfg.liquidityOwner` (the LOL
+  multisig), *not* the Lido Deployer EOA (`handoffToLiquidityOwner`,
+  `script/shared/L2UpgradeActions.s.sol`). During the canary it is transiently the deployer, so the
+  deployer can drive the pre-handoff test sync.
 - The workflow is registered with `cre workflow deploy … --unsigned`
   (`workflow-owner-address: ${CRE_WORKFLOW_OWNER}` in `cre-workflows/project.yaml`,
   `CRE_WORKFLOW_OWNER` = the network's LOL multisig). `--unsigned` makes the CLI emit raw
@@ -86,7 +88,7 @@ separate Safe over the LOL Safe is low — so we pick the LOL Safe.
   workflow updates move at governance pace. Bounded: the urgent kill switches were already Safe actions, so
   only non-urgent, infrequent code updates slow down.
 - Concentration: the LOL Safe is both "the author" and "who re-pins the author." The independent
-  **GovExec backstop** (`SyncTrigger.setForwarder(0)` / `setDelay(max)`) stays in a *different* trust domain
+  **GovExec backstop** (`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) stays in a *different* trust domain
   and can dark-out the path without LOL quorum, so a separate dedicated Safe is not warranted here — but the
   concentration is noted.
 
@@ -140,7 +142,7 @@ already-EOA-owned workflow can only be moved to a Safe by running the "redeploy 
 | R1 | Lido ops provision a *new* owner (for EOA→Safe: the LOL Safe via `--unsigned`); `cre workflow deploy` a fresh workflow → new `metadata.workflowOwner`; capture `CRE_WORKFLOW_ID` | — |
 | R2 | *(gate before R3)* `verify-cre-workflow` → status `ACTIVE`, owner = new author | `VerifyCREWorkflow` 3-assert read. Do **not** re-pin to a not-yet-live author |
 | R3 | LOL multisig `setExpectedAuthor(newOwner)` on **all 4** L2 `CREReceiver`s | Monitoring §1: `getExpectedAuthor` = new on all 4 + `ExpectedAuthorUpdated` ×4 |
-| R4 | Lido ops re-baseline `.env`, the pinned-author constant, and every `state-mate/<net>.yaml` in lock-step | state-mate §1/§4 green against the new author |
+| R4 | Lido ops re-baseline `.env`, the pinned-author constant, and the `config/state/l2-<net>.inputs.yaml` siblings in lock-step | state-mate §1/§4 green against the new author |
 
 R3 needs **only the LOL multisig** — not a DAO / Aragon / GovExec motion. That is the payoff of the
 `expectedAuthor` indirection: recovery never touches value-path governance. Adopting the Safe owner from the

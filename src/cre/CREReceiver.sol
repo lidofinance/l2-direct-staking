@@ -30,7 +30,6 @@ import {IReceiver} from "./interfaces/IReceiver.sol";
  *      signed by the same owner could at most trigger the intended, rate-limited sync; binding the
  *      name would only add operational rigidity (a workflow rename ⇒ redeploy) for a negligible
  *      gain. The authentication boundary is therefore deliberately "(forwarder, workflowOwner)".
- *      See DOC.md.
  *
  *      Invariants:
  *      - _expectedAuthor is never address(0) (enforced at construction and by setters).
@@ -56,11 +55,16 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         bytes4 indexed selector,
         bool allowed
     );
+    event ETHWithdrawn(
+        address indexed to,
+        uint256 amount
+    );
 
     error UnauthorizedForwarder(address caller, address expected);
     error InvalidForwarderAddress();
     error InvalidExpectedAuthor();
     error InvalidTargetAddress();
+    error TargetHasNoCode(address target);
     error InvalidAuthor(address received, address expected);
     error CallNotAllowed(address target, bytes4 selector);
     error MetadataTooShort(uint256 length);
@@ -98,8 +102,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         emit ForwarderUpdated(address(0), forwarder_);
         emit ExpectedAuthorUpdated(address(0), expectedAuthor_);
         if (allowedTarget != address(0)) {
-            _allowedCalls[allowedTarget][allowedSelector] = true;
-            emit AllowedCallUpdated(allowedTarget, allowedSelector, true);
+            _setAllowedCall(allowedTarget, allowedSelector, true);
         }
     }
 
@@ -138,7 +141,7 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
     }
 
     /// @notice Returns the forwarder address that is allowed to call `onReport`.
-    /// @dev Convenience accessor for off-chain tooling / deploy verification. Deliberately NOT
+    /// @dev Convenience accessor for off-chain callers. Deliberately NOT
     ///      part of `IReceiver`: keeping it out preserves `type(IReceiver).interfaceId == 0x805f2132`.
     function getForwarder() external view returns (address) {
         return _forwarder;
@@ -187,7 +190,18 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         bytes4 selector,
         bool allowed
     ) external onlyOwner {
+        _setAllowedCall(target, selector, allowed);
+    }
+
+    /// @dev Single guarded allow-list mutator shared by the constructor seed and the owner setter, so
+    ///      the guards below cannot drift between the two entry points.
+    ///      A bare `.call` to a code-less address returns success=true with empty returndata, so
+    ///      allow-listing a target with no code would make onReport dispatch a silent no-op (the report
+    ///      is marked delivered, but nothing executes — sync never fires). Require code at set-time so
+    ///      that failure mode is impossible to configure. Removals (allowed=false) are unconstrained.
+    function _setAllowedCall(address target, bytes4 selector, bool allowed) private {
         if (target == address(0)) revert InvalidTargetAddress();
+        if (allowed && target.code.length == 0) revert TargetHasNoCode(target);
         _allowedCalls[target][selector] = allowed;
         emit AllowedCallUpdated(target, selector, allowed);
     }
@@ -196,9 +210,14 @@ contract CREReceiver is IReceiver, IERC165, Ownable {
         address payable to,
         uint256 amount
     ) external onlyOwner {
+        // Validation-first (mirrors SyncTrigger.sweep): the recipient guard runs before the amount==0
+        // short-circuit, so address(0) is never valid regardless of amount. A zero amount is then a
+        // no-op — no transfer, and no misleading ETHWithdrawn(to, 0) for indexers to chase.
         if (to == address(0)) revert InvalidRecipientAddress();
+        if (amount == 0) return;
         (bool ok, ) = to.call{value: amount}("");
         if (!ok) revert ETHTransferFailed();
+        emit ETHWithdrawn(to, amount);
     }
 
     /// @dev Extracts the workflow owner from packed CRE metadata.

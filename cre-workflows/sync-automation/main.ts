@@ -4,8 +4,8 @@
  * Triggers periodic sync of accumulated L2 WETH to L1 for Lido staking.
  *
  * Flow:
- *   CronCapability trigger → read shouldSync() → if needed, encode triggerSync() →
- *   sign report → write to CREReceiver → SyncTrigger.triggerSync() →
+ *   CronCapability trigger → read shouldSyncAmount() (due? amount?) + canSync() (executable?) → if both,
+ *   encode triggerSync() → sign report → write to CREReceiver → SyncTrigger.triggerSync() →
  *   CustomSender.sync() → CCIP → L1
  */
 
@@ -22,11 +22,14 @@ import {
   LATEST_BLOCK_NUMBER,
 } from "@chainlink/cre-sdk";
 import { z } from "zod";
-import { isAddress, zeroAddress } from "viem";
+import { isAddress, zeroAddress, type Hex } from "viem";
 import {
   encodeReportPayload,
-  decodeShouldSyncResult,
-  encodeShouldSyncCall,
+  encodeShouldSyncAmountCall,
+  decodeShouldSyncAmountResult,
+  encodeCanSyncCall,
+  decodeCanSyncResult,
+  decideSyncAction,
 } from "./encoding";
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -75,30 +78,52 @@ const onCronTrigger = (runtime: Runtime<Config>): string => {
 
   const evmClient = new EVMClient(network.chainSelector.selector);
 
-  // 2. Read shouldSync from SyncTrigger
-  runtime.log("Calling shouldSync...");
+  // 2. Probe the two on-chain predicates the DON gates on. A sync proceeds only when it is both DUE
+  //    (shouldSyncAmount: nonzero ⇔ delay elapsed + pool WETH >= minAmount, and the value IS the amount)
+  //    AND executable (canSync: the fee float, SYNC_ROLE, and pool-pause preconditions that would
+  //    otherwise make triggerSync revert). Splitting them lets the DON suppress a due-but-blocked tick
+  //    (a silent, signalless stall surfaced off-chain) instead of submitting a guaranteed-revert report
+  //    every tick.
+  const staticCall = (data: Hex): Hex => {
+    const res = evmClient
+      .callContract(runtime, {
+        call: encodeCallMsg({
+          from: zeroAddress,
+          to: config.targetAddress as `0x${string}`,
+          data,
+        }),
+        blockNumber: LATEST_BLOCK_NUMBER,
+      })
+      .result();
+    return bytesToHex(res.data);
+  };
 
-  const callData = encodeShouldSyncCall();
+  runtime.log("Calling shouldSyncAmount (is a sync due, and for how much?)...");
+  // One read yields both due-ness and the amount: nonzero ⇔ due. Only probe executability when actually
+  // due — saves an eth_call on idle ticks.
+  const amount = decodeShouldSyncAmountResult(staticCall(encodeShouldSyncAmountCall()));
+  const due = amount !== 0n;
+  const executable = due ? decodeCanSyncResult(staticCall(encodeCanSyncCall())) : false;
 
-  const contractCall = evmClient
-    .callContract(runtime, {
-      call: encodeCallMsg({
-        from: zeroAddress,
-        to: config.targetAddress as `0x${string}`,
-        data: callData,
-      }),
-      blockNumber: LATEST_BLOCK_NUMBER,
-    })
-    .result();
+  runtime.log(`due=${due} executable=${executable} amount=${amount}`);
 
-  const checkResult = decodeShouldSyncResult(bytesToHex(contractCall.data));
-
-  runtime.log(`syncNeeded=${checkResult.syncNeeded} amount=${checkResult.amount}`);
-
-  // 3. Exit early if no action needed
-  if (!checkResult.syncNeeded) {
-    runtime.log("No sync needed, skipping.");
-    return "no-action";
+  // 3. Route the tick. `decideSyncAction` (pure, unit-tested) maps the two predicates to one of three
+  //    terminal branches; only "execute" proceeds to the report path below. "blocked" (due but an
+  //    executability precondition is unmet — float / SYNC_ROLE / pool pause) skips rather than submit a
+  //    guaranteed-revert report (the stall off-chain monitoring surfaces); "no-action" is simply not
+  //    due. A mis-route of a blocked tick into the report path is the exact DON spam this split
+  //    prevents — hence the routing lives in a tested pure function.
+  const action = decideSyncAction({ due, executable });
+  if (action !== "execute") {
+    if (action === "blocked") {
+      runtime.log(
+        `Sync due (amount=${amount}) but not currently executable — skipping. ` +
+          "Check trigger float, SYNC_ROLE, and pool pause.",
+      );
+    } else {
+      runtime.log("No sync needed, skipping.");
+    }
+    return action;
   }
 
   // 4. Encode triggerSync report for CREReceiver

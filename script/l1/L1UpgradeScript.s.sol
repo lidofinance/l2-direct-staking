@@ -15,7 +15,9 @@ import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
  *
  * Required env:
  * - INITIAL_OWNER_PRIVATE_KEY (or L1_INITIAL_OWNER_PRIVATE_KEY)
- * - LIDO_DAO_AGENT (or LIDO_NEW_OWNER)
+ *
+ * The Lido DAO Agent recipient is the fixed mainnet L1MigrationConstants.LIDO_DAO_AGENT constant
+ * (cross-checked to the lidoDaoAgent .inputs.yaml anchor by verify-constants-sync) — never read from env.
  */
 contract L1UpgradeScript is Script, L1UpgradeActions {
     function _envInitialOwnerPrivateKey() internal view returns (uint256) {
@@ -26,29 +28,14 @@ contract L1UpgradeScript is Script, L1UpgradeActions {
         }
     }
 
-    error L1UpgradeWrongLidoDaoAgent(address actual, address expected);
-
-    /// @dev Reads the DAO Agent from env and asserts it matches the known-correct mainnet constant.
-    ///      The handover (receiver admin + ProxyAdmin owner) is irreversible by the Initial Owner,
-    ///      so a wrong-but-nonzero env value must be rejected before broadcast — same guard class
-    ///      as `_envGovernanceExecutor()` on the L2 side. The Sepolia variant keeps free-form env.
-    function _envLidoDaoAgent() internal view returns (address lidoDaoAgent) {
-        try vm.envAddress("LIDO_DAO_AGENT") returns (address value) {
-            lidoDaoAgent = value;
-        } catch {
-            lidoDaoAgent = vm.envAddress("LIDO_NEW_OWNER");
-        }
-        if (lidoDaoAgent != L1.LIDO_DAO_AGENT) {
-            revert L1UpgradeWrongLidoDaoAgent(lidoDaoAgent, L1.LIDO_DAO_AGENT);
-        }
-    }
-
     function run() external {
         assertL1ChainId(L1.ETH_CHAIN_ID);
 
         uint256 initialOwnerPrivateKey = _envInitialOwnerPrivateKey();
         address initialOwner = vm.addr(initialOwnerPrivateKey);
-        address lidoDaoAgent = _envLidoDaoAgent();
+        // The DAO Agent is the fixed mainnet constant (verify-constants-sync'd), not an operator input,
+        // so the irreversible admin/ProxyAdmin handover can never target a wrong env-supplied address.
+        address lidoDaoAgent = L1.LIDO_DAO_AGENT;
 
         L1UpgradeConfig memory cfg = defaultL1Config(initialOwner, lidoDaoAgent);
 

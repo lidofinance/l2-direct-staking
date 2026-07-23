@@ -16,12 +16,13 @@ Pool rebalancing is triggered by a CRE (Chainlink Runtime Environment) TypeScrip
 ```
 CRE DON (TypeScript/WASM, off-chain)
   ├── CronCapability trigger (every 5 minutes)
-  ├── EVMClient.callContract() → SyncTrigger.shouldSync()
-  ├── If syncNeeded:
+  ├── EVMClient.callContract() → SyncTrigger.shouldSyncAmount() (due? amount?) + canSync() (executable?)
+  ├── If due && executable:
   │   ├── Encode triggerSync() calldata
   │   ├── Wrap in abi.encode(target, data) for CREReceiver
   │   ├── runtime.report() → sign with ECDSA/Keccak256
   │   └── EVMClient.writeReport() → CRE Forwarder
+  ├── Else if due (but !executable): log "blocked" (float/SYNC_ROLE/pause) — skip, no report
   │
 CRE Forwarder (on-chain; verifies signatures, ERC-165-gates the receiver)
   └── CREReceiver.onReport(metadata, report)
@@ -41,7 +42,6 @@ CRE Forwarder (on-chain; verifies signatures, ERC-165-gates the receiver)
 | `cre-workflows/sync-automation/config.deploy.<network>.json` | Per-network production config (Optimism, Arbitrum, Base, Linea)      |
 | `cre-workflows/sync-automation/config.deploy.json`           | Base production config (Optimism defaults)                           |
 | `cre-workflows/sync-automation/config.simulate.json`         | Local simulation config                                              |
-| `cre-workflows/sync-automation/config.test.json`             | Testnet config (Optimism Sepolia)                                    |
 
 ## Setup
 
@@ -55,7 +55,7 @@ just test-cre-workflow
 
 ## Deployment
 
-CREReceiver is deployed per L2 network as part of Stage 1 `runDeploy` (which also configures `SyncTrigger.setForwarder(CREReceiver)` and pins `expectedAuthor` to the **LOL multisig** — the Safe that also owns the CREReceiver and the CRE workflow, **not** the Lido Deployer EOA; see [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)). Workflow deployment happens immediately after `runDeploy`, before Stage 2:
+CREReceiver is deployed per L2 network as part of the canary deploy (`deploy-test` / `runDeployTest`): it is deployed before the `SyncTrigger`, which is then constructed with `forwarder = CREReceiver`, and the receiver's allow-list is seeded with the trigger via `setAllowedCall` once it has code. During the canary the receiver's `expectedAuthor` is pinned to the **Lido Deployer** so the deployer can drive a test sync; `handoff` re-pins it to the **LOL multisig** — the Safe that also owns the CREReceiver, the SyncTrigger, and the CRE workflow, **not** the Lido Deployer EOA (see [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)). Workflow deployment (owned by the LOL Safe) therefore happens **after `handoff`**, once `expectedAuthor` is the Safe:
 
 1. Rewrite `config.deploy.<network>.json` with the deployed addresses — `just -E .env.<network> update-cre-config <network> "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"`.
 2. Deploy the workflow **owned by the LOL Safe**: `just -E .env.<network> deploy-cre-workflow <network>`. This runs `cre workflow deploy … --unsigned`; **execute the emitted `WorkflowRegistry` calldata from the LOL Safe** so the Safe address becomes the workflow owner (= `expectedAuthor`). `CRE_WORKFLOW_OWNER` (defaults to `L2_LIQUIDITY_OWNER`) sets the Safe address.
@@ -83,13 +83,14 @@ The sync workflow is off-chain WASM on Chainlink's CRE platform; its only on-cha
 | `cre workflow pause` / `activate` | LOL Safe (m-of-n) | Stop / start DON execution |
 | `cre workflow delete` | LOL Safe (m-of-n) | Retire the workflow |
 | `cre account link-key` / `unlink-key` | LOL Safe (m-of-n) | Associate / disassociate a wallet (owner-gated) |
-| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report if `shouldSync()` is true |
+| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report only if `shouldSyncAmount()` (amount/delay) is nonzero AND `canSync()` (float, `SYNC_ROLE`, pool-pause) is true; skips a due-but-blocked tick (`shouldSyncAmount() > 0 && !canSync()`) without a report |
 
 - The owner's EVM address (the **Safe address**) is propagated into every report as `metadata.workflowOwner` (bytes `[42:62]`); `CREReceiver._extractWorkflowOwner` reads it and, if `expectedAuthor != 0`, the two must match.
 - The report's `workflowName`/`workflowId` are deliberately **not** checked — authentication is `(forwarder, workflowOwner)` only (an owner-scoped label adds no defence against owner compromise, and the argument-less call-lock already bounds the blast radius; see [DOC.md §2.6](../DOC.md#26-credibility--security-of-the-application-layer-contracts)).
 - Updating the WASM under the same owner does **not** change `metadata.workflowOwner`, so `expectedAuthor` keeps accepting reports after a routine code update.
 - **Rotating a Safe *signer*** (`addOwner` / `swapOwner` / `removeOwner`) does **not** change the Safe address, so it needs **no** `setExpectedAuthor` re-pin and **no** redeploy. Only changing the workflow owner *to a different address* would require `setExpectedAuthor` ×4 — and with a Safe owner that is never needed except in the catastrophic whole-Safe-compromise case ([Workflow-owner key](#workflow-owner-key--lost-vs-compromised-consequences--recovery)).
-- CRE-side pause is instant but depends on Chainlink infra; the authoritative kill switches are on-chain — `LOL → CREReceiver.setForwarder(0)` and `GovExec → SyncTrigger.setForwarder(0)` / `setDelay(max)`. Neither the CRE DON nor the Forwarder is controllable by this project.
+- CRE-side pause is instant but depends on Chainlink infra; the authoritative kill switches are on-chain — `LOL → CREReceiver.setForwarder(0x…dead)` / `SyncTrigger.setForwarder(0x…dead)`, and the independent `GovExec → CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`. Neither the CRE DON nor the Forwarder is controllable by this project.
+- The pinned CRE Forwarder is the ERC-165-gating, 2-arg-`onReport(bytes,bytes)` "Router" build that `CREReceiver` speaks — **verified on-chain (all 4 lanes)**; re-check read-only with `just verify-cre-forwarder`. ⚠ It reports the *stale* `typeAndVersion` label `"KeystoneForwarder 1.0.0"` (not the legacy 3-arg `onReport(bytes32,address,bytes)` contract) — discriminate on the ABI/EXTCODEHASH, never the version string (see [audit-scope §B](audit-scope.md#b-delivery-integrity--forwarder--erc-165-gate)).
 
 ## Workflow-owner key — lost vs compromised (consequences & recovery)
 
@@ -106,12 +107,12 @@ The owner does **not** sign reports — the **DON** signs, and the Safe address 
 |---|---|---|---|
 | **One Safe signer key lost** (below threshold) | Nothing operationally — the Safe still meets quorum; the DON keeps executing the `ACTIVE` workflow; `expectedAuthor` (the Safe address) still matches | `removeOwner` / `swapOwner` inside the Safe — **no redeploy, no `setExpectedAuthor` re-pin** (the Safe address is unchanged) | LOL Safe only; low urgency |
 | **One Safe signer key compromised** (below threshold) | Funds unaffected; attacker holds *one* signer, below quorum, so cannot move the Safe | `swapOwner` / `removeOwner` to evict the signer inside the Safe — no redeploy, no re-pin | LOL Safe only; medium — evict promptly |
-| **Whole Safe compromised** (≥ threshold signers at once) | The same catastrophic event that already loses **every** LOL-held lever (`OraclePool.pause`, `setForwarder`, `setExpectedAuthor`). Funds still bounded by the on-chain gates + GovExec backstop | **Contain** via GovExec `SyncTrigger.setForwarder(0)` / `setDelay(max)` (independent trust domain), then the one-time **"redeploy + re-pin"** primitive under a *new* Safe | GovExec backstop + new Safe; **high** |
+| **Whole Safe compromised** (≥ threshold signers at once) | The same catastrophic event that already loses **every** LOL-held lever (`OraclePool.pause`, `setForwarder`, `setExpectedAuthor`). Funds still bounded by the on-chain gates + GovExec backstop | **Contain** via GovExec `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)` (independent trust domain), then the one-time **"redeploy + re-pin"** primitive under a *new* Safe | GovExec backstop + new Safe; **high** |
 
 The first two rows are the everyday cases and need **no** CRE redeploy and **no** on-chain re-pin — that is the whole point of a Safe owner (a stable address, rotatable signers). Only the third reaches the registry binding, and it coincides with the protocol-wide worst case already accepted everywhere LOL holds power.
 
 **Procedures and rationale (single home — ADR-0001, not duplicated here):**
 
 - **Everyday signer rotation** (signer lost/compromised below threshold) — `swapOwner` / `removeOwner` / `addOwner` inside the Safe; the Safe address is unchanged, so no CRE redeploy and no `setExpectedAuthor` re-pin, and the running workflow is never interrupted. Operator steps: [RUNBOOK → Recover](../RUNBOOK.md).
-- **Whole-Safe compromise + the "redeploy + re-pin" primitive** (R1–R4 with Duty / Gate / Evidence), the GovExec containment backstop, and the **rejected single-EOA alternative** with its full lost-vs-compromised tables and the A.19 / G.5 comparator: **[ADR-0001](adr/0001-cre-workflow-owner-multisig.md)**. Contain first from the independent domain (GovExec `SyncTrigger.setForwarder(0)` / `setDelay(max)`, [§3.4](../DOC.md#34-what-the-project-still-controls-if-chainlink-misbehaves)), then redeploy under a new Safe and re-arm `setExpectedAuthor` last.
+- **Whole-Safe compromise + the "redeploy + re-pin" primitive** (R1–R4 with Duty / Gate / Evidence), the GovExec containment backstop, and the **rejected single-EOA alternative** with its full lost-vs-compromised tables and the A.19 / G.5 comparator: **[ADR-0001](adr/0001-cre-workflow-owner-multisig.md)**. Contain first from the independent domain (GovExec `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`, [§3.4](../DOC.md#34-what-the-project-still-controls-if-chainlink-misbehaves)), then redeploy under a new Safe and re-arm `setExpectedAuthor` last.
 - **Pre-incident hardening** — Safe threshold + diverse signer custody (so losing ≥ threshold at once is implausible), and confirm the Early-Access residuals — especially that the DON embeds the **Safe address** as `metadata.workflowOwner` so `expectedAuthor = Safe` matches: [ADR-0001 "Residuals"](adr/0001-cre-workflow-owner-multisig.md) and RUNBOOK gate G2-author.

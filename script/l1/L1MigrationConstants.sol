@@ -5,7 +5,6 @@ pragma solidity ^0.8.20;
 library L1MigrationConstants {
     // Roles
     bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
-    bytes32 internal constant SYNC_ROLE = keccak256("SYNC_ROLE");
 
     // Owners — same across all networks
     address internal constant INITIAL_OWNER = 0xb5c336a5c60D3482b29d83C742C65AE8351b91a8;

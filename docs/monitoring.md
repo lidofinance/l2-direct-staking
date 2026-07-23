@@ -7,7 +7,9 @@
 
 # Monitoring & alerts (post-migration)
 
-Post-migration monitoring for the shared L1 Receiver + the 4 L2 deployments. Signals marked **(×4)** apply per network; all four must be watched. The state-polling rows map directly to the state-mate YAMLs in `script/<network>/state-mate/`; the event-subscription rows should be wired into an indexer (Tenderly, Dune, or similar). Thresholds in parentheses are starting points — tune after the first week of observation.
+Post-migration monitoring for the shared L1 Receiver + the 4 L2 deployments. Signals marked **(×4)** apply per network; all four must be watched. The state-polling rows map directly to the state-mate configs in `config/state/` (shared `l2.yaml` wiring + per-network `.inputs`/`.deployed` siblings); the event-subscription rows should be wired into an indexer (Tenderly, Dune, or similar). Thresholds in parentheses are starting points — tune after the first week of observation.
+
+> **Runnable spot-check — `just postflight-monitor`.** A stop-gap until the indexer/dashboard wiring exists: it reads the *on-chain-readable* rows below (access-control subset + live wiring cross-checks, trapped funds, sync-liveness, capacity/float headroom) across all four lanes + L1 in one pass, adds best-effort recent-window scans of `CallExecuted` / `MessageFailed` / `Sync` (`MONITOR_WINDOW_HOURS`, default 24 — a snapshot, not coverage), and ends with a footer listing what it *cannot* read one-shot (the event subscriptions, CRE credit, and CCIP/Arbitrum dashboards). It is **not** a replacement for state-mate (the exhaustive §1 oracle) or the event/dashboard rows; it delegates fee/gas headroom (§5) to `just quote-ccip-fees` + `preflight-check` and the CRE registry check (§4) to `just verify-cre-workflow`. The SyncTrigger/CREReceiver rows need `config/state/l2-<net>.deployed.yaml`; absent it, they skip with a "run after deploy-test" note (CustomSender + the new pool are still derived live and cross-checked, so a stale `.deployed.yaml` is caught). Read-only; exits nonzero on any WARN/ALERT/SKIP.
 
 | Severity | Meaning | Response |
 | --- | --- | --- |
@@ -26,7 +28,8 @@ Any deviation = key compromise or unintended governance action.
 | L2 CustomSender (×4) | `hasRole(DEFAULT_ADMIN_ROLE, L2GovExecutor)` / `getRoleMemberCount` | `true` / `1` |
 | L2 CustomSender (×4) | `hasRole(SYNC_ROLE, newSyncTrigger)` / `getRoleMemberCount(SYNC_ROLE)` | `true` / `1` |
 | L2 CustomSender (×4) | `getOraclePool()` | new OraclePool |
-| L2 ProxyAdmin (×4) / SyncTrigger (×4) | `owner()` | L2 Gov Executor |
+| L2 ProxyAdmin (×4) | `owner()` | L2 Gov Executor |
+| SyncTrigger (×4) | `owner()` | LOL multisig |
 | SyncTrigger (×4) | `getForwarder()` | CREReceiver |
 | CREReceiver (×4) | `owner()` / `getForwarder()` / `getExpectedAuthor()` | LOL multisig / CRE Forwarder / **LOL multisig** (owner == expectedAuthor == CRE workflow owner; ADR-0001) |
 | CREReceiver (×4) | `isCallAllowed(SyncTrigger, 0x340b2b0b)` | `true` |
@@ -56,6 +59,8 @@ Fund-safety does not degrade if sync stalls, but UX does: `fastStake` WETH accum
 | L1 Adapter bridge call ↔ new OraclePool wstETH increase (L2) | 1:1 within bridge SLA (per network) |
 | `CREReceiver.CallExecuted` rate (×4) | ≥ 1 per `syncDelay` (12 h) when pool WETH ≥ `minSyncAmount` |
 | CREReceiver revert rate via CRE Forwarder (×4) | 0 |
+| `SyncTrigger.shouldSyncAmount() > 0` while `canSync()` false (×4) | none sustained — `shouldSyncAmount` nonzero (due-ness) while `canSync` (executability) false means **due but not executable**: a **stall the DON suppresses silently** (it logs `blocked` and emits **no** report, so §3 `CallExecuted` stays flat with no revert spam). Root cause is one of: float < `getMaxFees()` (§5), `SYNC_ROLE` revoked (§1), or OraclePool paused (below). The pairing `shouldSyncAmount() > 0 && !canSync()` **distinguishes a *blocked* lane (amount still reported) from a merely *idle* one** |
+| CCIP lane: dest-chain allow-list (`IRouterClient.isChainSupported(DEST_CHAIN_SELECTOR)`) + RMN curse state (×4) | supported / uncursed. **`canSync` deliberately does NOT gate on these** (unlike float / `SYNC_ROLE` / pause — see its NatSpec; the RMN curse has no single stable view to mirror, and the allow-list is omitted too to keep the predicate free of CCIP-version coupling). So a CCIP **de-allow-list or RMN curse** leaves both `shouldSyncAmount` nonzero and `canSync` returning `true` and every `triggerSync` reverts INSIDE the router — this surfaces as **revert-spam** (the `CREReceiver revert rate` row above spikes), NOT a clean due-but-`!canSync` stall. Subscribe to CCIP allow-list / RMN curse events and page on-call; the lane self-heals once re-allow-listed / un-cursed (`_lastExecution` rolls back on each revert, so it stays armed) |
 | OraclePool `Paused` event (×4) | subscribe; any emit = ops incident (blocks fastStake) |
 
 ## 4. CRE workflow health & funding — HIGH
@@ -78,9 +83,10 @@ Alert on ≥ 2 consecutive crossings to filter transient spikes.
 
 | Signal | Expected | Action |
 |---|---|---|
-| actual CCIP fee / `SyncTrigger.getFeeOtoD().maxFee` (×4) | < 80% | raise `maxFee` before exhaustion |
-| `ccipReceive` gas used / `FeeOtoD.gasLimit` (×4) | < 80% | raise `gasLimit` before OOG reverts |
-| SyncTrigger ETH balance / `getMaxFees().maxNativeFee` (×4) | ≥ 2× (1× is the hard floor — below it the next sync reverts with no named error and the lane stalls) | top up — permissionless ETH send to the trigger ([Funding the float](fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)). Depletion is monotonic (~`actualFee` per sync), so this **will** cross eventually |
+| actual CCIP fee / `SyncTrigger.getFeeOtoD().maxFee` (×4) | < 80% | raise `maxFee` before exhaustion. On **Optimism/Linea** this ratio also climbs with **sync size** (CCIP charges 5 bps, uncapped — not only L1 gas price); the 100 WETH `maxAmount` cap holds it to ~40%, so a higher reading suggests `maxAmount` was raised — see [fee amount-sensitivity](otod-fee-amount-sensitivity.md). |
+| `ccipReceive` gas used / `FeeOtoD.gasLimit` (×4) | < 80% | raise `gasLimit` before OOG reverts (kept ≤ `getMaxGasLimit()` — `setFeeOtoD` rejects an over-cap bump with `SyncTriggerGasLimitAboveMax`) |
+| `SyncTrigger.getMaxGasLimit()` (×4) vs lane FeeQuoter `maxPerMsgGasLimit` | equal (3M Linea / 7M others) — the config-time ceiling mirrors the live cap | subscribe to `MaxGasLimitSet`; if CCIP changes a lane cap, re-seed via `setMaxGasLimit` so the guard stays aligned with `sync`-time reality |
+| SyncTrigger ETH balance / `getMaxFees()` (×4) | ≥ 2× (1× is the hard floor — below it the next sync reverts with the named `SyncTriggerInsufficientFloat` and `canSync()` returns `false`, so the lane stalls but the DON stops submitting) | top up — permissionless ETH send to the trigger ([Funding the float](fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)). Depletion is monotonic (~`actualFee` per sync), so this **will** cross eventually |
 | Arbitrum auto-redeem success rate | 100% | raise `maxGas` / `gasPriceBid` |
 
 ## Intentionally excluded (not alerts)

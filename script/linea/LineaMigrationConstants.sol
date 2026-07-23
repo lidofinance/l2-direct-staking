@@ -7,6 +7,12 @@ library LineaMigrationConstants {
     // L2 governance executor
     address internal constant LIDO_L2_GOVERNANCE_EXECUTOR = 0x74Be82F00CC867614803ffd7f36A2a4aF0405670;
 
+    // Chainlink CRE Keystone forwarder (production) — the sole caller of CREReceiver.onReport().
+    // Fixed per network and Chainlink-operated, so it is pinned here rather than supplied via env.
+    // Source: Chainlink CRE production forwarder directory. Cross-checked against the l2CreForwarder
+    // state-mate anchor by `just verify-constants-sync`.
+    address internal constant CRE_FORWARDER = 0x9eF6468C5f37b976E57d52054c693269479A784d;
+
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
     address internal constant LIQUIDITY_OWNER = 0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6;
 
@@ -33,8 +39,11 @@ library LineaMigrationConstants {
     // L2 SyncTrigger defaults — see README.md §Sync fee parameters for the Glamsterdam fee headroom rationale.
     // Linea's gasLimit baseline is half the others (Linea Message Service uses a leaner adapter).
     uint128 internal constant L2_SYNC_DESTINATION_MAX_FEE = 0.125e18;
-    bool internal constant L2_SYNC_DESTINATION_PAY_IN_LINK = false;
     uint32 internal constant L2_SYNC_DESTINATION_GAS_LIMIT = 500_000;
+    // FeeOtoD gasLimit ceiling = Linea's EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit (the lowest of the four lanes;
+    // docs/fees.md §lane caps, verified on-chain). SyncTrigger._setFeeOtoD rejects gasLimit above this,
+    // so a chain-blind uniform over-bump fails at config time instead of bricking sync (audit-scope C-1).
+    uint32 internal constant L2_SYNC_MAX_GAS_LIMIT = 3_000_000;
     // Linea FeeDtoO uses FeeCodec.encodeLineaL1toL2() which takes no parameters
     uint128 internal constant L2_SYNC_MIN_AMOUNT = 5e18;
     uint128 internal constant L2_SYNC_MAX_AMOUNT = 100e18;
