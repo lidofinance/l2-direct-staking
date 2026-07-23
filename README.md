@@ -20,6 +20,7 @@ viewpoint that matches your task:
 | Doc | Viewpoint — stakeholder · concern | Canonical content |
 |---|---|---|
 | **[RUNBOOK.md](RUNBOOK.md)** | Operator · the migration *recipe / run* | 3-phase checklist (pre-live checks → live run → post-migration validation) with gates `G1–G4`, duties, evidence, and the migration sequence diagram. |
+| **[docs/runbook-liquidity-provider.md](docs/runbook-liquidity-provider.md)** | Liquidity provider (LOL Safe) · new-pool operations | Seed, monitor, top up, and recover wstETH liquidity on the new OraclePool — FPF-structured LP runbook with gates `LP-G0–G4`, duties, and sunset procedure. |
 | **[DOC.md](DOC.md)** | Architect / reviewer · the *resulting state* | Networks, components & provenance, access control & ownership, diagrams, the sync operation, fee **rationale** (§5.2), migration safety notes. |
 | **[docs/fees.md](docs/fees.md)** | Fee-tuning owner (LOL) · economics reference | The four fee quantities, byte layouts, the Glamsterdam headroom bump, and each bridge's refund/failure behavior. |
 | **[docs/otod-fee-amount-sensitivity.md](docs/otod-fee-amount-sensitivity.md)** | Fee-tuning owner (LOL) · fee-vs-amount finding | Whether the OtoD fee scales with the bridged amount (yes on OP/Linea at 5 bps uncapped, flat on Arb/Base), how the 100 WETH cap contains it, and the `maxAmount`↔`maxFee` tuning coupling. |
