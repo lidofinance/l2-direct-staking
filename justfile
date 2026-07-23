@@ -1416,6 +1416,22 @@ simulate-sync:
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runSimulateSync()' --rpc-url "$L2_RPC_URL" --broadcast
 
+# Stage 1 (Deployer): full canary test loop — preflight-check → seed-test-weth → simulate-sync — for
+# optimism, arbitrum and linea in sequence. Each network re-invokes `just` with NETWORK=<net> so the
+# per-network dotenv (.env + .env.<net>) is loaded fresh (see `set dotenv-filename` at the top).
+# Stops at the first failing step. NB simulate-sync fires only if the canary delay (syncDelay in the
+# test-stage overlay) has elapsed since that network's last execution.
+#
+# Usage: just test-sync-all
+test-sync-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for net in optimism arbitrum linea; do
+      echo "=== [$net] preflight-check → seed-test-weth → simulate-sync ==="
+      NETWORK="$net" just preflight-check seed-test-weth simulate-sync
+    done
+    echo "=== test-sync-all: all networks done ==="
+
 # Stage 1→0 (Initial Owner): roll back the activation — repoint CustomSender at the old pool and revoke the
 # new SyncTrigger's SYNC_ROLE. The old automation was never touched, so the predecessor system is restored.
 #
