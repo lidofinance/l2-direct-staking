@@ -156,4 +156,80 @@ from the test pool.
 ## Next after both pass
 
 `just -E .env.<network> handoff` (Deployer: sweep residue, production config, transfer to LOL) —
-see RUNBOOK.md §G2.
+see RUNBOOK.md §G2. Then confirm the result with §3 below **before** the CRE workflow
+registration and `finalize`.
+
+## 3. Post-handoff state checks (read-only, no keys)
+
+`handoff` ends with an in-broadcast assertion of its own result, but that check runs inside
+the same transaction batch that made the changes. The reads below re-observe the state from
+outside, on any machine, and are the recorded G2-handoff evidence (RUNBOOK.md §Gates).
+
+**3.a Aggregate check.**
+
+```sh
+just -E .env.<network> verify-stage2     # Evidence: "Script ran successfully"
+```
+
+Asserts in one shot: pool / trigger / receiver all **LOL-owned**; `CREReceiver` wired to the
+**real CRE forwarder** with the **LOL Safe** as expected author (the deployer stand-ins are
+gone); production delay/amounts restored; the pinned fee blobs / gas-limit ceiling unchanged;
+float ≥ the configured initial float; pool still active (`getOraclePool()` == new pool);
+trigger still holds `SYNC_ROLE`; **Initial Owner still admin** and the governance executor
+**not** yet admin — i.e. the irreversible seal has NOT run.
+
+**3.b Itemized reads (no-`forge` fallback / itemized evidence trail).**
+`source .env.<network>` first; `$LOL`, `$FWD`, `$WETH`, `$WSTETH` are the lane's
+`LIQUIDITY_OWNER`, `CRE_FORWARDER`, `L2_WETH`, `L2_WSTETH` pinned in
+`script/<network>/<Net>MigrationConstants.sol` (Linea's LOL + forwarder differ from the
+other three lanes — always read this lane's file):
+
+```sh
+for c in $L2_ORACLE_POOL $L2_SYNC_TRIGGER $L2_CRE_RECEIVER; do
+  cast call $c 'owner()(address)' --rpc-url $L2_RPC_URL; done      # all == $LOL (deployer is out)
+cast call $L2_CRE_RECEIVER 'getForwarder()(address)' --rpc-url $L2_RPC_URL       # == $FWD (real forwarder, not deployer)
+cast call $L2_CRE_RECEIVER 'getExpectedAuthor()(address)' --rpc-url $L2_RPC_URL  # == $LOL (Safe)
+cast call $L2_CRE_RECEIVER 'isCallAllowed(address,bytes4)(bool)' \
+  $L2_SYNC_TRIGGER 0x340b2b0b --rpc-url $L2_RPC_URL               # triggerSync() allow-listed == true
+cast call $L2_SYNC_TRIGGER 'getDelay()(uint48)' --rpc-url $L2_RPC_URL            # == 43200 (12 h, production)
+cast call $L2_SYNC_TRIGGER 'getAmounts()(uint128,uint128)' --rpc-url $L2_RPC_URL # == 5e18 min, 100e18 max (production)
+cast balance $L2_SYNC_TRIGGER --rpc-url $L2_RPC_URL   # >= 0.5 ETH (handoff topped the float back up)
+cast call $L2_ORACLE_POOL 'paused()(bool)' --rpc-url $L2_RPC_URL                 # == false
+cast call $CS 'getOraclePool()(address)' --rpc-url $L2_RPC_URL   # == $L2_ORACLE_POOL (still active)
+cast call $CS 'hasRole(bytes32,address)(bool)' \
+  0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71 $L2_SYNC_TRIGGER \
+  --rpc-url $L2_RPC_URL                                          # SYNC_ROLE still held == true
+cast call $CS 'hasRole(bytes32,address)(bool)' \
+  0x0000000000000000000000000000000000000000000000000000000000000000 <INITIAL_OWNER_ADDR> \
+  --rpc-url $L2_RPC_URL                                          # Initial Owner still admin == true (seal NOT run)
+cast call $CS 'hasRole(bytes32,address)(bool)' \
+  0x0000000000000000000000000000000000000000000000000000000000000000 <GOV_EXECUTOR_ADDR> \
+  --rpc-url $L2_RPC_URL                                          # LIDO_L2_GOVERNANCE_EXECUTOR admin == false (seal NOT run)
+```
+
+**3.c Test residue swept** — not covered by `verify-stage2`, check explicitly:
+
+```sh
+cast call $WETH   'balanceOf(address)(uint256)' $L2_ORACLE_POOL --rpc-url $L2_RPC_URL  # == 0
+cast call $WSTETH 'balanceOf(address)(uint256)' $L2_ORACLE_POOL --rpc-url $L2_RPC_URL  # == 0 (see note)
+```
+
+> If the §2 CCIP round-trip lands **after** `handoff`, the test wstETH arrives in the
+> now-LOL-owned pool — a nonzero wstETH balance here is that in-flight residue, not a missed
+> sweep. It is LOL-`sweep()`-recoverable, or simply left in place as (a sliver of) pool seed.
+
+**3.d CRE workflow (after LOL registers it).** Once `update-cre-config` +
+`deploy-cre-workflow` have run (RUNBOOK.md §G2-handoff):
+
+```sh
+just -E .env.<network> verify-cre-workflow   # Evidence: ACTIVE, owner == LOL Safe
+```
+
+A green result confirms the *registry* side only. Whether the DON embeds the Safe as the
+report author (`expectedAuthor` gate) is first proven by the first production
+`CREReceiver.CallExecuted` on this lane — gate G2-author; if reports revert `InvalidAuthor`,
+see RUNBOOK.md §G2-author for the re-pin procedure.
+
+The fork rehearsal `test_canaryDeployerSimulatedSyncAndHandoff` (§0.5 siblings) drives the
+same handoff on a fork and hard-asserts this end state — run it pre-broadcast as the keyless
+dress rehearsal of everything above.
