@@ -115,7 +115,7 @@ just -E .env.<network> verify-test       # Evidence: "Script ran successfully"
 ```
 
 Asserts: contracts deployer-owned, `CustomSender.getOraclePool()` == new pool, new trigger
-holds `SYNC_ROLE`, Initial Owner still admin, trigger float fully funded.
+holds `SYNC_ROLE`, governance executor not yet admin (seal not run), trigger float fully funded.
 
 > From this moment L2 `fastStake` routes through the **new** pool, which has no wstETH seed
 > yet — keep the window to the LOL seed short (docs/runbook-liquidity-provider.md);
@@ -159,6 +159,13 @@ from the test pool.
 see RUNBOOK.md §G2. Then confirm the result with §3 below **before** the CRE workflow
 registration and `finalize`.
 
+> ⚠ **Manual sync capability ends at `handoff`.** During Stage 1 the deployer is wired as the
+> `CREReceiver`'s forwarder **and** expected author (deployer-as-CRE), so it can drive
+> `triggerSync()` by hand (§2). `handoff` re-pins the receiver to the real CRE forwarder +
+> LOL-Safe author, and `SyncTrigger.triggerSync()` is `onlyForwarder` (= the receiver) — from
+> that point **only the registered CRE workflow can sync**; no EOA (deployer, LOL, Initial
+> Owner) can trigger one manually. Do all manual sync testing before `handoff`.
+
 ## 3. Post-handoff state checks (read-only, no keys)
 
 `handoff` ends with an in-broadcast assertion of its own result, but that check runs inside
@@ -178,36 +185,22 @@ float ≥ the configured initial float; pool still active (`getOraclePool()` == 
 trigger still holds `SYNC_ROLE`; **Initial Owner still admin** and the governance executor
 **not** yet admin — i.e. the irreversible seal has NOT run.
 
-**3.b Itemized reads (no-`forge` fallback / itemized evidence trail).**
-`source .env.<network>` first; `$LOL`, `$FWD`, `$WETH`, `$WSTETH` are the lane's
-`LIQUIDITY_OWNER`, `CRE_FORWARDER`, `L2_WETH`, `L2_WSTETH` pinned in
-`script/<network>/<Net>MigrationConstants.sol` (Linea's LOL + forwarder differ from the
-other three lanes — always read this lane's file):
+**3.b state-mate validation (independent live-RPC evidence trail).** The itemized state is
+covered by the state-mate production profile (`config/state/l2.yaml` ships production
+defaults — the post-handoff expectation):
 
 ```sh
-for c in $L2_ORACLE_POOL $L2_SYNC_TRIGGER $L2_CRE_RECEIVER; do
-  cast call $c 'owner()(address)' --rpc-url $L2_RPC_URL; done      # all == $LOL (deployer is out)
-cast call $L2_CRE_RECEIVER 'getForwarder()(address)' --rpc-url $L2_RPC_URL       # == $FWD (real forwarder, not deployer)
-cast call $L2_CRE_RECEIVER 'getExpectedAuthor()(address)' --rpc-url $L2_RPC_URL  # == $LOL (Safe)
-cast call $L2_CRE_RECEIVER 'isCallAllowed(address,bytes4)(bool)' \
-  $L2_SYNC_TRIGGER 0x340b2b0b --rpc-url $L2_RPC_URL               # triggerSync() allow-listed == true
-cast call $L2_SYNC_TRIGGER 'getDelay()(uint48)' --rpc-url $L2_RPC_URL            # == 43200 (12 h, production)
-cast call $L2_SYNC_TRIGGER 'getAmounts()(uint128,uint128)' --rpc-url $L2_RPC_URL # == 5e18 min, 100e18 max (production)
-cast balance $L2_SYNC_TRIGGER --rpc-url $L2_RPC_URL   # >= 0.5 ETH (handoff topped the float back up)
-cast call $L2_ORACLE_POOL 'paused()(bool)' --rpc-url $L2_RPC_URL                 # == false
-cast call $CS 'getOraclePool()(address)' --rpc-url $L2_RPC_URL   # == $L2_ORACLE_POOL (still active)
-cast call $CS 'hasRole(bytes32,address)(bool)' \
-  0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71 $L2_SYNC_TRIGGER \
-  --rpc-url $L2_RPC_URL                                          # SYNC_ROLE still held == true
-cast call $CS 'hasRole(bytes32,address)(bool)' \
-  0x0000000000000000000000000000000000000000000000000000000000000000 <INITIAL_OWNER_ADDR> \
-  --rpc-url $L2_RPC_URL                                          # Initial Owner still admin == true (seal NOT run)
-cast call $CS 'hasRole(bytes32,address)(bool)' \
-  0x0000000000000000000000000000000000000000000000000000000000000000 <GOV_EXECUTOR_ADDR> \
-  --rpc-url $L2_RPC_URL                                          # LIDO_L2_GOVERNANCE_EXECUTOR admin == false (seal NOT run)
+just -E .env.$L2_NETWORK test-$L2_NETWORK-upgrade-state-verify
 ```
 
-**3.c Test residue swept** — not covered by `verify-stage2`, check explicitly:
+Evidence: `✔ Total: ≥45 checks passed`. Point of attention: pre-`finalize`, the seal-related
+checks (`CustomSender` `DEFAULT_ADMIN_ROLE` → governance executor, old automation revoked,
+ProxyAdmin owner) are EXPECTED failures — everything else must be green. Full invariant list
+and the two-assurance-layers caveat: RUNBOOK.md §G4.
+
+**3.c Test residue swept** — not covered by `verify-stage2`, check explicitly
+(`source .env.$L2_NETWORK` first; `$WETH`/`$WSTETH` = the lane's `L2_WETH`/`L2_WSTETH` pinned
+in `script/$L2_NETWORK/<Net>MigrationConstants.sol`):
 
 ```sh
 cast call $WETH   'balanceOf(address)(uint256)' $L2_ORACLE_POOL --rpc-url $L2_RPC_URL  # == 0
@@ -218,12 +211,22 @@ cast call $WSTETH 'balanceOf(address)(uint256)' $L2_ORACLE_POOL --rpc-url $L2_RP
 > now-LOL-owned pool — a nonzero wstETH balance here is that in-flight residue, not a missed
 > sweep. It is LOL-`sweep()`-recoverable, or simply left in place as (a sliver of) pool seed.
 
-**3.d CRE workflow (after LOL registers it).** Once `update-cre-config` +
-`deploy-cre-workflow` have run (RUNBOOK.md §G2-handoff):
+**3.d CRE workflow: deploy + verify** — Actor: **LOL** (Safe), per lane, after `handoff`
+and before `finalize` (RUNBOOK.md §G2-handoff — the production sync path must be live before
+the seal; until the pool is seeded no real sync can fire):
 
 ```sh
-just -E .env.<network> verify-cre-workflow   # Evidence: ACTIVE, owner == LOL Safe
+just -E .env.$L2_NETWORK update-cre-config      # fill deploy config with live trigger/receiver addrs
+just -E .env.$L2_NETWORK deploy-cre-workflow    # emits UNSIGNED WorkflowRegistry calldata
+# → execute that calldata FROM THE LOL SAFE (the tx sender becomes the workflow owner —
+#   must equal CREReceiver.expectedAuthor; the recipe aborts up front if they'd mismatch).
+# → record the printed id: CRE_WORKFLOW_ID=... in .env.$L2_NETWORK
+just -E .env.$L2_NETWORK verify-cre-workflow    # Evidence: ACTIVE, owner == LOL Safe
 ```
+
+Points of attention: the workflow owner is the **Safe**, never the CLI EOA (`--unsigned`
+flow; a throwaway `CRE_ETH_PRIVATE_KEY` only inits the RPC client); fund the CRE credit
+under the LOL Safe's CRE account (dashboard-only — docs/monitoring.md §4).
 
 A green result confirms the *registry* side only. Whether the DON embeds the Safe as the
 report author (`expectedAuthor` gate) is first proven by the first production
@@ -233,3 +236,68 @@ see RUNBOOK.md §G2-author for the re-pin procedure.
 The fork rehearsal `test_canaryDeployerSimulatedSyncAndHandoff` (§0.5 siblings) drives the
 same handoff on a fork and hard-asserts this end state — run it pre-broadcast as the keyless
 dress rehearsal of everything above.
+
+## 4. Complete the admin migration (finalize each L2, then L1)
+
+`handoff` moved only the deployer-held ownership (pool / trigger / receiver) and restored
+production params. Still with the **Initial Owner**: `CustomSender` `DEFAULT_ADMIN_ROLE` +
+L2 ProxyAdmin (per lane), and the L1 Receiver admin + L1 ProxyAdmin. This section passes
+those; afterwards only the real liquidity seed remains (docs/runbook-liquidity-provider.md).
+
+```sh
+export L2_NETWORK=<network>   # optimism | arbitrum | base | linea
+```
+
+**4.a Per-L2 governance seal** — Actor: **Initial Owner**, **IRREVERSIBLE**, per lane, only
+after §3 is green (the interlock refuses unless infra is LOL-owned + production-configured):
+
+```sh
+INITIAL_OWNER_PRIVATE_KEY=... just -E .env.$L2_NETWORK finalize
+```
+
+Does: revoke old automation(s) `SYNC_ROLE`; move `DEFAULT_ADMIN_ROLE` Initial Owner →
+governance executor; transfer L2 ProxyAdmin to the executor; float top-up first.
+
+**4.b Per-L2 post-seal reads** (no keys; §3.b's admin checks flip). Addresses
+(`<GOV_EXECUTOR_ADDR>`, `<OLD_AUTOMATION_ADDR>` — Chainlink and/or Gelato, check all the lane
+pins — `<L2_PROXY_ADMIN_ADDR>`) from `script/$L2_NETWORK/<Net>MigrationConstants.sol`:
+
+```sh
+source .env.$L2_NETWORK
+cast call $CS 'hasRole(bytes32,address)(bool)' \
+  0x0000000000000000000000000000000000000000000000000000000000000000 <GOV_EXECUTOR_ADDR> \
+  --rpc-url $L2_RPC_URL                                   # == true  (executor is admin)
+cast call $CS 'hasRole(bytes32,address)(bool)' \
+  0x0000000000000000000000000000000000000000000000000000000000000000 <INITIAL_OWNER_ADDR> \
+  --rpc-url $L2_RPC_URL                                   # == false (Initial Owner sealed out)
+cast call $CS 'hasRole(bytes32,address)(bool)' \
+  0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71 <OLD_AUTOMATION_ADDR> \
+  --rpc-url $L2_RPC_URL                                   # == false (old automation SYNC_ROLE revoked)
+cast call <L2_PROXY_ADMIN_ADDR> 'owner()(address)' --rpc-url $L2_RPC_URL  # == governance executor
+```
+
+> `CustomSender` is not AccessControlEnumerable — these reads prove only the two touched
+> addresses; audit out-of-band admin grants off-chain (`_assertMigrationSteps` note).
+
+**4.c L1 admin migration** — Actor: **Initial Owner**, **IRREVERSIBLE**, run **ONCE** after
+all 4 lanes are sealed. L1 Receiver admin + L1 ProxyAdmin → Lido DAO Agent (pinned
+`L1MigrationConstants.LIDO_DAO_AGENT`, never env):
+
+```sh
+INITIAL_OWNER_PRIVATE_KEY=... just -E .env.$L2_NETWORK migrate-l1   # any lane's env; L1_RPC_URL identical
+```
+
+**4.d L1 post-migration reads** (addresses from `script/l1/L1MigrationConstants.sol`):
+
+```sh
+cast call <L1_RECEIVER_ADDR> 'hasRole(bytes32,address)(bool)' \
+  0x0000000000000000000000000000000000000000000000000000000000000000 <LIDO_DAO_AGENT_ADDR> \
+  --rpc-url $L1_RPC_URL                                   # == true  (DAO Agent is admin)
+cast call <L1_RECEIVER_ADDR> 'hasRole(bytes32,address)(bool)' \
+  0x0000000000000000000000000000000000000000000000000000000000000000 <INITIAL_OWNER_ADDR> \
+  --rpc-url $L1_RPC_URL                                   # == false (Initial Owner out)
+cast call <L1_PROXY_ADMIN_ADDR> 'owner()(address)' --rpc-url $L1_RPC_URL  # == Lido DAO Agent
+```
+
+4.a–4.d green on all lanes ⇒ admin migration complete (deployer + Initial Owner hold
+nothing); remaining: seed the real liquidity.

@@ -1352,12 +1352,21 @@ fund-trigger:
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runFundTrigger()' --rpc-url "$L2_RPC_URL" --broadcast
 
-# Stage 1 (Deployer): seed the pool with WETH so a sync becomes due. Deposits ETH→WETH and transfers it
-# to the pool. WETH is read from the pool's TOKEN_IN (authoritative).
+# Stage 1 (Deployer): seed the pool with WETH so a sync becomes due, and send the SyncTrigger a minimal
+# fee float. Deposits ETH→WETH and transfers it to the pool (WETH is read from the pool's TOKEN_IN,
+# authoritative), then transfers the float to L2_SYNC_TRIGGER.
 #
-# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_ORACLE_POOL.
-# Optional env: L2_TEST_WETH_SEED (wei, default 1e17 = 0.1 WETH; must exceed the canary minAmount —
-#   L2_SYNC_MIN_AMOUNT_TEST / the syncMinAmount anchor in the shared overlay config/state/l2.inputs.test-stage.yaml).
+# NB the amounts are deliberately minimal: the seed equals the test minAmount (shouldSyncAmount uses
+# `>=`, so exactly 0.05 is due), and the 0.13 float clears getMaxFees() on every network
+# (floor = 0.125 on OP/Base/Linea, ≈0.1266 on Arbitrum) — enough for ONE sync. It is BELOW the
+# configured L2_SYNC_TRIGGER_INITIAL_FLOAT (0.5), so `verify-test` fails its "syncTrigger fee float"
+# assert unless `fund-trigger` also ran.
+#
+# Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_ORACLE_POOL,
+#   L2_SYNC_TRIGGER.
+# Optional env: L2_TEST_WETH_SEED (wei, default 5e16 = 0.05 WETH; must be >= the canary minAmount —
+#   L2_SYNC_MIN_AMOUNT_TEST / the syncMinAmount anchor in the shared overlay config/state/l2.inputs.test-stage.yaml);
+#   L2_TEST_TRIGGER_FLOAT (wei, default 1.3e17 = 0.13 ETH; must be >= SyncTrigger.getMaxFees()).
 #
 # Usage: just -E .env.<network> seed-test-weth
 seed-test-weth:
@@ -1366,13 +1375,21 @@ seed-test-weth:
     : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
     : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required to fund/seed; export it before running}"
     : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
     command -v cast >/dev/null 2>&1 || { echo "Missing 'cast' (foundry)" >&2; exit 1; }
-    SEED="${L2_TEST_WETH_SEED:-100000000000000000}"
+    SEED="${L2_TEST_WETH_SEED:-50000000000000000}"
+    FLOAT="${L2_TEST_TRIGGER_FLOAT:-130000000000000000}"
     WETH="$(cast call "$L2_ORACLE_POOL" 'TOKEN_IN()(address)' --rpc-url "$L2_RPC_URL" | tr -d '\r\n')"
     echo "Seeding $SEED wei of WETH ($WETH) into pool $L2_ORACLE_POOL"
     cast send "$WETH" 'deposit()' --value "$SEED" --rpc-url "$L2_RPC_URL" --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY"
     cast send "$WETH" 'transfer(address,uint256)' "$L2_ORACLE_POOL" "$SEED" --rpc-url "$L2_RPC_URL" --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY"
+    echo "Sending $FLOAT wei fee float to SyncTrigger $L2_SYNC_TRIGGER"
+    cast send "$L2_SYNC_TRIGGER" --value "$FLOAT" --rpc-url "$L2_RPC_URL" --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY"
+    MAXFEES="$(cast call "$L2_SYNC_TRIGGER" 'getMaxFees()(uint256)' --rpc-url "$L2_RPC_URL" | awk '{print $1}')"
+    BAL="$(cast balance "$L2_SYNC_TRIGGER" --rpc-url "$L2_RPC_URL")"
     echo "Pool WETH balance: $(cast call "$WETH" 'balanceOf(address)(uint256)' "$L2_ORACLE_POOL" --rpc-url "$L2_RPC_URL")"
+    echo "SyncTrigger balance: $BAL (getMaxFees: $MAXFEES)"
+    [[ "$BAL" -ge "$MAXFEES" ]] || echo "WARNING: SyncTrigger balance < getMaxFees() — canSync will be false (due-but-blocked stall)" >&2
 
 # Stage 1 (Deployer): simulate a CRE-driven sync by calling CREReceiver.onReport directly (the deployer is
 # the configured forwarder + author). Runs onReport → triggerSync → CustomSender.sync. Seed WETH and wait
