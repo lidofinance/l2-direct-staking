@@ -202,7 +202,7 @@ L2_RPC_URL=http://127.0.0.1:8651 just simulate-sync
 
 A successful broadcast runs `onReport → triggerSync → CustomSender.sync` — the end-to-end proof the canary exists to provide.
 
-**6. Stage 1→2 — `handoff`** (Lido Deployer): sweep test residue, restore production config (real CRE forwarder + LOL author + production delay/amounts), top up the float, and transfer all three contracts to the LOL multisig:
+**6. Stage 1→2 — `handoff`** (Lido Deployer): sweep the test residue back to the deployer (pool WETH/wstETH + the SyncTrigger's entire ETH float — the trigger is handed over empty), restore production config (real CRE forwarder + LOL author + production delay/amounts), and transfer all three contracts to the LOL multisig (fund the production float afterwards — permissionless):
 
 ```sh
 L2_RPC_URL=http://127.0.0.1:8651 just handoff

@@ -537,9 +537,9 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be needed");
 
-        // The migration funds the trigger's fee float (production parity). Drain it so this test
-        // exercises the float-ran-dry path: with a 0 balance, triggerSync must revert
-        // when it tries to forward the native CCIP fee from its own balance.
+        // The migration hands the trigger over drained (handoff sweeps the float), but drain defensively
+        // anyway so this test always exercises the float-ran-dry path: with a 0 balance, triggerSync must
+        // revert when it tries to forward the native CCIP fee from its own balance.
         uint256 floatBalance = address(syncTrigger).balance;
         if (floatBalance > 0) {
             vm.prank(lidoL2LiquidityOwner);
@@ -785,22 +785,30 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         }
     }
 
-    /// @dev Production-parity float provenance test: the first post-migration sync must succeed
-    ///      funded ONLY by the float the deploy script itself put on the SyncTrigger. Deliberately
-    ///      no `vm.deal(address(syncTrigger), …)` here — that out-of-band funding in the other
-    ///      sync tests is exactly what masked an unfunded production trigger (the negative case,
+    /// @dev Production-parity float provenance test: the migration hands the trigger over DRAINED
+    ///      (handoff sweeps the whole test float back to the deployer), and the first production sync
+    ///      must succeed funded ONLY by the explicit post-migration funding step (`just fund-trigger` →
+    ///      {fundSyncTrigger}, permissionless on the LOL-owned trigger). Deliberately no
+    ///      `vm.deal(address(syncTrigger), …)` here — that out-of-band funding in the other sync tests
+    ///      is exactly what masked an unfunded production trigger (the negative case,
     ///      `test_syncTriggerRevertsWithInsufficientFees`, proves the revert; this proves the
     ///      production recipe prevents it).
-    function test_productionDeployFundsSyncTriggerFloatForFirstSync() public {
+    function test_fundTriggerStepFundsSyncTriggerFloatForFirstSync() public {
         (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver newCREReceiver) =
             _deployAndMigrateL2Production();
         SyncTrigger syncTrigger = SyncTrigger(payable(newSyncTrigger));
 
-        // Accounting: the deploy funded exactly the configured constant.
+        // The migration end state: the handoff swept the trigger's whole ETH float back to the deployer.
+        assertEq(newSyncTrigger.balance, 0, "migration should hand the trigger over drained");
+
+        // The explicit funding step (permissionless; production runs it as `just fund-trigger`) seeds
+        // exactly the configured constant.
         L2UpgradeConfig memory cfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
         uint256 initialFloat = cfg.syncTriggerInitialFloat;
-        assertEq(newSyncTrigger.balance, initialFloat, "deploy should fund exactly the configured float");
+        vm.deal(address(this), initialFloat);
+        fundSyncTrigger(newSyncTrigger, cfg);
+        assertEq(newSyncTrigger.balance, initialFloat, "fund-trigger should fund exactly the configured float");
 
         // Floor invariant: the float covers at least one worst-case sync (mirrors fundSyncTrigger's guard).
         uint256 maxNativeFee = syncTrigger.getMaxFees();
@@ -819,7 +827,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be needed");
 
-        // First sync, paid solely from the script-funded float (forwarder = CREReceiver in production wiring).
+        // First sync, paid solely from the fund-trigger float (forwarder = CREReceiver in production wiring).
         vm.prank(address(newCREReceiver));
         syncTrigger.triggerSync();
 
@@ -851,15 +859,23 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         creReceiver.onReport(metadata, report);
         assertEq(IERC20(L2_WETH).balanceOf(address(newPool)), 0, "canary sync should pull the pool WETH");
 
-        // Stage 1→2 (Deployer): sweep residue, restore production config, transfer to LOL.
+        // Stage 1→2 (Deployer): sweep residue (pool WETH/wstETH + the trigger's whole ETH float back to
+        // the deployer), restore production config, transfer to LOL.
         address realForwarder = creForwarder;
         L2UpgradeConfig memory prodCfg =
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
-        vm.deal(deployer, prodCfg.syncTriggerInitialFloat); // headroom for the float top-up
+        uint256 deployerEthBefore = deployer.balance;
+        uint256 triggerFloatBefore = address(syncTrigger).balance;
         vm.startPrank(deployer);
-        sweepTestResidue(prodCfg, address(newPool), deployer);
+        sweepTestResidue(prodCfg, address(newPool), address(syncTrigger), deployer);
         handoffToLiquidityOwner(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
         vm.stopPrank();
+
+        // The handoff recovers ALL the deployer-provided funds: the trigger is handed over empty.
+        assertEq(address(syncTrigger).balance, 0, "handoff should drain the trigger's whole ETH float");
+        assertEq(deployer.balance, deployerEthBefore + triggerFloatBefore, "trigger float swept to the deployer");
+        assertEq(IERC20(L2_WETH).balanceOf(address(newPool)), 0, "pool WETH swept");
+        assertEq(IERC20(L2_WSTETH).balanceOf(address(newPool)), 0, "pool wstETH swept");
 
         verifyCanaryStage2(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
 

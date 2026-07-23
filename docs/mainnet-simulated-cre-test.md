@@ -57,7 +57,7 @@ Each recipe is one broadcast by one actor: `just -E .env.<network> <recipe>`.
 - `rollback` ⇒ `runRollback()` — `setOraclePool(oldPool)` + `revokeRole(SYNC_ROLE, syncTrigger)`. The old automation was never revoked, so the predecessor system is fully restored.
 
 ### 1 → 2 — handoff (Deployer) + CRE workflow (LOL)
-- **Deployer:** `handoff` ⇒ `runHandoff()` — sweep test residue; restore production config (`setForwarder(realCRE)`, `setExpectedAuthor(LOL)`, `setDelay(12h)`, `setAmounts(5e18,100e18)`); top the float back up; `transferOwnership(→ LOL)` on all three. The closing assertion against **production** values reverts the whole handoff if any restore was missed.
+- **Deployer:** `handoff` ⇒ `runHandoff()` — sweep the test residue back to the deployer (pool WETH/wstETH + the SyncTrigger's ENTIRE ETH float — the trigger is handed over empty); restore production config (`setForwarder(realCRE)`, `setExpectedAuthor(LOL)`, `setDelay(12h)`, `setAmounts(5e18,100e18)`); `transferOwnership(→ LOL)` on all three. The closing assertion against **production** values reverts the whole handoff if any restore was missed. Fund the production float afterwards (permissionless).
 - **LOL:** `update-cre-config` + `deploy-cre-workflow` — register the production CRE workflow from the Safe (workflow owner = LOL = `expectedAuthor`); verify it now owns the three contracts.
 - Gate: `verify-stage2` ⇒ `runVerifyStage2()`.
 

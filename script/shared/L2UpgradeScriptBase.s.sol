@@ -290,8 +290,10 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         vm.stopBroadcast();
     }
 
-    /// @notice Stage 1→2 (Deployer): sweep test residue, restore production config (real forwarder + LOL
-    ///         author + production delay/amounts), top up the float, and transfer all three contracts to LOL.
+    /// @notice Stage 1→2 (Deployer): sweep the test residue back to the deployer (the pool's available
+    ///         WETH/wstETH + the SyncTrigger's ENTIRE ETH float), restore production config (real forwarder +
+    ///         LOL author + production delay/amounts), and transfer all three contracts to LOL. The trigger
+    ///         is handed over empty; fund the production float afterwards (permissionless).
     function runHandoff() public {
         assertL2ChainId(_expectedChainId());
         uint256 deployerKey = vm.envUint("L2_LIDO_DEPLOYER_PRIVATE_KEY");
@@ -303,7 +305,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         address creReceiver = vm.envAddress("L2_CRE_RECEIVER");
 
         vm.startBroadcast(deployerKey);
-        sweepTestResidue(cfg, oraclePool, deployer);
+        sweepTestResidue(cfg, oraclePool, syncTrigger, deployer);
         handoffToLiquidityOwner(cfg, oraclePool, syncTrigger, creReceiver, _creForwarder());
         vm.stopBroadcast();
     }

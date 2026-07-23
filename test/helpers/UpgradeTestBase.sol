@@ -215,12 +215,11 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
             _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
         address realForwarder = creForwarder;
 
-        // Stage 1→2 (Deployer, current owner of all three): sweep test residue, restore production config,
-        // transfer to the LOL multisig. The real deployer's live balance may not cover the float top-up
-        // inside handoff, so give it headroom on the fork.
-        vm.deal(lidoStage1Deployer, cfg.syncTriggerInitialFloat);
+        // Stage 1→2 (Deployer, current owner of all three): sweep test residue (pool WETH/wstETH + the
+        // trigger's whole ETH float) back to the deployer, restore production config, transfer to the LOL
+        // multisig. The trigger is handed over drained.
         vm.startPrank(lidoStage1Deployer);
-        sweepTestResidue(cfg, address(newPool), lidoStage1Deployer);
+        sweepTestResidue(cfg, address(newPool), newSyncTrigger, lidoStage1Deployer);
         handoffToLiquidityOwner(cfg, address(newPool), newSyncTrigger, address(newCREReceiver), realForwarder);
         vm.stopPrank();
 

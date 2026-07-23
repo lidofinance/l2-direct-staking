@@ -114,8 +114,10 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        // Production wiring sets the SyncTrigger forwarder to the CREReceiver; the deploy funds the
-        // float, so no extra vm.deal is needed.
+        // Production wiring sets the SyncTrigger forwarder to the CREReceiver. The migration hands the
+        // trigger over drained (handoff sweeps the float), so fund it here — the post-migration
+        // `fund-trigger` operational step.
+        vm.deal(newSyncTrigger, 1 ether);
         bytes memory report = abi.encode(newSyncTrigger, abi.encodeCall(SyncTrigger.triggerSync, ()));
 
         // A report authored by the Lido Deployer EOA (a plausible mis-pin / stale workflow) is rejected.

@@ -254,31 +254,6 @@ contract L2UpgradeActions {
         emit L2SyncTriggerFunded(syncTrigger, cfg.syncTriggerInitialFloat);
     }
 
-    /// @dev Top the SyncTrigger's native float back up to `targetFloat` (the configured initial float) if a
-    ///      test or live sync drew it down. Funded from the calling broadcaster; emits L2SyncTriggerFunded
-    ///      with the delta so off-chain provenance sees the top-up the same way it sees the initial
-    ///      fundSyncTrigger. No-op when the balance already meets the target.
-    function _topUpFloat(address syncTrigger, uint256 targetFloat) internal {
-        uint256 balance = syncTrigger.balance;
-        if (balance >= targetFloat) return;
-        uint256 amount = targetFloat - balance;
-        (bool ok,) = payable(syncTrigger).call{value: amount}("");
-        _requireL2PostCondition(ok, "float top-up");
-        emit L2SyncTriggerFunded(syncTrigger, amount);
-    }
-
-    /// @dev Sanity checks the Stage 1 deploy; fails the broadcast if anything is off. The 5-arg form
-    ///      asserts the SyncTrigger/CREReceiver are owned by `cfg.liquidityOwner` (production / post-handoff).
-    function _assertSyncInfrastructure(
-        L2UpgradeConfig memory cfg,
-        address syncTrigger,
-        address creReceiverAddr,
-        address creForwarder,
-        address expectedAuthor
-    ) private view {
-        _assertSyncInfrastructure(cfg, syncTrigger, creReceiverAddr, creForwarder, expectedAuthor, cfg.liquidityOwner, true);
-    }
-
     /// @dev `expectedOwner` is the owner the SyncTrigger/CREReceiver must currently hold — `cfg.liquidityOwner`
     ///      in production / post-handoff, or the Lido Deployer during the canary test window.
     function _assertSyncInfrastructure(
@@ -326,13 +301,13 @@ contract L2UpgradeActions {
             "creReceiver allow-list seed"
         );
         _requireL2PostCondition(Ownable(creReceiverAddr).owner() == expectedOwner, "creReceiver owner");
-        // The float must hold at least the configured initial float. Skipped (`requireFloat == false`) only
-        // for the on-chain canary deploy, which funds the float in a SEPARATE step (`just fund-trigger`) —
-        // verify-test re-asserts it before any sync. fundSyncTrigger seeds it (at deploy in production/tests,
-        // or at fund-trigger in the canary); handoffToLiquidityOwner and finalizeGovernanceSeal replenish it
-        // via _topUpFloat after any test or live sync draws it down (in the canary flow SYNC_ROLE is granted
-        // early, at activateForTesting, so a sync CAN run before the seal), keeping this bound true at every
-        // site that runs this assert with requireFloat = true.
+        // The float must hold at least the configured initial float. Required only during the deployer-owned
+        // test window: at the funded deploy (fundFloat = true) and at verifyCanaryStage1 (the on-chain canary
+        // funds the float in a SEPARATE step, `just fund-trigger` — verify-test re-asserts it before any
+        // sync). The post-handoff sites (handoffToLiquidityOwner, verifyCanaryStage2, finalizeGovernanceSeal)
+        // pass requireFloat = false: sweepTestResidue drains the trigger's whole ETH float back to the
+        // deployer at handoff, and the production float is funded as a separate, permissionless step once
+        // the trigger is LOL-owned — an unfunded trigger is a monitored liveness stall, not a broken invariant.
         if (requireFloat) {
             _requireL2PostCondition(syncTrigger.balance >= cfg.syncTriggerInitialFloat, "syncTrigger fee float");
         }
@@ -507,25 +482,33 @@ contract L2UpgradeActions {
         );
     }
 
-    /// @notice Sweep leftover test TOKEN_IN/TOKEN_OUT out of the pool before the LOL handoff, so production
-    ///         starts from a clean pool and no premature real sync fires once the CRE workflow goes live.
-    ///         Owner-only on the pool. Actor: Deployer (current pool owner).
-    function sweepTestResidue(L2UpgradeConfig memory cfg, address newPool, address recipient) public {
+    /// @notice Sweep the deployer-provided test funds back to `recipient` before the LOL handoff: the
+    ///         pool's leftover TOKEN_IN/TOKEN_OUT (so production starts from a clean pool and no premature
+    ///         real sync fires once the CRE workflow goes live) and the SyncTrigger's ENTIRE native fee
+    ///         float. The trigger is handed over empty — the production float is funded as a separate,
+    ///         permissionless step (`just fund-trigger` / a bare transfer) once the trigger is LOL-owned.
+    ///         Owner-only on both contracts. Actor: Deployer (current owner of both).
+    function sweepTestResidue(L2UpgradeConfig memory cfg, address newPool, address newSyncTrigger, address recipient)
+        public
+    {
         _requireNonZeroL2(newPool);
+        _requireNonZeroL2(newSyncTrigger);
         _requireNonZeroL2(recipient);
         uint256 tokenInBal = IERC20(cfg.tokenIn).balanceOf(newPool);
         if (tokenInBal > 0) IOraclePool(newPool).sweep(cfg.tokenIn, recipient, tokenInBal);
         uint256 tokenOutBal = IERC20(cfg.tokenOut).balanceOf(newPool);
         if (tokenOutBal > 0) IOraclePool(newPool).sweep(cfg.tokenOut, recipient, tokenOutBal);
+        uint256 floatBal = newSyncTrigger.balance;
+        if (floatBal > 0) SyncTrigger(payable(newSyncTrigger)).sweep(address(0), recipient, floatBal);
     }
 
     /// @notice Restore production config on the deployer-owned infra and transfer all three contracts to the
     ///         LOL multisig. Undoes the deployer-as-forwarder test wiring (restores the real CRE forwarder +
-    ///         LOL author) and the production delay/min-amount, tops the float back to the configured
-    ///         initial float (test syncs spend a little — the OtoD overage refunds, so it is small), then
-    ///         transfers ownership. The closing {_assertSyncInfrastructure} against production values is the
-    ///         guardrail: it reverts the whole handoff if ANY restore was missed. Actor: Deployer (current
-    ///         owner of all three).
+    ///         LOL author) and the production delay/min-amount, then transfers ownership. The trigger's test
+    ///         float was swept back to the deployer by {sweepTestResidue}, so the trigger is handed over
+    ///         EMPTY — the production float is funded separately (permissionless) once LOL-owned. The closing
+    ///         {_assertSyncInfrastructure} against production values is the guardrail: it reverts the whole
+    ///         handoff if ANY restore was missed. Actor: Deployer (current owner of all three).
     function handoffToLiquidityOwner(
         L2UpgradeConfig memory cfg,
         address newPool,
@@ -546,17 +529,14 @@ contract L2UpgradeActions {
         cr.setForwarder(realForwarder);
         cr.setExpectedAuthor(cfg.liquidityOwner);
 
-        // Top the float back up to the configured initial float if test syncs drew it down (emits
-        // L2SyncTriggerFunded for the same indexed provenance as the initial fundSyncTrigger).
-        _topUpFloat(newSyncTrigger, cfg.syncTriggerInitialFloat);
-
         transferPoolOwnership(newPool, cfg.liquidityOwner);
         Ownable(newSyncTrigger).transferOwnership(cfg.liquidityOwner);
         transferCREReceiverOwnership(creReceiver, cfg.liquidityOwner);
 
-        // Guardrail: production forwarder + LOL author + production delay/amounts + LOL ownership + float.
+        // Guardrail: production forwarder + LOL author + production delay/amounts + LOL ownership.
+        // requireFloat = false: the trigger is handed over drained (see sweepTestResidue).
         _assertSyncInfrastructure(
-            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, true
+            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, false
         );
     }
 
@@ -572,13 +552,12 @@ contract L2UpgradeActions {
         address creReceiver,
         address realForwarder
     ) public {
-        // A live production sync between handoff and finalize draws the float below the configured initial
-        // float; top it back up FIRST so the float invariant inside the interlock below cannot block this
-        // IRREVERSIBLE seal. No-op on the documented path (pool unfunded until after the seal); funding is
-        // permissionless, so the broadcaster (Initial Owner) can replenish the now-LOL-owned trigger.
-        _topUpFloat(newSyncTrigger, cfg.syncTriggerInitialFloat);
+        // requireFloat = false: the handoff sweeps the trigger's whole ETH float back to the deployer, so
+        // the trigger is expected empty here. The production float is a separate, permissionless funding
+        // step (`just fund-trigger` / bare transfer) — an unfunded trigger is a liveness stall (canSync()
+        // false, DON stops submitting), covered by monitoring, never a reason to block this IRREVERSIBLE seal.
         _assertSyncInfrastructure(
-            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, true
+            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, false
         );
         _requireL2PostCondition(ICustomSender(cfg.customSender).getOraclePool() == newPool, "finalize oraclePool");
         _requireL2PostCondition(
@@ -623,9 +602,10 @@ contract L2UpgradeActions {
     }
 
     /// @notice Read-only verification of the post-handoff, pre-seal state (Stage 2): the three contracts are
-    ///         LOL-owned and production-configured (real forwarder + LOL author + production delay/amounts +
-    ///         float), the pool is active and the SyncTrigger holds SYNC_ROLE, and the Initial Owner still
-    ///         holds CustomSender admin (the irreversible seal has NOT run).
+    ///         LOL-owned and production-configured (real forwarder + LOL author + production delay/amounts),
+    ///         the pool is active and the SyncTrigger holds SYNC_ROLE, and the Initial Owner still holds
+    ///         CustomSender admin (the irreversible seal has NOT run). The float is NOT asserted — the
+    ///         handoff hands the trigger over drained; funding it is a separate permissionless step.
     function verifyCanaryStage2(
         L2UpgradeConfig memory cfg,
         address oraclePool,
@@ -636,7 +616,7 @@ contract L2UpgradeActions {
         _requireNonZeroL2(oraclePool);
         _requireNonZeroL2(realForwarder);
         _assertSyncInfrastructure(
-            cfg, syncTrigger, creReceiverAddr, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, true
+            cfg, syncTrigger, creReceiverAddr, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, false
         );
         _requireL2PostCondition(Ownable(oraclePool).owner() == cfg.liquidityOwner, "oraclePool owner not LOL");
         _requireL2PostCondition(

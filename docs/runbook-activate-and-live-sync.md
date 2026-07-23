@@ -181,9 +181,12 @@ just -E .env.<network> verify-stage2     # Evidence: "Script ran successfully"
 Asserts in one shot: pool / trigger / receiver all **LOL-owned**; `CREReceiver` wired to the
 **real CRE forwarder** with the **LOL Safe** as expected author (the deployer stand-ins are
 gone); production delay/amounts restored; the pinned fee blobs / gas-limit ceiling unchanged;
-float ≥ the configured initial float; pool still active (`getOraclePool()` == new pool);
-trigger still holds `SYNC_ROLE`; **Initial Owner still admin** and the governance executor
-**not** yet admin — i.e. the irreversible seal has NOT run.
+pool still active (`getOraclePool()` == new pool); trigger still holds `SYNC_ROLE`;
+**Initial Owner still admin** and the governance executor **not** yet admin — i.e. the
+irreversible seal has NOT run. The float is NOT asserted: `handoff` sweeps the trigger's
+entire ETH float back to the deployer, so the trigger arrives here **empty** — fund the
+production float as a separate permissionless step (`just fund-trigger` or a bare ETH
+transfer); until then `canSync()` is false and no production sync can fire.
 
 **3.b state-mate validation (independent live-RPC evidence trail).** The itemized state is
 covered by the state-mate production profile (`config/state/l2.yaml` ships production
@@ -205,6 +208,7 @@ in `script/$L2_NETWORK/<Net>MigrationConstants.sol`):
 ```sh
 cast call $WETH   'balanceOf(address)(uint256)' $L2_ORACLE_POOL --rpc-url $L2_RPC_URL  # == 0
 cast call $WSTETH 'balanceOf(address)(uint256)' $L2_ORACLE_POOL --rpc-url $L2_RPC_URL  # == 0 (see note)
+cast balance $L2_SYNC_TRIGGER --rpc-url $L2_RPC_URL                                    # == 0 (float swept to the deployer)
 ```
 
 > If the §2 CCIP round-trip lands **after** `handoff`, the test wstETH arrives in the

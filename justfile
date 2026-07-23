@@ -1450,9 +1450,11 @@ rollback:
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runRollback()' --rpc-url "$L2_RPC_URL" --broadcast
 
-# Stage 1→2 (Deployer): sweep test residue to the deployer, restore production config (real CRE forwarder +
-# LOL author + production delay/amounts), top up the float, and transfer pool + SyncTrigger + CREReceiver to
-# LOL. The in-broadcast assertion against production values reverts if any restore was missed.
+# Stage 1→2 (Deployer): sweep the test residue back to the deployer (pool WETH/wstETH + the SyncTrigger's
+# ENTIRE ETH float — the trigger is handed over empty), restore production config (real CRE forwarder +
+# LOL author + production delay/amounts), and transfer pool + SyncTrigger + CREReceiver to LOL. The
+# in-broadcast assertion against production values reverts if any restore was missed. Fund the production
+# float afterwards (permissionless) — until then canSync() is false and no production sync can fire.
 #
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY,
 #   L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER. Optional: L2_LIQUIDITY_OWNER.

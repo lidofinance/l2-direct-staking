@@ -201,7 +201,8 @@ sequenceDiagram
 
     rect rgb(236, 248, 255)
     Note over LidoDep,CRERecv: 1→2 handoff — runHandoff (single signer: Lido Deployer) — restore production config + transfer to LOL
-    LidoDep->>NewPool: sweep test residue
+    LidoDep->>NewPool: sweep test residue (WETH + wstETH → deployer)
+    LidoDep->>ST: sweep the ENTIRE ETH float → deployer
     LidoDep->>CRERecv: setForwarder(real CRE Forwarder)<br/>setExpectedAuthor(LOL multisig)
     LidoDep->>ST: setDelay(12h)<br/>setAmounts(5e18, 100e18)
     LidoDep->>NewPool: transferOwnership(LOL multisig)
@@ -394,9 +395,12 @@ forge test --match-contract '<Net>PoolUpgradeTest|<Net>CREIntegrationTest'
 ### 1→2 handoff — Duty: **Lido Deployer** (restore + transfer), then **LOL** (CRE workflow), per network
 
 ```sh
-just -E .env.<network> handoff              # Deployer: sweep test residue; restore production config (setForwarder(real
-#   CRE), setExpectedAuthor(LOL), setDelay(12h), setAmounts(5e18,100e18)); top up the float; transferOwnership
-#   (pool, trigger, receiver → LOL). In-broadcast assertion against PRODUCTION values reverts if any restore was missed.
+just -E .env.<network> handoff              # Deployer: sweep test residue back to the deployer (pool WETH/wstETH + the
+#   trigger's ENTIRE ETH float — the trigger is handed over empty); restore production config (setForwarder(real
+#   CRE), setExpectedAuthor(LOL), setDelay(12h), setAmounts(5e18,100e18)); transferOwnership (pool, trigger,
+#   receiver → LOL). In-broadcast assertion against PRODUCTION values reverts if any restore was missed.
+#   Fund the production float afterwards (permissionless — `just fund-trigger` or a bare ETH transfer to the
+#   trigger); until then canSync() is false, so no production sync can fire.
 just -E .env.<network> update-cre-config    # writes deployed addrs into cre config json
 just -E .env.<network> deploy-cre-workflow  # LOL: cre workflow deploy --unsigned; EXECUTE the WorkflowRegistry calldata FROM THE LOL SAFE (CRE_WORKFLOW_OWNER, defaults to L2_LIQUIDITY_OWNER), then append CRE_WORKFLOW_ID= to .env
 just -E .env.<network> verify-cre-workflow  # WorkflowRegistry: owner = LOL multisig (Safe = L2_LIQUIDITY_OWNER), status ACTIVE
