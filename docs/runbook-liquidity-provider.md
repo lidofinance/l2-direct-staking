@@ -314,13 +314,17 @@ runway at ≤2 syncs/day). Details: [`docs/fees.md` §Funding the float](fees.md
 
 ```sh
 # Dry run (read-only preconditions)
-just -E .env.<network> smoke-stake
+SMOKE_SEED_WSTETH=2000000000000000 just -E .env.<network> smoke-stake
 
 # Execute: seeds dust wstETH + fastStake from L2_SMOKE_PRIVATE_KEY
-SMOKE_CONFIRM=yes just -E .env.<network> smoke-stake
+SMOKE_SEED_WSTETH=2000000000000000 SMOKE_CONFIRM=yes just -E .env.<network> smoke-stake
 ```
 
-The dust wstETH remains in the pool and counts toward the full seed.
+`SMOKE_SEED_WSTETH>0` is needed here because this step runs *before* the full seed
+(Step 4) — the pool has no reserve yet, so the signer self-seeds the dust it will
+swap against. The dust wstETH remains in the pool and counts toward the full seed.
+After the pool is funded, the default (`SMOKE_SEED_WSTETH=0`) stakes against the
+existing reserve and the signer needs no wstETH at all.
 
 ### Step 4 — Seed wstETH liquidity
 
@@ -518,7 +522,7 @@ Source: [`lib/chainlink-csr/contracts/utils/PausableImmutableOraclePool.sol`](..
 | `just balances` | All 4 L2s + L1 |
 | `just postflight-monitor` | Live health spot-check (all lanes) |
 | `just -E .env.<network> test-<network>-upgrade-state-verify` | Full state-mate validation |
-| `SMOKE_CONFIRM=yes just -E .env.<network> smoke-stake` | Dust seed + fastStake proof |
+| `SMOKE_CONFIRM=yes just -E .env.<network> smoke-stake` | Dust fastStake proof (add `SMOKE_SEED_WSTETH=2e15` wei if the pool is unfunded) |
 | `just -E .env.<network> verify-cre-workflow` | CRE registry owner + ACTIVE |
 
 Per-network env: `.env.optimism`, `.env.arbitrum`, `.env.base`, `.env.linea` — see

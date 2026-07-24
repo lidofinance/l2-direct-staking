@@ -2211,9 +2211,10 @@ postflight-monitor:
     hdr "===================================================================="
     exit $rc
 
-# Live post-deploy "canary": seed the NEW oracle pool with a little wstETH, stake a dust amount via
-# CustomSender.fastStake, and verify the staker actually received wstETH — a tiny end-to-end proof that
-# the migrated pool services fastStake, before the LOL multisig seeds full liquidity and announces go-live.
+# Live post-deploy "canary": stake a dust amount via CustomSender.fastStake against the NEW oracle
+# pool's wstETH reserve and verify the staker actually received wstETH — a tiny end-to-end proof that
+# the migrated pool services fastStake. By default it stakes against the pool's EXISTING liquidity;
+# for a not-yet-funded pool set SMOKE_SEED_WSTETH>0 to first seed a little wstETH from the signer.
 #
 # MUST run AFTER `activate`: fastStake routes through CustomSender.getOraclePool(), which only points
 # at the new pool once the canary activation has repointed it. The recipe HARD-ABORTS unless the sender points at the target new pool
@@ -2232,21 +2233,22 @@ postflight-monitor:
 # only via a later swap) — not lost, but re-running adds more; size SMOKE_SEED_WSTETH accordingly.
 #
 # Required env: L2_NETWORK; RPC_<NET> (or legacy L2_RPC_URL); L2_SMOKE_PRIVATE_KEY (the canary signer —
-#   must already hold a little wstETH to seed AND native ETH for the dust stake + gas; the wstETH
-#   requirement drops in stake-only mode, see SMOKE_SEED_WSTETH=0 below).
+#   needs only native ETH for the dust stake + gas; wstETH is required only when opting into the
+#   seed step, see SMOKE_SEED_WSTETH below).
 # New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-test) win; when unset the
 #   new pool falls back to l2OraclePool in config/state/l2-<net>.deployed.yaml and the CustomSender to the
 #   l2CustomSender external in config/state/l2-<net>.inputs.yaml. Tokens, chain-id and the old pool also
 #   come from .inputs.yaml (no new hardcodes here, so verify-constants-sync is unaffected).
-# Tunables (all wei): SMOKE_STAKE_AMOUNT (default 1e15 = 0.001), SMOKE_SEED_WSTETH (default 2e15 = 0.002),
+# Tunables (all wei): SMOKE_STAKE_AMOUNT (default 1e15 = 0.001), SMOKE_SEED_WSTETH (default 0),
 #   SMOKE_MIN_OUT (default 0), SMOKE_GAS_BUFFER (default 1e15), SMOKE_STAKE_TOKEN=native|weth (default native).
-# SMOKE_SEED_WSTETH=0 = STAKE-ONLY mode: skip the seed tx and stake against the pool's EXISTING wstETH
-#   reserve (the [4/4] liquidity check moves from the seed amount to the live pool balance; the signer
-#   then needs no wstETH at all, only dust ETH + gas). Use once the pool is already funded.
+# SMOKE_SEED_WSTETH: 0 (the default) = STAKE-ONLY — no seed tx; the [4/4] liquidity check requires the
+#   pool's EXISTING wstETH reserve to cover the expected output, and the signer needs no wstETH at all.
+#   Set >0 (e.g. 2e15) to first transfer that much wstETH from the signer into the pool — for a pool
+#   that has not been funded yet (the original pre-LOL-seed canary flow).
 #
 # Usage:  just -E .env.<net> smoke-stake                    # dry run (read-only)
 #         SMOKE_CONFIRM=yes just -E .env.<net> smoke-stake  # execute (moves real funds)
-# Live canary: seed new pool with a little wstETH, dust-fastStake, verify wstETH received (dry-run by default; SMOKE_CONFIRM=yes moves real funds).
+# Live canary: dust-fastStake against the new pool's wstETH reserve, verify wstETH received (dry-run by default; SMOKE_CONFIRM=yes moves real funds; SMOKE_SEED_WSTETH>0 seeds first).
 smoke-stake:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -2286,12 +2288,12 @@ smoke-stake:
     # New pool: env (printed by deploy-test) wins; else the freshly-generated .deployed.yaml anchor.
     POOL="${L2_ORACLE_POOL:-$( [[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2OraclePool || true )}"
 
-    : "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (must hold a little wstETH to seed — unless SMOKE_SEED_WSTETH=0 — + native ETH for the dust stake + gas)}"
+    : "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (needs native ETH for the dust stake + gas; wstETH only if SMOKE_SEED_WSTETH>0)}"
     SIGNER="$(cast wallet address --private-key "$L2_SMOKE_PRIVATE_KEY" 2>/dev/null | tr -d '\r\n')" || die "invalid L2_SMOKE_PRIVATE_KEY"
 
     STAKE_TOKEN="${SMOKE_STAKE_TOKEN:-native}"
     DUST="${SMOKE_STAKE_AMOUNT:-1000000000000000}"                                            # 1e15 = 0.001
-    SEED="${SMOKE_SEED_WSTETH:-2000000000000000}"                                             # 2e15 = 0.002
+    SEED="${SMOKE_SEED_WSTETH:-0}"                                                            # 0 = stake-only (pool already funded); set >0 to seed first
     MIN_OUT="${SMOKE_MIN_OUT:-0}"
     GAS_BUFFER="${SMOKE_GAS_BUFFER:-1000000000000000}"                                        # 1e15 = 0.001, native ETH gas headroom
     for v in DUST SEED MIN_OUT GAS_BUFFER; do is_uint "${!v}" || die "$v must be a wei integer, got '${!v}'"; done
