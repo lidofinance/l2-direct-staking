@@ -1,5 +1,12 @@
 # RUNBOOK — Pool Switch (activate) + Live Canary Sync
 
+> **Status (2026-07-24): §1 activate, §2 live sync, and `handoff` are DONE on all 4 lanes**
+> (evidence + carriers: RUNBOOK.md §Evidence status). Current work is §3 (post-handoff checks,
+> CRE workflow registration, float funding) — **blocked on Arbitrum + Base**: their handoff
+> (2026-07-23) transferred pool/trigger/receiver + `expectedAuthor` to the superseded LOL Safe
+> `0x5A9d…8A61`, not the required `0xFc83…66E6` (re-pinned 2026-07-24, commit `b6ec13d`); only
+> the old Safe can transfer them onward. §4 `finalize` has not run on any lane.
+>
 > Scope: the next two production steps per network, given the Stage-1 canary contracts are
 > already **deployed** and the trigger float **funded** (see [RUNBOOK.md §Canary validation](../RUNBOOK.md)).
 > Two actors, one broadcast each — **do not co-locate the keys**:
@@ -164,6 +171,9 @@ are the real canary deployer (`L2_TEST_DEPLOYER`) — no local edit needed for m
 
 ## Rollback (only from here, before handoff)
 
+> **No longer available (2026-07-24):** `handoff` has run on all 4 lanes, so the 1→0 rollback
+> window is closed everywhere — the contracts are no longer deployer-owned. Kept for the record.
+
 If the test is unsatisfactory:
 
 ```sh
@@ -176,6 +186,9 @@ complete as sent (recipient pool is encoded at `sync()` time) and are `sweep`-re
 from the test pool.
 
 ## Next after both pass
+
+> **Done on all 4 lanes (2026-07-23/24)** — but on Arbitrum + Base it transferred to the
+> superseded LOL Safe (see the Status note at the top); resolve that before §3 can pass there.
 
 `just -E .env.<network> handoff` (Deployer: sweep residue, production config, transfer to LOL) —
 see RUNBOOK.md §G2. Then confirm the result with §3 below **before** the CRE workflow

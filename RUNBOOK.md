@@ -330,9 +330,30 @@ DIFFYSCAN_EXPLORER_HOSTNAME=base.blockscout.com     just -E .env.base     diffys
 just -E .env.linea    diffyscan
 ```
 
-**Evidence status (run 2026-07-16).** state-mate: all 4 lanes → `Total: 82 checks`, failures exactly
-the documented pre-`activate` expected set (8 on Optimism/Linea; 9 on Arbitrum/Base — the extra one is
-the documented `shouldSyncAmount` old-pool-holds-WETH case) — `activate` has not been run yet.
+**Evidence status (updated 2026-07-24; supersedes the 2026-07-16 entry).** All four lanes have
+broadcast `activate`, the simulated sync, and `handoff` — live on-chain reads (public RPC,
+2026-07-24) confirm on every lane: `CustomSender.getOraclePool()` = new pool, new trigger holds
+`SYNC_ROLE`, and pool/trigger/receiver are no longer deployer-owned. Broadcast receipts (all
+`status 0x1`): Arbitrum + Base `handoff` 2026-07-23 (`broadcast/<Lane>L2Upgrade.s.sol/<chainId>/run-1784820441581.json`
+/ `run-1784820447124.json` — the `runHandoff-latest.json` there was later overwritten by a fork
+rerun), Linea + Optimism 2026-07-24 (`runHandoff-latest.json`).
+
+> ⚠ **Open defect — Arbitrum + Base were handed to the superseded LOL Safe.** Their `handoff`
+> (2026-07-23) predates commit `b6ec13d` (2026-07-24, "update LOL multisig to the required one"),
+> so pool/trigger/receiver owner **and** `expectedAuthor` on those two lanes are
+> `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` (the old pin), not the required Safe
+> `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` (confirmed by live `owner()` /
+> `getExpectedAuthor()` reads, 2026-07-24). Linea + Optimism (handoff 2026-07-24) hold the
+> required Safe. **Remediation duty — the `0x5A9d…` Safe SHALL** `transferOwnership` (pool,
+> trigger, receiver → `0xFc83…`) on Arbitrum + Base, and the new owner re-pins
+> `setExpectedAuthor(0xFc83…)`; the deployer holds nothing post-handoff and cannot fix this.
+> Until then `verify-stage2` / state-mate fail on those lanes, **G2-handoff cannot hold**, and
+> `finalize`'s interlock (asserts owner = the pinned LOL) reverts.
+
+Still pending on **all** lanes: G2-handoff evidence (`verify-stage2` + CRE workflow registration —
+no `CRE_WORKFLOW_ID` recorded in any `.env.<network>`), the production float (trigger balance = 0
+on all lanes — swept at `handoff` as designed; fund before relying on sync), `finalize` (only
+`runFinalizeUnlocked` fork-rehearsal artifacts exist), `migrate-l1`, and the LOL seed.
 diffyscan: on all 4 lanes the pool diffs green (11/11 identical files, both explorer schemes); the
 SyncTrigger + CREReceiver diffs abort at a GitHub 404 — the available PAT has no read grant on
 `lidofinance/l2-direct-staking`. Re-run with a repo-granted PAT to close the diffyscan evidence.
@@ -382,10 +403,11 @@ just -E .env.<network> test-<network>-canary-acceptance
 
 # 5. Full integration suites (PoolUpgrade + CREIntegration, 36 tests/lane) BOUND to the deployed canary.
 #    Bind-only: the four L2_* address vars from .env.<network> are REQUIRED — a missing one is a hard
-#    failure, not a fresh-deploy fallback. Stages the live chain hasn't reached yet (activate → handoff
-#    → finalize) are pranked on the in-process fork, so the suites start from the real deployed
-#    bytecode+state and drive it to the sealed end state. The suites read the lane fork upstream from
-#    L2_<NETWORK>_RPC_URL and L1 from L1_RPC_URL. All four lanes green on the live canary 2026-07-16.
+#    failure, not a fresh-deploy fallback. Stages the live chain hasn't reached yet (only `finalize`
+#    as of 2026-07-24 — activate + handoff have run on all 4 lanes, see §Evidence status) are pranked
+#    on the in-process fork, so the suites start from the real deployed bytecode+state and drive it to
+#    the sealed end state. The suites read the lane fork upstream from L2_<NETWORK>_RPC_URL and L1
+#    from L1_RPC_URL. All four lanes green on the live canary 2026-07-16 (pre-activate state).
 #    NB `just test-acceptance` (G1) reruns these same suites — its environment must carry the four
 #    canary address vars too (source any .env.<network>; the addresses are lane-invariant).
 set -a; source .env.<network>; set +a           # loads the L2_ORACLE_POOL/L2_SYNC_TRIGGER/... quartet
