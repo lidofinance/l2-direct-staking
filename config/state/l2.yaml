@@ -85,12 +85,10 @@ l2:
           args: [*ethMainnetCcipChainSelector]
           result: *l1LidoCustomReceiverBytes32
         hasRole:
-          - args: [*DEFAULT_ADMIN_ROLE, *l2GovernanceExecutor]
-            result: true
+          # missing here "result: true" checks are verified in section ozNonEnumerableAcl
+          # althouth due to non-enumarable ACL we need to do at least these few explicit "has no role" checks
           - args: [*DEFAULT_ADMIN_ROLE, *initialOwner]
             result: false
-          - args: [*SYNC_ROLE, *l2SyncTrigger]
-            result: true
           - args: [*SYNC_ROLE, *l2OldSyncAutomation]
             result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]

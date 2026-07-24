@@ -10,6 +10,14 @@ library L1MigrationConstants {
     address internal constant INITIAL_OWNER = 0xb5c336a5c60D3482b29d83C742C65AE8351b91a8;
     address internal constant LIDO_DAO_AGENT = 0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c;
 
+    // Lido Deployer EOA — same on all four L2 lanes. Deploys the Stage-1 contracts and holds no
+    // standing on-chain power after handoff. Verification-only: the deploy scripts never read it
+    // (the deployer is whoever signs, via L2_LIDO_DEPLOYER_PRIVATE_KEY). Pinning the address here
+    // is what makes the state-mate hasRole(DEFAULT_ADMIN_ROLE, l2LidoDeployer)==false check a real
+    // deployer-renounce assertion; cross-checked against the per-lane l2LidoDeployer anchor by
+    // `just verify-constants-sync`.
+    address internal constant LIDO_DEPLOYER = 0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c;
+
     // L1 contracts
     address internal constant L1_LIDO_CUSTOM_RECEIVER = 0x6F357d53d6bE3238180316BA5F8f11467e164588;
     address internal constant L1_LIDO_CUSTOM_RECEIVER_IMPL = 0x301cBCDA894c932E9EDa3Cf8878f78304e69E367;

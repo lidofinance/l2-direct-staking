@@ -602,6 +602,7 @@ verify-constants-sync:
     sol_l1_recv_impl=$(sol_addr "$L1_SOL" L1_LIDO_CUSTOM_RECEIVER_IMPL)
     sol_initial_owner=$(sol_addr "$L1_SOL" INITIAL_OWNER)
     sol_dao_agent=$(sol_addr "$L1_SOL" LIDO_DAO_AGENT)
+    sol_deployer=$(sol_addr "$L1_SOL" LIDO_DEPLOYER)
     sol_l1_proxy=$(sol_addr "$L1_SOL" L1_PROXY_ADMIN)
     sol_l1_weth=$(sol_addr "$L1_SOL" L1_WETH)
     sol_l1_wsteth=$(sol_addr "$L1_SOL" L1_WSTETH)
@@ -666,6 +667,7 @@ verify-constants-sync:
       expect_eq "l2CcipRouter → L2_CCIP_ROUTER"                                  "$sol_l2_router"     "$(yml_anchor "$sm" l2CcipRouter)"
       expect_eq "l2PriceOracle → L2_PRICE_ORACLE"                                "$sol_l2_oracle"     "$(yml_anchor "$sm" l2PriceOracle)"
       expect_eq "initialOwner → INITIAL_OWNER (L1 shared)"                       "$sol_initial_owner" "$(yml_anchor "$sm" initialOwner)"
+      expect_eq "l2LidoDeployer → LIDO_DEPLOYER (L1 shared)"                     "$sol_deployer"      "$(yml_anchor "$sm" l2LidoDeployer)"
       expect_eq "ethMainnetCcipChainSelector → ETH_CCIP_CHAIN_SELECTOR (L1 shared)" "$sol_eth_selector" "$(yml_anchor "$sm" ethMainnetCcipChainSelector)"
       expect_eq "l1LidoCustomReceiverBytes32 → L1_LIDO_CUSTOM_RECEIVER (L1 shared)" "$sol_l1_recv"   "$(bytes32_to_addr "$(yml_anchor "$sm" l1LidoCustomReceiverBytes32)")"
       if [[ "$net" == "linea" ]]; then
@@ -843,7 +845,8 @@ verify-abi-sync:
 # Rationale: `verify-constants-sync` proves config == Solidity constant (catches drift between two
 # same-team copies) but cannot catch shared contamination; the independent oracle is state-mate-vs
 # -chain. A value that is in NEITHER is verified only by same-provenance equality → false-pass risk.
-# This lint is exactly the guard that would have surfaced the dev-only `l2LidoDeployer` placeholder.
+# This lint is exactly the guard that surfaced the dev-only `l2LidoDeployer` placeholder — now the
+# real deployer, pinned to `L1MigrationConstants.LIDO_DEPLOYER` and off the allowlist below.
 # (Scope: L2 lanes. L1 anchors are covered by the L1 section of `verify-constants-sync`.)
 #
 # Usage: just verify-externals-coverage
@@ -852,15 +855,15 @@ verify-externals-coverage:
     set -uo pipefail
     fail=0; ok=0
     # Anchors that legitimately have NO MigrationConstants.sol address constant (reason each):
-    #   l2LidoDeployer  — dev-fork Anvil acct; real mainnet deployer supplied via env, never committed
-    #                     (its hasRole==false check is vacuous on mainnet — see the inputs.yaml note)
+    #   (l2LidoDeployer was here while it held a dev-fork placeholder — it is now the real deployer,
+    #    constants-checked vs L1MigrationConstants.LIDO_DEPLOYER, so it needs no exemption)
     #   l2OraclePool / l2SyncTrigger / l2CreReceiver — Stage-1 deploy OUTPUTS (not deploy inputs)
     #   lidoDaoAgent    — L2 echo of the L1 DAO agent (the L1 copy IS constants-checked); pinned
     #                     on-chain via BridgeExecutor.getEthereumGovernanceExecutor
     #   ovmL2CrossDomainMessenger — OP-stack standard predeploy; pinned on-chain via BridgeExecutor
     #   lineaMessageService — Linea message-service predeploy; pinned on-chain via LineaBridgeExecutor
     #                         (Linea analogue of ovmL2CrossDomainMessenger; null on the other lanes)
-    allow=" l2LidoDeployer l2OraclePool l2SyncTrigger l2CreReceiver lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
+    allow=" l2OraclePool l2SyncTrigger l2CreReceiver lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
     # Anchor names cross-checked by a `yml_anchor` row in verify-constants-sync. The justfile is
     # invariant across the loop below, so scan it ONCE here (space-padded for the `case` match)
     # rather than re-grepping it per anchor per net.
@@ -3509,9 +3512,12 @@ _acceptance-test:
       # (mainnet-expected) ones, so write the fork's ACTUAL pool/trigger/receiver to a throwaway
       # .deployed.yaml and override via --deployed. The static <net>.inputs.yaml (governance actors,
       # tokens, fee blobs, AND the pre-existing CustomSender proxy/impl + ProxyAdmin) needs no override —
-      # the fork inherits those from forked state and reuses the canonical NET_GOVS/NET_LOLS and the anvil
-      # dev deployer (= the committed l2LidoDeployer) — but it MUST be passed explicitly since the
-      # shared l2.yaml's basename-keyed auto-discovery would otherwise look for l2.inputs.yaml.
+      # the fork inherits those from forked state and reuses the canonical NET_GOVS/NET_LOLS — but it
+      # MUST be passed explicitly since the shared l2.yaml's basename-keyed auto-discovery would
+      # otherwise look for l2.inputs.yaml. The `l2LidoDeployer` anchor is the REAL mainnet deployer
+      # even here: the fork signs with the anvil dev key, but the check is
+      # hasRole(DEFAULT_ADMIN_ROLE, deployer)==false on the INHERITED CustomSender proxy, which holds
+      # for both EOAs — so no fork-specific override is needed.
       fork_deployed="$WORK_DIR/$name.deployed.yaml"
       substep "$name: writing fork .deployed.yaml"
       bash "$ROOT_DIR/script/shared/write-deployed-yaml.sh" "$fork_deployed" \

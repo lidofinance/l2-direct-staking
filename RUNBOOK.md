@@ -484,17 +484,19 @@ End-state invariants state-mate asserts (the **Def of "validated/green"** for a 
 > L2 external/deployed anchor is pinned by at least the constants layer, or is allowlisted with a reason
 > — so none silently rests on same-provenance equality.
 >
-> **Deployer-renounce check (caveat).** The wiring's `hasRole(DEFAULT_ADMIN_ROLE, l2LidoDeployer)==false`
-> uses the **dev-fork** deployer (Anvil acct #0) in the committed mainnet inputs, so on mainnet it passes
-> **vacuously** (that address never held a role here) — it does not prove the real deployer renounced.
-> Note the L2 CustomSender uses *non-enumerable* AccessControl (`ozNonEnumerableAcl`), so for it
-> state-mate checks only the listed (role,address) pairs — the "complete role-member set" guarantee
-> above holds for the enumerable contracts (e.g. L1 Receiver count), not for it. To make this check real
-> on mainnet, wire the actual per-chain deployer and add an `l2LidoDeployer` row to `verify-constants-sync`.
+> **Deployer-renounce check.** The wiring's `hasRole(DEFAULT_ADMIN_ROLE, l2LidoDeployer)==false` uses the
+> **real** Lido Deployer (`0xBeedf0c7…`, the same EOA on all four lanes), pinned to
+> `L1MigrationConstants.LIDO_DEPLOYER` and cross-checked by `verify-constants-sync` — so it is a genuine
+> deployer-renounce assertion. (It previously held the dev-fork Anvil acct #0 and passed **vacuously** on
+> mainnet; fixed.) This matters more than it looks: the L2 CustomSender uses *non-enumerable* AccessControl
+> (`ozNonEnumerableAcl`), so for it state-mate checks only the listed (role,address) pairs — the "complete
+> role-member set" guarantee above holds for the enumerable contracts (e.g. L1 Receiver count), not for it,
+> and this row is the deployer coverage. The check holds in every profile: the deployer holds no
+> `CustomSender` admin pre- or post-handoff, and the dev-fork runs inherit the mainnet proxy (on which
+> neither the real nor the anvil EOA holds admin), so no fork-specific override is needed.
 > The **canary profile's** deployer-as-owner / `getForwarder` / `getExpectedAuthor` is verified via the
-> shared overlay `config/state/l2.inputs.test-stage.yaml` (its two deployer addresses), not this anchor —
-> `l2LidoDeployer` is referenced live only in this `hasRole==false` check. Setting it to the real deployer
-> for a Stage-1 state-mate run likewise makes the check non-vacuous there (the deployer holds no `CustomSender` admin).
+> shared overlay `config/state/l2.inputs.test-stage.yaml` (same EOA), not this anchor —
+> `l2LidoDeployer` is referenced live only in this `hasRole==false` check.
 
 ### Finalize (each requires **G4** for that network)
 

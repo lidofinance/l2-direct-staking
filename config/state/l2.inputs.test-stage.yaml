@@ -17,8 +17,10 @@ externals:
   # Pre-handoff the deployer owns pool / SyncTrigger / CREReceiver AND stands in for the CRE forwarder
   # + workflow author, so both production roles collapse onto the deployer here.
   # ⚠ Committed values = the REAL mainnet canary deployer (L2_TEST_DEPLOYER from deploy-test) — no
-  #   local edit needed for mainnet runs. For a DEV-FORK (anvil) canary run, set BOTH values below to
-  #   the fork deployer (Anvil acct #0, 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266) LOCALLY — do not
-  #   commit (one edit, one file).
+  #   local edit needed for mainnet runs. Same EOA as the base files' `l2LidoDeployer` anchor
+  #   (pinned to L1MigrationConstants.LIDO_DEPLOYER); this overlay redefines only the two roles the
+  #   deployer temporarily stands in for, so it stays a genuine override of the production values.
+  #   For a DEV-FORK (anvil) canary run, set BOTH values below to the fork deployer (Anvil acct #0,
+  #   0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266) LOCALLY — do not commit (one edit, one file).
   - &l2LiquidityOwner "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
   - &l2CreForwarder  "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
