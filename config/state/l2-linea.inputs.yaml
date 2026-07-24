@@ -37,7 +37,7 @@ externals:
   - &l2GovernanceExecutor "0x74Be82F00CC867614803ffd7f36A2a4aF0405670"
   - &lidoDaoAgent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
   - &lineaMessageService "0x508Ca82Df566dCD1B0DE8296e70a96332cD644ec" # LineaBridgeExecutor.LINEA_MESSAGE_SERVICE
-  - &l2LiquidityOwner "0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6"
+  - &l2LiquidityOwner "0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6"
   # ⚠ DEV-FORK deployer only (Anvil acct #0) — NOT the real mainnet deployer (the real key is supplied
   #   via L2_LIDO_DEPLOYER_PRIVATE_KEY env, never committed). The wiring check
   #   hasRole(DEFAULT_ADMIN_ROLE, *l2LidoDeployer)==false is meaningful on a dev fork but passes

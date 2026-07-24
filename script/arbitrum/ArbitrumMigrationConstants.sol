@@ -14,7 +14,7 @@ library ArbitrumMigrationConstants {
     address internal constant CRE_FORWARDER = 0xF8344CFd5c43616a4366C34E3EEE75af79a74482;
 
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
-    address internal constant LIQUIDITY_OWNER = 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61;
+    address internal constant LIQUIDITY_OWNER = 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6;
 
     // L1 adapter (Arbitrum-specific)
     address internal constant L1_ARBITRUM_ADAPTER = 0xBf96561e4519182CFA4cebBf95494D9CA5a316f9;

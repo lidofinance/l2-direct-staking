@@ -14,7 +14,7 @@ library LineaMigrationConstants {
     address internal constant CRE_FORWARDER = 0x9eF6468C5f37b976E57d52054c693269479A784d;
 
     // Liquidity Observation Lab (LOL) multisig — pool owner and liquidity provider
-    address internal constant LIQUIDITY_OWNER = 0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6;
+    address internal constant LIQUIDITY_OWNER = 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6;
 
     // L1 adapter (Linea-specific)
     address internal constant L1_LINEA_ADAPTER = 0x122beD1eB48DC4679DDF2C8fc159e9c498344397;

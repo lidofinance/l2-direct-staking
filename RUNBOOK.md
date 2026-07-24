@@ -51,10 +51,10 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
 
 | Network  | L2 Governance Executor | LOL multisig (pool/CREReceiver/SyncTrigger owner) |
 |----------|------------------------|----------------------------------------|
-| Optimism | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| Arbitrum | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| Base     | `0x0E37599436974a25dDeEdF795C848d30Af46eaCF` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| Linea    | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6` |
+| Optimism | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
+| Arbitrum | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
+| Base     | `0x0E37599436974a25dDeEdF795C848d30Af46eaCF` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
+| Linea    | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
 
 Shared L1: Receiver `0x6F357d53d6bE3238180316BA5F8f11467e164588` · ProxyAdmin
 `0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD` · DAO Agent `0x3e40D7…9C8c` · Initial Owner `0xb5c336…91a8`.
@@ -337,10 +337,11 @@ diffyscan: on all 4 lanes the pool diffs green (11/11 identical files, both expl
 SyncTrigger + CREReceiver diffs abort at a GitHub 404 — the available PAT has no read grant on
 `lidofinance/l2-direct-staking`. Re-run with a repo-granted PAT to close the diffyscan evidence.
 
-One-time prep for a mainnet canary: locally set BOTH deployer anchors in the shared overlay
-`config/state/l2.inputs.test-stage.yaml` (`&l2LiquidityOwner`, `&l2CreForwarder`) to the real deployer
-(`L2_TEST_DEPLOYER` from deploy-test) — **do not commit** (the committed values are the Anvil dev-fork
-account; the file's own header documents this).
+No local prep is needed for a mainnet canary: the committed deployer anchors in the shared overlay
+`config/state/l2.inputs.test-stage.yaml` (`&l2LiquidityOwner`, `&l2CreForwarder`) hold the real
+deployer (`L2_TEST_DEPLOYER` from deploy-test, verified as the live owner of all three canary
+contracts). For a **dev-fork** (anvil) canary run instead, locally set both to the fork deployer
+(Anvil acct #0) — **do not commit** (the file's own header documents this).
 
 ```sh
 # 1. On-chain wiring + config — state-mate with the canary overlay (validate: live reads over RPC).
@@ -393,6 +394,15 @@ forge test --match-contract '<Net>PoolUpgradeTest|<Net>CREIntegrationTest'
 ```
 
 ### 1→2 handoff — Duty: **Lido Deployer** (restore + transfer), then **LOL** (CRE workflow), per network
+
+Before the **first** handoff on any lane, prove the transfer target: `just verify-lol-safe`
+(read-only, all 4 lanes at once) — the LOL Safe is one *address* on all four L2s, but that is four
+independent per-chain deployments; the recipe checks the Safe is **deployed** (has code), answers as
+a Safe, and carries **one signer set + threshold** on every lane. `handoff` transfers the three
+ownerships one-way and cannot enforce this on-chain (during the canary the legitimate owner *is* a
+code-less EOA), and a lane where the Safe was never deployed is bricked exactly as the
+[§Sunset drain-before-renounce note](#4--decommission--sunset-end-of-life) warns. Evidence:
+`OK — LOL Safe 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 deployed on all 4 lanes; one signer set (3-of-6) everywhere.`
 
 ```sh
 just -E .env.<network> handoff              # Deployer: sweep test residue back to the deployer (pool WETH/wstETH + the

@@ -140,6 +140,28 @@ L2→L1 message delivered, WETH staked on L1; wstETH lands back in the **new** p
 
 The deployer later `sweep()`s this test residue during `handoff` — no action now.
 
+## 2.5 Pre-handoff state-mate validation (read-only, no keys)
+
+The independent live-RPC oracle for the **pre-handoff** state — the §3.b sibling with the
+shared test-stage overlay (`config/state/l2.inputs.test-stage.yaml`) describing the
+deployer-owned canary shape (owner / forwarder / author = deployer, test min-amount 0.05e18,
+test delay 60 s). `verify-test` (§1) reads back the same state from the same repo's script —
+state-mate re-derives it from an independently reviewed config (RUNBOOK.md §Def —
+verify vs validate); record this run as part of the G2 evidence before `handoff`:
+
+```sh
+just -E .env.<network> test-<network>-upgrade-state-verify-canary
+```
+
+Evidence: `Total: 82 checks`. Run **after** `activate` (§1): the pre-activate group
+(`getOraclePool` still old pool, new trigger's `SYNC_ROLE` false, `shouldSyncAmount` via the
+old pool) has cleared, so the ONLY expected failures are the finalize-gated group —
+`CustomSender` `DEFAULT_ADMIN_ROLE` still Initial Owner not governance executor (two checks +
+the ACL mirror), legacy automation still holding `SYNC_ROLE`, `proxyAdmin.owner` still Initial
+Owner. Anything else red is a real defect — stop before `handoff`. (Full expected-failure
+annotations: RUNBOOK.md §Canary validation, step 1.) The committed overlay deployer anchors
+are the real canary deployer (`L2_TEST_DEPLOYER`) — no local edit needed for mainnet lanes.
+
 ## Rollback (only from here, before handoff)
 
 If the test is unsatisfactory:
@@ -282,6 +304,14 @@ cast call <L2_PROXY_ADMIN_ADDR> 'owner()(address)' --rpc-url $L2_RPC_URL  # == g
 
 > `CustomSender` is not AccessControlEnumerable — these reads prove only the two touched
 > addresses; audit out-of-band admin grants off-chain (`_assertMigrationSteps` note).
+
+Then re-run the §3.b state-mate production profile — post-seal it must be **fully green**
+(the seal-gated expected failures of §3.b have flipped; this is the RUNBOOK.md §G3 evidence,
+required on all 4 lanes before `migrate-l1`):
+
+```sh
+just -E .env.$L2_NETWORK test-$L2_NETWORK-upgrade-state-verify   # Evidence: exit 0, ✔ Total: … passed, NO failures
+```
 
 **4.c L1 admin migration** — Actor: **Initial Owner**, **IRREVERSIBLE**, run **ONCE** after
 all 4 lanes are sealed. L1 Receiver admin + L1 ProxyAdmin → Lido DAO Agent (pinned

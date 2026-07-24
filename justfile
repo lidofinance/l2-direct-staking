@@ -2688,6 +2688,151 @@ verify-cre-forwarder:
     fi
     exit $rc
 
+# WHY THIS GATE EXISTS: the LOL multisig is ONE Safe address on all four L2s (2026-07 unification;
+# per-lane constants LIQUIDITY_OWNER == the l2LiquidityOwner anchor). "Same address on every chain"
+# is four independent per-chain claims, not one fact: an address string proves nothing about a given
+# chain — the Safe must be DEPLOYED there (code present), must answer as a Safe (getOwners /
+# getThreshold), and the four instances must hold the SAME signer set + threshold (deterministic
+# deploys create them alike, but each chain's instance is mutated independently and can diverge —
+# already today the owner LIST order differs between lanes, which is benign; the SET must not).
+# WHY IT MATTERS: `handoff` transferOwnership()s pool + SyncTrigger + CREReceiver to this address
+# ONE-WAY, and no on-chain check requires the target to have code (during the canary the legitimate
+# owner IS a code-less EOA — the deployer). A handoff on a lane where the Safe was never deployed
+# permanently bricks admin + sweep there (the RUNBOOK §Sunset "drain before renounce" failure mode;
+# the classic multichain-Safe loss class). Run once before the FIRST handoff; idempotent, re-run freely.
+# The LOL address comes from config/state/l2-<net>.inputs.yaml (l2LiquidityOwner anchor; the recipe
+# also asserts all four lanes resolve to ONE address — constants↔yaml drift is verify-constants-sync's
+# job). RPC per lane: RPC_<NET>, falling back to RPC_<NET>_REMOTE, then legacy L2_<NET>_RPC_URL
+# (each candidate is probed — the local proxies are often down). Read-only, no keys.
+# Verify the unified LOL Safe is deployed on all 4 lanes with one signer set + threshold (read-only).
+verify-lol-safe:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    command -v yq >/dev/null 2>&1 || { echo "yq (mikefarah) is required" >&2; exit 1; }
+
+    # `cast call` probe with transport-error retries (same discipline as verify-cre-forwarder: a flaky
+    # RPC surfaces as "unverified", never as a false "not a Safe"). REPLY_STATUS ∈ {ok,revert,rpcerr}.
+    probe () {
+      local url="$1"; shift
+      local attempt out
+      for attempt in 1 2 3 4; do
+        if out="$(cast call "$@" --rpc-url "$url" 2>&1)"; then REPLY_STATUS=ok; REPLY_OUT="$out"; return; fi
+        if grep -qiE 'error sending request|tcp connect|connection (refused|reset|closed|error)|timed out|dns error|deserializ|bad gateway|gateway time|service unavailable|temporarily unavailable|too many requests|server error|status code' <<<"$out"; then
+          REPLY_STATUS=rpcerr; REPLY_OUT="$out"   # transport/server error → loop and retry
+        elif grep -qiE 'execution reverted|revert' <<<"$out"; then
+          REPLY_STATUS=revert; REPLY_OUT="$out"; return
+        else
+          REPLY_STATUS=rpcerr; REPLY_OUT="$out"   # unrecognized failure → treat as transport, retry
+        fi
+      done
+    }
+
+    NETS=( optimism arbitrum base linea )
+    declare -a NAMES LOLS
+    for net in "${NETS[@]}"; do
+      u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
+      NAMES+=("${u:0:1}${net:1}")
+    done
+
+    # ── Resolve each lane's l2LiquidityOwner anchor; the unification claim starts in config —
+    #    all four lanes MUST resolve to one address. ──
+    echo "Resolved from config/state/l2-<net>.inputs.yaml (l2LiquidityOwner):"
+    for i in "${!NETS[@]}"; do
+      inf="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
+      [[ -f "$inf" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $inf" >&2; exit 1; }
+      LOLS[$i]="$(yq '[.. | select(anchor=="l2LiquidityOwner")][0]' "$inf" | tr -d '"')"
+      [[ "${LOLS[$i]}" =~ ^0x[0-9a-fA-F]{40}$ ]] || { echo "  ${NAMES[$i]}: l2LiquidityOwner anchor missing/malformed in $inf" >&2; exit 1; }
+      printf '  %-9s %s\n' "${NAMES[$i]}" "${LOLS[$i]}"
+    done
+    LOL="${LOLS[0]}"
+    for i in "${!NETS[@]}"; do
+      [[ "${LOLS[$i]}" == "$LOL" ]] || { echo "✗ FAIL — lanes disagree on the LOL address (see the list above): the unified-Safe design holds ONE address on all four lanes" >&2; exit 1; }
+    done
+    echo
+
+    rc=0
+    declare -a THRS OSETS   # per-lane threshold + normalized owner set (lowercased, sorted, comma-joined)
+    for i in "${!NAMES[@]}"; do
+      name="${NAMES[$i]}"
+      u="$(echo "${NETS[$i]}" | tr '[:lower:]' '[:upper:]')"
+      echo "──── ${name}  ${LOL} ────"
+      THRS[$i]=""; OSETS[$i]=""
+
+      # RPC: local proxy → remote override → legacy var; each candidate is probed before use.
+      rpc_val=""; rpc_env=""
+      for cand_env in "RPC_$u" "RPC_${u}_REMOTE" "L2_${u}_RPC_URL"; do
+        cand="${!cand_env:-}"
+        [[ -n "$cand" ]] || continue
+        if cast chain-id --rpc-url "$cand" >/dev/null 2>&1; then rpc_val="$cand"; rpc_env="$cand_env"; break; fi
+      done
+      if [[ -z "$rpc_val" ]]; then echo "  ✗ no reachable RPC (tried RPC_$u, RPC_${u}_REMOTE, L2_${u}_RPC_URL)"; rc=1; continue; fi
+      echo "  rpc = \$${rpc_env}"
+
+      pass=1; unver=0
+
+      # 1) deployed — the one property that stops a bricking handoff
+      code="$(cast code "$LOL" --rpc-url "$rpc_val" 2>/dev/null | tr -d '\r')"
+      if [[ -z "$code" ]]; then
+        echo "  ⚠ code unverified (RPC error)"; unver=1
+      elif [[ "$code" == "0x" ]]; then
+        echo "  ✗ NO CODE at ${LOL} on this lane — a handoff here would BRICK pool/trigger/receiver admin + sweep"; pass=0
+      else
+        echo "  ✓ contract deployed (code present)"
+      fi
+
+      if (( pass && ! unver )); then
+        # informational only — the Safe version label (not a discriminator)
+        probe "$rpc_val" "$LOL" 'VERSION()(string)'
+        [[ "$REPLY_STATUS" == ok ]] && echo "  VERSION = ${REPLY_OUT}   (informational)"
+
+        # 2) answers as a Safe: threshold + owners
+        probe "$rpc_val" "$LOL" 'getThreshold()(uint256)'
+        case "$REPLY_STATUS" in
+          ok)     THRS[$i]="$REPLY_OUT"; echo "  ✓ getThreshold() = ${REPLY_OUT}";;
+          revert) echo "  ✗ getThreshold() reverts — not a Safe at this address"; pass=0;;
+          *)      echo "  ⚠ getThreshold() unverified (RPC error)"; unver=1;;
+        esac
+        probe "$rpc_val" "$LOL" 'getOwners()(address[])'
+        case "$REPLY_STATUS" in
+          ok)
+            # Normalize to a SET (strip brackets, lowercase, sort): Safe stores owners as a linked
+            # list whose ORDER legitimately differs between chains; only the set is load-bearing.
+            OSETS[$i]="$(tr -d '[]' <<<"$REPLY_OUT" | tr ',' '\n' | tr -d ' ' | tr '[:upper:]' '[:lower:]' | sed '/^$/d' | sort | paste -s -d, -)"
+            n_owners="$(awk -F, '{print NF}' <<<"${OSETS[$i]}")"
+            echo "  ✓ getOwners() → ${n_owners} owners:"
+            tr ',' '\n' <<<"${OSETS[$i]}" | sed 's/^/      /'
+            ;;
+          revert) echo "  ✗ getOwners() reverts — not a Safe at this address"; pass=0;;
+          *)      echo "  ⚠ getOwners() unverified (RPC error)"; unver=1;;
+        esac
+      fi
+
+      if (( ! pass )); then echo "  ➜ FAIL"; rc=1
+      elif (( unver )); then echo "  ➜ INCOMPLETE — some checks unverified (RPC errors); re-run"; rc=1
+      else echo "  ➜ PASS"; fi
+    done
+
+    # ── Cross-lane identity: same threshold + same owner SET everywhere — the substance of "ONE Safe". ──
+    echo
+    if (( rc == 0 )); then
+      for i in "${!NAMES[@]}"; do
+        if [[ "${THRS[$i]}" != "${THRS[0]}" || "${OSETS[$i]}" != "${OSETS[0]}" ]]; then
+          echo "✗ FAIL — ${NAMES[$i]} differs from ${NAMES[0]} (threshold ${THRS[$i]:-?} vs ${THRS[0]:-?}, or the owner sets above diverge). Same address ≠ same Safe — align the signer sets before treating the four instances as one actor."
+          rc=1
+        fi
+      done
+    fi
+
+    if (( rc == 0 )); then
+      n_owners="$(awk -F, '{print NF}' <<<"${OSETS[0]}")"
+      echo "OK — LOL Safe ${LOL} deployed on all 4 lanes; one signer set (${THRS[0]}-of-${n_owners}) everywhere."
+    else
+      echo "FAILures or skips above (rc=${rc})"
+    fi
+    exit $rc
+
 [private]
 _optimism-state-migrate rpc_url='':
     #!/usr/bin/env bash
@@ -3129,7 +3274,7 @@ _acceptance-test:
                    "LineaPoolUpgradeTest|LineaCREIntegrationTest")
     # CustomSender proxy/impl + ProxyAdmin are pre-existing externals (in each l2-<net>.inputs.yaml) and
     # exist in forked state, so the fork .deployed.yaml no longer carries them — no NET_SENDERS/IMPLS/PROXIES.
-    NET_LOLS=(     0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6)
+    NET_LOLS=(     0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6)
     NET_COUNT=${#NET_NAMES[@]}
 
     die() { echo "FAIL: $*" >&2; exit 1; }

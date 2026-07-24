@@ -37,7 +37,7 @@ externals:
   - &initialOwner "0xb5c336a5c60D3482b29d83C742C65AE8351b91a8"
   - &l2GovernanceExecutor "0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29"
   - &lidoDaoAgent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
-  - &l2LiquidityOwner "0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61"
+  - &l2LiquidityOwner "0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6"
   # ⚠ DEV-FORK deployer only (Anvil acct #0) — NOT the real mainnet deployer (the real key is supplied
   #   via L2_LIDO_DEPLOYER_PRIVATE_KEY env, never committed). The wiring check
   #   hasRole(DEFAULT_ADMIN_ROLE, *l2LidoDeployer)==false is meaningful on a dev fork but passes

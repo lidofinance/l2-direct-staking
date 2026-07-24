@@ -331,7 +331,7 @@ first, then the contract actors, then the external (Chainlink) actor.
 |---|---|---|---|
 | **Lido DAO Agent** `0x3e40…9C8c` | L1 contract/multisig | Admin of `L1Receiver`; owner of L1 `ProxyAdmin` | every action = Aragon DAO vote (days–weeks) |
 | **L2 Governance Executor** (per net) | L2 bridge-executor contract | Admin of `CustomSender` (incl. `SYNC_ROLE` grant/revoke); owner of L2 `ProxyAdmin` | driven by Lido DAO via the L1→L2 governance bridge; holds the proxy-upgrade and `SYNC_ROLE` kill switches |
-| **LOL multisig** (per net) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver`; owner of `SyncTrigger`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | provides the wstETH seed; holds the CRE pause switch + the `SyncTrigger` sync levers; the workflow is registered under this Safe via `cre workflow deploy --unsigned` (ADR-0001) |
+| **LOL multisig** (one Safe, same address on all 4 L2s) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver`; owner of `SyncTrigger`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | provides the wstETH seed; holds the CRE pause switch + the `SyncTrigger` sync levers; the workflow is registered under this Safe via `cre workflow deploy --unsigned` (ADR-0001) |
 | **Lido Deployer** (EOA, addr TBD) | off-chain key | **nothing in the final state** — but **transiently owns** the new pool / `SyncTrigger` / `CREReceiver` during the canary test (and is the `CREReceiver` forwarder **and** author then, to drive the simulated sync), all restored to production config and transferred to LOL at `handoff` | **no on-chain admin** and **not the CRE workflow owner**; post-migration holds zero on-chain power over Lido contracts. Canary flow: [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md) |
 | **Initial Owner** `0xb5c3…91a8` | EOA — **external (not Lido-controlled)** | **nothing** — revoked from every migrated contract | external migration-handoff key (upstream `chainlink-csr` admin); executes Stage 2 and is renounced once it completes — **but completion across all chains depends on this external party** (§6.4) |
 | **Initial Liquidity Owner** `0x2897…b18c` | EOA | Owner of the **old** pools only | retains `sweep()` on the old pools; no control over any new infrastructure |
@@ -339,14 +339,14 @@ first, then the contract actors, then the external (Chainlink) actor.
 | **`CREReceiver`** (contract) | L2 contract | Is the configured `forwarder` on `SyncTrigger` | accepts reports only from the CRE Forwarder; owned by LOL, which is also its pinned `expectedAuthor` / CRE workflow owner |
 | **CRE Forwarder / CRE network** | Chainlink (external) | The accepted forwarder address; **no on-chain role on Lido contracts** otherwise | **not controllable by Lido**; the §3.4 kill switches override it |
 
-Per-chain accounts (the only thing that varies between L2s):
+Per-chain accounts (the governance executor is the only account that varies between L2s; the LOL multisig is the same Safe address on all four):
 
 | Chain | Governance executor (`CustomSender` admin / proxy owner) | LOL multisig (pool / CREReceiver / SyncTrigger owner) |
 |---|---|---|
-| **Optimism** | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| **Arbitrum** | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| **Base** | `0x0E37599436974a25dDeEdF795C848d30Af46eaCF` | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6` |
+| **Optimism** | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
+| **Arbitrum** | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
+| **Base** | `0x0E37599436974a25dDeEdF795C848d30Af46eaCF` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
+| **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
 | **Ethereum L1** (shared) | Lido DAO Agent `0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c` | — |
 
 > **Why the CRE workflow owner is the LOL multisig (Safe), not an EOA.** Unlike every

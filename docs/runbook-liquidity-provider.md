@@ -45,9 +45,8 @@ L2's wstETH:
 | Base     | `0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452`              |
 | Linea    | `0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F`              |
 
-Note the sender differs per network: OP/Arb/Base use LOL Safe
-`0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61`, Linea uses
-`0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6` (§1.4).
+The sender is the same on every network: LOL Safe
+`0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` (§1.4).
 
 Gate first: **LP-G0 + LP-G1** must hold for that lane before seeding (§3, §4). How to run
 them (full recipe with evidence criteria: [§4 Step 1](#step-1--confirm-wiring-operator-read-only)):
@@ -202,11 +201,9 @@ Resolve live addresses from config — do not hard-code from memory:
 | LOL Safe, tokens, oracle | `config/state/l2-<network>.inputs.yaml` |
 | Pinned constants | `script/<network>/<Network>MigrationConstants.sol` |
 
-| Network                  | LOL multisig (pool owner)                    |
-| ------------------------ | -------------------------------------------- |
-| Optimism, Arbitrum, Base | `0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61` |
-| Linea                    | `0xA8ef4Db842D95DE72433a8b5b8FF40CB7C74C1b6` |
-|                          |                                              |
+| Network      | LOL multisig (pool owner)                    |
+| ------------ | -------------------------------------------- |
+| All networks | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
 
 **Old vs new pool.** Always confirm `CustomSender.getOraclePool()` points at the **new**
 pool before seeding or monitoring. The Initial Liquidity Owner (`0x2897A1…b18c`; full
