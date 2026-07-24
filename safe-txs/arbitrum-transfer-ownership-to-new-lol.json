@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "chainId": "42161",
+  "createdAt": 1784893709000,
+  "meta": {
+    "name": "Arbitrum: transfer pool/trigger/receiver ownership to canonical LOL Safe",
+    "description": "Old LOL Safe 0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61 transfers ownership of OraclePool, SyncTrigger and CREReceiver to the canonical LOL Safe 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 (same address as on Linea/Optimism). Follow-up (new Safe): setExpectedAuthor on CREReceiver.",
+    "txBuilderVersion": "1.16.5",
+    "createdFromSafeAddress": "0x5A9d695c518e95CD6Ea101f2f25fC2AE18486A61",
+    "createdFromOwnerAddress": ""
+  },
+  "transactions": [
+    {
+      "to": "0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8",
+      "value": "0",
+      "data": "0xf2fde38b000000000000000000000000fc832da3d688352c0ab1a32136c7fabbb16d66e6",
+      "contractMethod": {
+        "inputs": [{ "internalType": "address", "name": "newOwner", "type": "address" }],
+        "name": "transferOwnership",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newOwner": "0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6"
+      }
+    },
+    {
+      "to": "0x1594705D5f9BbDb36453ACF15C94d041c0E02c62",
+      "value": "0",
+      "data": "0xf2fde38b000000000000000000000000fc832da3d688352c0ab1a32136c7fabbb16d66e6",
+      "contractMethod": {
+        "inputs": [{ "internalType": "address", "name": "newOwner", "type": "address" }],
+        "name": "transferOwnership",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newOwner": "0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6"
+      }
+    },
+    {
+      "to": "0x29113eD7AE4C97Ee2F20A5511C852aa37C0d6b85",
+      "value": "0",
+      "data": "0xf2fde38b000000000000000000000000fc832da3d688352c0ab1a32136c7fabbb16d66e6",
+      "contractMethod": {
+        "inputs": [{ "internalType": "address", "name": "newOwner", "type": "address" }],
+        "name": "transferOwnership",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "newOwner": "0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6"
+      }
+    }
+  ]
+}
