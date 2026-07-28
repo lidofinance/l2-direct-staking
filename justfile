@@ -3155,6 +3155,9 @@ _state-verify network rpc_url='' overrides='':
 
     RPC_URL="$(resolve_rpc_url)"
     echo "Running state-mate checks for $NETWORK against ${RPC_URL}"
+    # Echo the exact invocation (cwd + argv) so an operator can replay/audit the run by hand.
+    echo "+ cd $STATE_MATE_DIR"
+    echo "+ L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $STATE_MATE_CONFIG ${STATE_MATE_SIBLING_ARGS[*]+${STATE_MATE_SIBLING_ARGS[*]}} --only l2"
 
     set +e
     (
@@ -3169,13 +3172,22 @@ _state-verify network rpc_url='' overrides='':
     perl -pe 's/\r/\n/g' "$STATE_MATE_LOG"
     echo "----- end state-mate output -----"
 
-    [[ "$STATE_MATE_EXIT" -eq 0 ]] || die "state-mate checks failed for $NETWORK"
-    echo "$NETWORK state verification passed"
+    # NB: a failing wiring run does NOT abort here — every remaining config run still executes, so one
+    # invocation reports the COMPLETE picture (a partial pass is the false-pass hazard). Exits are
+    # accumulated and re-raised at the very end.
+    if [[ "$STATE_MATE_EXIT" -eq 0 ]]; then
+      echo "$NETWORK state verification passed"
+    else
+      echo "state-mate checks FAILED for $NETWORK (continuing with the remaining runs)" >&2
+    fi
 
     # Linea-only extras (legacy Gelato keeper de-role) — a separate config run IN ADDITION to the
     # shared l2.yaml; it auto-discovers its own l2-linea-extras.{inputs,deployed}.yaml siblings.
+    EXTRAS_EXIT=0
     if [[ "$NETWORK" == "linea" ]]; then
       echo "Running Linea-only state-mate extras (Gelato de-role) against ${RPC_URL}"
+      echo "+ cd $STATE_MATE_DIR"
+      echo "+ L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $ROOT_DIR/config/state/l2-linea-extras.yaml --only l2"
       set +e
       (
         cd "$STATE_MATE_DIR"
@@ -3183,8 +3195,19 @@ _state-verify network rpc_url='' overrides='':
       ) 2>&1 | tee -a "$STATE_MATE_LOG"
       EXTRAS_EXIT="${PIPESTATUS[0]}"
       set -e
-      [[ "$EXTRAS_EXIT" -eq 0 ]] || die "Linea extras state-mate checks failed"
-      echo "linea extras state verification passed"
+      if [[ "$EXTRAS_EXIT" -eq 0 ]]; then
+        echo "linea extras state verification passed"
+      else
+        echo "Linea extras state-mate checks FAILED" >&2
+      fi
+    fi
+
+    # Single non-zero exit for the whole recipe, naming every run that failed.
+    FAILED_RUNS=()
+    [[ "$STATE_MATE_EXIT" -eq 0 ]] || FAILED_RUNS+=("wiring (config/state/l2.yaml)")
+    [[ "$EXTRAS_EXIT" -eq 0 ]] || FAILED_RUNS+=("linea extras (config/state/l2-linea-extras.yaml)")
+    if (( ${#FAILED_RUNS[@]} > 0 )); then
+      die "state-mate checks failed for $NETWORK: ${FAILED_RUNS[*]}"
     fi
 
 # Run state-mate against the shared L1 mainnet yaml. Post-Stage-2 L1 verification
@@ -3740,13 +3763,27 @@ _balances-l2 label address rpc_url weth wsteth:
 
 # Addresses/tokens read from the state-mate config/state/ siblings: deployed addrs from
 # <net>.deployed.yaml (.deployed.l1/.l2 anchors), tokens from <net>.inputs.yaml (.externals anchors).
+# The Lido Deployer EOA is chain-agnostic (same address on L1 + all four L2s), so its L1 row reads the
+# *l2LidoDeployer anchor off an L2 inputs sibling rather than adding a second copy to l1.inputs.yaml.
 balances-l1:
-    @echo "--- L1 (Ethereum) ---"
-    @just _balances-l1 LidoCustomReceiver "$(yq '.externals[] | select(anchor == "l1LidoCustomReceiver")' config/state/l1.inputs.yaml)" "$L1_RPC_URL" "$(yq '.externals[] | select(anchor == "l1Weth")' config/state/l1.inputs.yaml)" "$(yq '.externals[] | select(anchor == "l1Wsteth")' config/state/l1.inputs.yaml)"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inp="config/state/l1.inputs.yaml"
+    rpc="${L1_RPC_URL:-${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-}}}"
+    [[ -n "$rpc" ]] || { echo "Missing L1 RPC: set L1_RPC_URL or RPC_ETHEREUM_REMOTE" >&2; exit 1; }
+    weth="$(yq '.externals[] | select(anchor == "l1Weth")' "$inp")"
+    wsteth="$(yq '.externals[] | select(anchor == "l1Wsteth")' "$inp")"
+    echo "--- L1 (Ethereum) --- block $(cast block-number --rpc-url "$rpc")"
+    just _balances-l1 LidoDeployer "$(yq '.externals[] | select(anchor == "l2LidoDeployer")' config/state/l2-optimism.inputs.yaml)" "$rpc" "$weth" "$wsteth"
+    echo ""
+    just _balances-l1 LidoCustomReceiver "$(yq '.externals[] | select(anchor == "l1LidoCustomReceiver")' "$inp")" "$rpc" "$weth" "$wsteth"
 
-# Print CustomSender + OraclePool balances for one L2 lane. The new OraclePool comes from
-# config/state/l2-<net>.deployed.yaml; CustomSender + WETH/wstETH token addrs from l2-<net>.inputs.yaml
-# (read once and reused for both sub-calls).
+# Print LidoDeployer + SyncTrigger + CustomSender + OraclePool balances for one L2 lane. New OraclePool
+# and SyncTrigger come from config/state/l2-<net>.deployed.yaml; LidoDeployer, CustomSender and the
+# WETH/wstETH token addrs from l2-<net>.inputs.yaml (read once and reused for every sub-call).
+# The SyncTrigger row's ETH is the operational number: the trigger fronts CCIP fees from its own balance
+# (see docs/fees.md), so this is the remaining fee float. Its WETH/wstETH rows should read 0 — the trigger
+# never custodies tokens, so a non-zero one is stranded dust, not float.
 [no-exit-message]
 _balances-net net label rpc_url:
     #!/usr/bin/env bash
@@ -3755,22 +3792,28 @@ _balances-net net label rpc_url:
     inp="config/state/l2-{{net}}.inputs.yaml"
     weth="$(yq '.externals[] | select(anchor == "l2Weth")' "$inp")"
     wsteth="$(yq '.externals[] | select(anchor == "l2Wsteth")' "$inp")"
-    echo "--- {{label}} ---"
+    echo "--- {{label}} --- block $(cast block-number --rpc-url "{{rpc_url}}")"
+    just _balances-l2 LidoDeployer "$(yq '.externals[] | select(anchor == "l2LidoDeployer")' "$inp")" "{{rpc_url}}" "$weth" "$wsteth"
+    echo ""
+    just _balances-l2 SyncTrigger "$(yq '.deployed.l2[] | select(anchor == "l2SyncTrigger")' "$dep")" "{{rpc_url}}" "$weth" "$wsteth"
+    echo ""
     just _balances-l2 CustomSender "$(yq '.externals[] | select(anchor == "l2CustomSender")' "$inp")" "{{rpc_url}}" "$weth" "$wsteth"
     echo ""
     just _balances-l2 OraclePool "$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' "$dep")" "{{rpc_url}}" "$weth" "$wsteth"
 
+# RPC precedence per lane: L2_<NET>_RPC_URL (fork-test convention) > RPC_<NET>_REMOTE (upstream) > RPC_<NET>
+# (local fork proxy). The last is often down, so it is the fallback, not the default.
 balances-optimism:
-    @just _balances-net optimism Optimism "$L2_OPTIMISM_RPC_URL"
+    @just _balances-net optimism Optimism "${L2_OPTIMISM_RPC_URL:-${RPC_OPTIMISM_REMOTE:-$RPC_OPTIMISM}}"
 
 balances-arbitrum:
-    @just _balances-net arbitrum Arbitrum "$L2_ARBITRUM_RPC_URL"
+    @just _balances-net arbitrum Arbitrum "${L2_ARBITRUM_RPC_URL:-${RPC_ARBITRUM_REMOTE:-$RPC_ARBITRUM}}"
 
 balances-base:
-    @just _balances-net base Base "$L2_BASE_RPC_URL"
+    @just _balances-net base Base "${L2_BASE_RPC_URL:-${RPC_BASE_REMOTE:-$RPC_BASE}}"
 
 balances-linea:
-    @just _balances-net linea Linea "$L2_LINEA_RPC_URL"
+    @just _balances-net linea Linea "${L2_LINEA_RPC_URL:-${RPC_LINEA_REMOTE:-$RPC_LINEA}}"
 
 balances:
     @just balances-l1

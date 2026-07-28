@@ -27,6 +27,7 @@ viewpoint that matches your task:
 | **[docs/cre.md](docs/cre.md)** | CRE operator · workflow lifecycle | CRE workflow setup / deploy / funding / levers + the workflow-owner lost-vs-compromised recovery procedure. |
 | **[docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md)** | Migration operator · the canary deploy flow | The 5-state deploy machine (deployer-owned test → simulated CRE sync → handoff to LOL → governance seal) with per-actor transitions and the 1→0 rollback. |
 | **[docs/development.md](docs/development.md)** | Developer · build / test / scripts | The direct `forge script` reference and the four test layers (unit / CRE / fork-integration / dress rehearsal). |
+| **[docs/funds-snapshot-2026-07-28.md](docs/funds-snapshot-2026-07-28.md)** | Migration operator · block-pinned treasury snapshot | Deployer EOA / SyncTrigger fee float / new-OraclePool balances on L1 + all 4 lanes at 2026-07-28, what the zeros mean, and the funding actions implied. Reproduce with `just balances`. |
 | **[docs/monitoring.md](docs/monitoring.md)** | On-call / SRE · post-migration alerts | The ongoing Signal · Expected · Severity→Response table once a network is live. |
 | **[docs/adr/0001-…](docs/adr/0001-cre-workflow-owner-multisig.md)** | Decision record | Why the CRE workflow owner is the LOL multisig (Safe), the rejected EOA alternative, and the recovery primitive. |
 

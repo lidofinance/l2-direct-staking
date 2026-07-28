@@ -126,10 +126,10 @@ them — it does not redeploy them (except the new pool).
 
 | Component | Where | Purpose | Migration touch |
 |---|---|---|---|
-| **`CustomSenderReferral`** (`CustomSender`) | each L2 | Staking front-end: `fastStake`/`slowStake`/referral; starts the CCIP `sync()` round-trip; holds the oracle-pool pointer and the `SYNC_ROLE`/admin roles. | pool pointer swapped; `SYNC_ROLE` re-granted; admin → L2 governance executor |
+| **`CustomSenderReferral`** (`CustomSender`) | each L2 | Staking front-end: `fastStake`/`slowStake`/referral; starts the CCIP `sync()` round-trip; holds the oracle-pool pointer and the `SYNC_ROLE`/admin roles. **Upgradeable** (transparent proxy — §2.5). | pool pointer swapped; `SYNC_ROLE` re-granted; admin → L2 governance executor |
 | **`PausableImmutableOraclePool`** (new) | each L2 | Holds wstETH liquidity; swaps WETH→wstETH at the oracle rate on `fastStake`. `setOracle`/`setFee` permanently disabled. | **deployed fresh**; owner → LOL multisig |
 | **`PausableImmutableOraclePool`** (old) | each L2 | The pre-migration pool. | left orphaned on purpose (§5.1); owner unchanged (Initial Liquidity Owner) |
-| **`LidoCustomReceiver`** (`L1Receiver`) | L1 (shared) | Receives CCIP messages from all four L2s; stakes WETH→wstETH via Lido; delegates to the per-network L1 adapter to bridge wstETH back. | admin → Lido DAO Agent |
+| **`LidoCustomReceiver`** (`L1Receiver`) | L1 (shared) | Receives CCIP messages from all four L2s; stakes WETH→wstETH via Lido; delegates to the per-network L1 adapter to bridge wstETH back. **Upgradeable** (transparent proxy — §2.5). | admin → Lido DAO Agent |
 | **L1 bridge adapters** ×4 | L1 | Per-network adapter that decodes `FeeDtoO` and pushes wstETH onto the canonical L1→L2 bridge. | immutable; not re-owned |
 | `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper` | L1+L2 | Fee encoding, CCIP send, native-refund helpers. | unchanged |
 
@@ -418,54 +418,188 @@ in structure.
 
 ### 4.1 Diagram A — components + operational flow (value & control)
 
+**Holder arrangement drawn here: 4.2.B** (§4.2.B — a *proposal*, not a decision;
+§4.2.A is what the scripts implement today). The choice touches this diagram in
+exactly two dashed edges (**A**, **B**) and nowhere else: under 4.2.A they point
+at the **LOL multisig** instead of the Automation Owner, and every numbered edge
+below is unchanged between the two. That is 4.2.B's own claim — *"this
+introduces a holder, not a power"* (§4.2.B) — read off the operational face
+rather than restated: if a holder swap changed any call in the value or control
+path, the claim would be false. It does not.
+
+Every arrow now carries the **method actually invoked**, named as the callee
+declares it — and where no single method exists, the arrow says so instead of
+inventing one. The old diagram drew a user call, an internal call, an off-chain
+poll and a token movement with the same solid arrow, so the glyph is now
+load-bearing across three classes (legend below the diagram): a **direct on-chain
+call**, an **asynchronous cross-domain delivery** (two transactions, no
+caller→callee frame), and a **non-transaction** (an off-chain `eth_call`, an
+identity pin, or an owner lever outside the steady state). The gate and the
+effect of each call sit in the table after the diagram, one column each, rather
+than crowding the arrow.
+
 ```mermaid
 flowchart TB
     staker([Staker])
+    AO(["Automation Owner<br/>EOA — 4.2.B holder"])
 
     subgraph L2["L2 (Optimism / Arbitrum / Base / Linea)"]
         CS["CustomSender<br/>(CustomSenderReferral)"]
         NEW["New OraclePool<br/>(PausableImmutableOraclePool)"]
         OLD["Old OraclePool<br/>(orphaned on purpose)"]
-        ST["SyncTrigger<br/>SYNC_ROLE holder"]
+        ST["SyncTrigger<br/>SYNC_ROLE holder · native fee float"]
         CRER["CREReceiver"]
         ROUTER2["CCIP Router (L2)"]
     end
 
     subgraph DON["Chainlink CRE (external — uncontrolled)"]
         WF["CRE workflow<br/>(WASM, every 5 min)"]
-        FWD["CRE Forwarder"]
+        FWD["CRE Forwarder<br/>(KeystoneForwarder, Router build)"]
     end
 
     subgraph L1["Ethereum L1 (shared by all 4 L2s)"]
+        ROUTER1["CCIP Router (L1)"]
         L1R["LidoCustomReceiver"]
-        LIDO["Lido core staking<br/>WETH→wstETH"]
+        LIDO["Lido core staking<br/>wstETH · stETH"]
         ADP["L1 bridge adapter<br/>(per network)"]
     end
 
     BR["Canonical L1→L2 native bridge"]
 
-    %% value flow
-    staker -->|fastStake WETH| CS
-    CS -->|swap, deliver wstETH| NEW
-    NEW -.->|wstETH liquidity| CS
+    %% ── value flow: fastStake ────────────────────────────────────────
+    staker -->|"1 · fastStake<br/>fastStakeReferral"| CS
+    CS -->|"2 · swap"| NEW
+    NEW -->|"3 · wstETH.transfer"| staker
 
-    %% control / trigger flow
-    WF -->|poll shouldSyncAmount + canSync| ST
-    WF -->|signed report| FWD
-    FWD -->|onReport| CRER
-    CRER -->|allow-listed triggerSync| ST
-    ST -->|"trigger sync (SYNC_ROLE)"| CS
+    %% ── control / trigger flow ───────────────────────────────────────
+    WF -.->|"4 · eth_call:<br/>shouldSyncAmount<br/>canSync"| ST
+    WF ==>|"5 · report"| FWD
+    FWD -->|"6 · onReport"| CRER
+    CRER -->|"7 · call: triggerSync"| ST
+    ST -->|"8 · sync"| CS
 
-    %% cross-chain round-trip
-    CS -->|CCIP message + WETH| ROUTER2
-    ROUTER2 ==>|CCIP| L1R
-    L1R -->|stake| LIDO
-    LIDO -->|wstETH| L1R
-    L1R -->|delegatecall| ADP
-    ADP -->|bridge wstETH| BR
-    BR ==>|wstETH back to recipient pool| NEW
-    BR -.->|in-flight at cutover| OLD
+    %% ── cross-chain round-trip ───────────────────────────────────────
+    CS -->|"9 · pull"| NEW
+    CS -->|"10 · ccipSend"| ROUTER2
+    ROUTER2 ==>|"11 · CCIP lane"| ROUTER1
+    ROUTER1 -->|"12 · ccipReceive<br/>processMessage"| L1R
+    L1R -->|"13 · WETH.withdraw<br/>wstETH.receive"| LIDO
+    LIDO -->|"14 · balanceOf delta"| L1R
+    L1R -->|"15 · delegatecall<br/>sendToken"| ADP
+    ADP -->|"16 · depositERC20To<br/>outboundTransfer<br/>bridgeToken"| BR
+    BR ==>|"17 · L2 finalization"| NEW
+    BR -.->|"in-flight at cutover"| OLD
+
+    %% ── 4.2.B holder edges — the ONLY delta vs 4.2.A ─────────────────
+    AO -.->|"A · workflow owner<br/>= expectedAuthor<br/>setExpectedAuthor"| CRER
+    AO -.->|"B · float top-up · sweep<br/>setDelay · setAmounts<br/>setFeeOtoD · setFeeDtoO<br/>setForwarder"| ST
 ```
+
+**Reading the edges.** `-->` a **direct on-chain call** — the label is the method
+*as the callee declares it*, so arrow and label share a subject · `==>` an
+**asynchronous cross-domain delivery**: two transactions on two chains, no
+caller→callee frame, so the label names the mechanism and the table names both
+ends · `-.->` **not a transaction**: an off-chain `eth_call` probe (4), an
+identity pin, or an owner-only lever outside the steady state (A, B).
+
+**The calls, with their gates and effects.** *Gate* is what decides admission;
+*effect* is what the call leaves behind. Rows 6–7 carry the four checks that
+§2.7 and [audit-scope §B](docs/audit-scope.md) split into **authentication**
+(`onlyForwarder`, `workflowOwner == expectedAuthor`) and **authorization**
+(allow-listed `(target, selector)`, nullary calldata).
+
+| # | Call — as declared on the callee | Caller → callee | Gate | Effect |
+|---|---|---|---|---|
+| 1 | `fastStake(token, amount, minAmountOut)` · `fastStakeReferral(token, amount, minAmountOut, referral)`, both `payable` | Staker → `CustomSender` | none — permissionless | pulls WETH from the staker (or wraps native), then row 2 |
+| 2 | `IOraclePool.swap(recipient = staker, amountIn, minAmountOut)`, after `WETH.forceApprove(pool, amount)` | `CustomSender` → new `OraclePool` | `onlySender` + `whenNotPaused` | WETH moves **into** the pool; price from `getOracle()`, `getFee() == 0` |
+| 3 | `IERC20(wstETH).safeTransfer(staker, amountOut)` | new `OraclePool` → Staker | — (inside `swap`) | pool wstETH **leaves to the staker directly** — it never transits `CustomSender` |
+| 4 | `shouldSyncAmount()` · `canSync()` | CRE workflow → `SyncTrigger` | none — `view`, off-chain `eth_call` | no state change; a due-but-`!canSync` tick is suppressed, no report |
+| 5 | `KeystoneForwarder.report(receiver, rawReport, reportContext, signatures)` | DON transmitter → CRE Forwarder | DON quorum signatures | the on-chain landing of an off-chain consensus |
+| 6 | `onReport(metadata, report)` | CRE Forwarder → `CREReceiver` | `onlyForwarder`, and the forwarder's own ERC-165 gate `supportsInterface(0x805f2132)` **and** `(0x01ffc9a7)` | decodes `(target, data)` from the report |
+| 7 | `target.call(data)` where `data` is exactly the 4-byte `triggerSync()` selector | `CREReceiver` → `SyncTrigger` | on the caller: `workflowOwner == getExpectedAuthor()`, `(target, selector)` allow-listed, `data.length == 4` (nullary); on the callee: `onlyForwarder`, where `SyncTrigger`'s forwarder **is** `CREReceiver` | the single dispatchable call; the report author controls no argument |
+| 8 | `sync(DEST_CHAIN_SELECTOR, amount, feeOtoD, feeDtoO)` with `value = getMaxFees()` | `SyncTrigger` → `CustomSender` | `onlyRole(SYNC_ROLE)`; `SyncTrigger` first re-checks `shouldSyncAmount()` and its own float | CCIP fee fronted from the trigger's ETH float; `_lastExecution` stamped |
+| 9 | `IOraclePool.pull(WETH, amount)` | `CustomSender` → new `OraclePool` | `onlySender` + `whenNotPaused` | the accumulated WETH leaves the pool for the sender |
+| 10 | `IRouterClient.ccipSend(destChainSelector, message)` with `value = nativeFee` | `CustomSender` → CCIP Router (L2) | router-side lane checks (allow-list, RMN) | the encoded return recipient is **the pool**, not the sender |
+| 11 | — (no method: CCIP DON attestation, then a separate L1 OffRamp tx) | CCIP Router (L2) ⇒ CCIP Router (L1) | CCIP consensus | delivers message + WETH on L1 |
+| 12 | `ccipReceive(message)`, then the self-call `processMessage(message)` | CCIP Router (L1) → `LidoCustomReceiver` | `onlyCCIPRouter`, then `onlySelf`; source pinned via `getSender` | on failure the message parks for `retryFailedMessage` instead of reverting the lane |
+| 13 | `IWNative.withdraw(amount)`, then a bare value transfer to wstETH, whose `receive()` calls `stETH.submit` and wraps | `LidoCustomReceiver` → Lido core | none — wstETH accepts ETH from anyone | ETH staked, wstETH minted to the receiver |
+| 14 | — (no callback: `balanceOf` before/after inside `_stakeToken`) | Lido core → `LidoCustomReceiver` | — | `staked` = the measured delta, so a rebase cannot inflate the forwarded amount |
+| 15 | `delegatecall BridgeAdapter.sendToken(sourceChainSelector, recipient = pool, amount, feeData)` | `LidoCustomReceiver` → L1 adapter | `onlyDelegator` | runs **in the receiver's own storage and balance** — the adapter holds no funds and no state |
+| 16 | `depositERC20To(...)` (Optimism, Base) · `outboundTransfer(...)` (Arbitrum) · `bridgeToken(...)` (Linea), each after `forceApprove` | L1 adapter → canonical bridge | bridge-side | the one edge whose method genuinely differs per lane |
+| 17 | — (no method: L2-side finalization of the canonical bridge) | canonical bridge ⇒ new `OraclePool` | permissionless | wstETH lands **in the pool**, refilling what row 3 drained; minutes to ~7 days by lane |
+| A | `cre workflow deploy` (EOA-signed registration on `WorkflowRegistry`); `CREReceiver.setExpectedAuthor(...)` | Automation Owner ⇢ `CREReceiver` | `onlyOwner` for the setter | makes `metadata.workflowOwner` in row 7 equal `getExpectedAuthor()` — **not traversed during a sync** |
+| B | plain value transfer to `receive()`; `sweep(...)`; `setDelay` · `setAmounts` · `setFeeOtoD` · `setFeeDtoO`; `setForwarder(0x…dead)` | Automation Owner ⇢ `SyncTrigger` | `onlyOwner` (`receive()` is open) | funds/empties the float row 8 spends and retunes the gates row 4 reads — **not traversed during a sync** |
+
+**Reading the numbers.** 1–3 is one independent user action (`fastStake`) that
+needs no CRE and no L1 leg — it only *drains* pool wstETH and *accumulates* pool
+WETH. 4–8 is the trigger chain; every hop on it that *writes* is gated, and its
+one ungated step (4) writes nothing. 9–17 is the refill round-trip that 8 starts and
+that ends back at the same pool. The two loops meet only at the pool's balances,
+which is why `shouldSyncAmount` (4) reads a *balance* and not an event.
+
+**What is deliberately not on an arrow.** The `~5 min` cadence is a property of
+the workflow, not of edge 4 — the DON polls on its own clock and suppresses a
+due-but-`!canSync` tick with no report at all (§5.1), so no arrow is traversed.
+Edge 8's `value` is `getMaxFees()`, the reserve `triggerSync` pre-flights, **not**
+the fee actually spent; the `maxFeeOtoD` overage refunds to `SyncTrigger` inside
+`sync`. And edges 11 and 17 have no return arrow because neither leg reports
+back: a failed CCIP message parks in `CCIPDefensiveReceiverUpgradeable` for
+`retryFailedMessage`, and a bridge finalization simply appears in the pool.
+
+**Three fixes this pass made to Diagram A, independent of 4.2.A/4.2.B.** They
+were mislabels, not new behaviour: (a) `swap` sends wstETH to the **staker**
+(`recipient = msg.sender` of `fastStake`), not back to `CustomSender` — the old
+`OraclePool -.-> CustomSender` "wstETH liquidity" edge drew a hop that does not
+exist; (b) `sync` calls `OraclePool.pull` to fetch the WETH before building the
+CCIP message — edge 9 was missing entirely, which made the sync leg look like it
+spent the sender's own balance; (c) `ccipReceive` is `onlyCCIPRouter`, so the
+**L1** router is the caller — the old single `ROUTER2 ==> L1R` edge had the L2
+router calling an L1 contract, which is not a thing that can happen.
+
+<details>
+<summary><b>FPF note</b> — why the labels are typed this way</summary>
+
+The request "put the method called on each arrow" is under-specified in the
+`A.6.P` sense: it presumes every arrow states one relation kind (*X calls
+`m()` on Y*), and in Diagram A four different relations were sharing one glyph —
+a direct call, a token movement that is the *effect* of a call on a third
+contract, an off-chain read, and an asynchronous two-transaction delivery.
+Recovering the actual participants first (`A.6.P:4.1`) is what forced the three
+fixes above: the "wstETH liquidity" edge had the wrong participant, and the
+CCIP edge had a *caller* that cannot call. Naming a method on either would have
+published a false claim in a more precise-looking notation.
+
+That is also why the gate and the effect are **columns, not label text**
+(`A.6.B:4.2`, no mixed sentences): the method name is the **action**, `onlySender`
+/ `onlyRole(SYNC_ROLE)` / `onlyForwarder` are **A — admissibility** claims, and
+"WETH moves into the pool" is an **E — work-effect** claim. Three quadrants in one
+arrow label would be one sentence a reader cannot decide as a unit — they are
+decided by different evidence (a gate is read off a modifier, an effect off a
+token transfer), so they get their own cells.
+
+`A.15` keeps row 8 honest: `SYNC_ROLE` is a **role**, `sync(...)` is the
+**method**, and the arrow is a **work occurrence**. The arrow now reads `sync`
+with `onlyRole(SYNC_ROLE)` in the Gate column, rather than the old
+*"trigger sync (SYNC_ROLE)"*, which read as if the role were the thing invoked.
+
+`A.7` governs the 4.2.B overlay. A holder is not a power and not a call, so
+accepting 4.2.B may not redraw the flow — it may only re-point the two dashed
+holder edges. If updating Diagram A for 4.2.B had required touching a numbered
+edge, that would have been evidence *against* §4.2.B's central bound ("nothing in
+4.2.B can reach anything `SyncTrigger.owner` / `CREReceiver.owner` could not
+already reach in 4.2.A"). Edges A and B are dashed for the same reason: neither
+is traversed during a sync. A is an identity **pin** compared inside edge 7, and
+B is an owner lever whose only steady-state trace is the float that edge 8
+spends — which is exactly why a compromise of that key can *force* syncs at times
+and sizes of its choosing and burn the float, yet cannot alter what edges 9–17 do
+with the WETH, cannot touch edges 1–3, and cannot take a wei of pool liquidity
+(§4.2.B "Blast radius").
+
+Diagram A stays the *operational* face and does not become the ownership face
+(`C.30`, `E.17`): `AO` appears with two edges and no `owner()` inventory —
+that inventory is Diagram B's subject (§4.2), where the pool, both `ProxyAdmin`s
+and the gov executor live.
+</details>
 
 ### 4.2 Diagram B — ownership & access control
 
@@ -474,33 +608,45 @@ scripts and state-mate configs currently implement**; **4.2.B is a live proposal
 not a decision** — §4.2.B closes with the open questions a choice would have to
 answer. They differ in *exactly one* respect (who holds the automation-layer
 `owner()` roles), so 4.2.B is written as a delta against 4.2.A rather than a
-second full picture.
+second full picture. §4.1's Diagram A is drawn under **4.2.B**, where the choice
+shows up as two dashed holder edges and no change to any call — which is the
+same claim as this section's "one respect", seen from the operational face.
 
 #### 4.2.A — current: the LOL multisig owns the automation layer
 
 ```mermaid
-flowchart LR
-    DAO["Lido DAO Agent"]
-    GOV["L2 Gov Executor<br/>(per network)"]
-    LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
-    DEP["Lido Deployer<br/>(Stage-1 broadcast only)"]
-    IO["Initial Owner"]
-    ILO["Initial Liquidity Owner"]
-
-    L1R["L1Receiver"]
-    L1PA["L1 ProxyAdmin"]
-    CS["L2 CustomSender"]
-    L2PA["L2 ProxyAdmin"]
-    WFREG["CRE WorkflowRegistry"]
-
-    subgraph AUTO["Automation layer — detachable (see note)"]
-        CRER["CREReceiver"]
-        ST["SyncTrigger"]
+flowchart TB
+    subgraph HOLDERS["Off-chain holders — signers, not bound to one chain"]
+        direction LR
+        LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
+        DEP["Lido Deployer<br/>(Stage-1 broadcast only)"]
+        IO["Initial Owner"]
+        ILO["Initial Liquidity Owner"]
     end
 
-    subgraph POOLS["Liquidity layer — pointer-selected, one live at a time"]
-        NEW["New OraclePool<br/>oracle · fee · SENDER<br/>frozen at deploy"]
-        OLD["Old OraclePool<br/>same wiring, no longer selected"]
+    subgraph L2G["L2 — per network (×4)"]
+        direction LR
+        GOV["L2 Gov Executor<br/>(per network)"]
+        CS["L2 CustomSender<br/>(CustomSenderReferral)<br/>transparent proxy — upgradeable"]
+        L2PA["L2 ProxyAdmin"]
+
+        subgraph AUTO["Automation layer — detachable (see note)"]
+            CRER["CREReceiver"]
+            ST["SyncTrigger"]
+        end
+
+        subgraph POOLS["Liquidity layer — pointer-selected, one live at a time"]
+            NEW["New OraclePool<br/>nothing settable after deploy:<br/>SENDER immutable · setOracle/setFee revert"]
+            OLD["Old OraclePool<br/>same wiring, no longer selected"]
+        end
+    end
+
+    subgraph L1G["L1 — Ethereum mainnet (shared by all four lanes)"]
+        direction LR
+        DAO["Lido DAO Agent"]
+        L1R["L1Receiver<br/>(LidoCustomReceiver)<br/>transparent proxy — upgradeable"]
+        L1PA["L1 ProxyAdmin"]
+        WFREG["CRE WorkflowRegistry"]
     end
 
     DAO -->|admin| L1R
@@ -528,12 +674,27 @@ flowchart LR
 
     ILO -->|"owner — sweep only"| OLD
     IO -.->|revoked — no role| CS
+
+    %% layout only — keeps the L1 group below the L2 group; no power implied
+    CS ~~~ L1G
 ```
 
 **Reading the edges.** `-->` a live power the source can exercise · `==>` a live
 power that is the **single load-bearing seam** between layers · `---` (no
 arrowhead) a bond **nobody** can exercise or change — frozen in bytecode ·
-`-.->` no live call path: revoked, or an identity pin rather than a call.
+`-.->` no live call path: revoked, or an identity pin rather than a call ·
+`~~~` invisible, **layout only** (it pins L1 below L2 and carries no meaning).
+
+**Reading the groups.** Three groups answer three different questions and must
+not be read as one hierarchy: `HOLDERS` is *who signs* (off-chain keys, no
+chain of their own — the LOL Safe is deployed per L2 but is one holder across
+all four); `L2G` / `L1G` is *where the code lives* — `L2G` is drawn once but
+exists ×4 (one independent instance per network), while everything in `L1G` is a
+**single shared instance** all four lanes route through, which is why an L1
+compromise is the higher-blast-radius one (§6.2); `AUTO` / `POOLS` inside `L2G`
+is *what can be swapped* (see the two notes below). No edge crosses `L2G`↔`L1G`
+in this diagram — the cross-chain value path is §4.1's Diagram A, not this one;
+here the two chains are joined only by shared *holders*.
 
 **On the `AUTO` group.** The box answers one question: *which contracts can be
 swapped out without upgrading a proxy or moving value?* `CREReceiver` and
@@ -598,25 +759,35 @@ The pool, both `ProxyAdmin`s, the `CustomSender` admin, and every `SYNC_ROLE`
 power stay exactly as in 4.2.A.
 
 ```mermaid
-flowchart LR
-    DAO["Lido DAO Agent"]
-    GOV["L2 Gov Executor<br/>(per network)"]
-    LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
-    AO["Automation Owner<br/>(EOA — Lido-operated hot key)"]
-
-    L1R["L1Receiver"]
-    L1PA["L1 ProxyAdmin"]
-    CS["L2 CustomSender"]
-    L2PA["L2 ProxyAdmin"]
-    WFREG["CRE WorkflowRegistry"]
-
-    subgraph AUTO["Automation layer — one holder, one key"]
-        CRER["CREReceiver"]
-        ST["SyncTrigger"]
+flowchart TB
+    subgraph HOLDERS["Off-chain holders — signers, not bound to one chain"]
+        direction LR
+        LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
+        AO["Automation Owner<br/>(EOA — Lido-operated hot key)"]
     end
 
-    subgraph POOLS["Liquidity layer — unchanged from 4.2.A"]
-        NEW["New OraclePool<br/>oracle · fee · SENDER<br/>frozen at deploy"]
+    subgraph L2G["L2 — per network (×4)"]
+        direction LR
+        GOV["L2 Gov Executor<br/>(per network)"]
+        CS["L2 CustomSender<br/>(CustomSenderReferral)<br/>transparent proxy — upgradeable"]
+        L2PA["L2 ProxyAdmin"]
+
+        subgraph AUTO["Automation layer — one holder, one key"]
+            CRER["CREReceiver"]
+            ST["SyncTrigger"]
+        end
+
+        subgraph POOLS["Liquidity layer — unchanged from 4.2.A"]
+            NEW["New OraclePool<br/>nothing settable after deploy:<br/>SENDER immutable · setOracle/setFee revert"]
+        end
+    end
+
+    subgraph L1G["L1 — Ethereum mainnet (shared by all four lanes)"]
+        direction LR
+        DAO["Lido DAO Agent"]
+        L1R["L1Receiver<br/>(LidoCustomReceiver)<br/>transparent proxy — upgradeable"]
+        L1PA["L1 ProxyAdmin"]
+        WFREG["CRE WorkflowRegistry"]
     end
 
     DAO -->|admin| L1R
@@ -638,7 +809,15 @@ flowchart LR
     ST ==>|"SYNC_ROLE — the only seam into the core"| CS
     CS ==>|"oraclePool pointer — the live selection; admin-only"| NEW
     NEW ---|"SENDER (immutable) — welded to this sender"| CS
+
+    %% layout only — keeps the L1 group below the L2 group; no power implied
+    CS ~~~ L1G
 ```
+
+Same grouping and edge conventions as 4.2.A. The delta is confined to `HOLDERS`
+and its edges into `AUTO`: nothing inside `L1G` moves, and the only `L1G` edge
+that changes holder is the workflow-owner one — the CRE workflow is registered on
+**L1** even though everything it drives is on L2.
 
 **This introduces a holder, not a power.** The three `owner()` roles in the box
 already exist in 4.2.A and their on-chain capabilities are byte-identical — no
@@ -703,13 +882,15 @@ registration), and split the state-mate anchor.
 **Decision record.** Chooser: Lido DAO contributors owning this migration.
 Options: {4.2.A, 4.2.B} — a closed set; no third arrangement is proposed here.
 Shared comparison basis: incident-response latency, single-key compromise
-exposure, CRE registration ergonomics, and operational friction on routine
-parameter tuning — all four judged against the *same* blast-radius bound
-established above. **Result: probe again — not `choose now`.** The two options
-do not order under that basis without further facts, because 4.2.A dominates on
-compromise exposure while 4.2.B dominates on response latency and CRE ergonomics,
-and no exchange rate between those has been agreed. Naming one now would be a
-preference presented as an analysis. Probes that would settle it:
+exposure, **what any one compromised holder reaches** (§4.2.B.1 (b) vs. (d) — under
+4.2.A a single Safe compromise takes the pool *and* the automation layer together,
+because one holder fills all four assignments), CRE registration ergonomics, and
+operational friction on routine parameter tuning — all five judged against the *same*
+blast-radius bound established above. **Result: probe again — not `choose now`.** The
+two options do not order under that basis without further facts, because 4.2.A dominates
+on compromise exposure while 4.2.B dominates on response latency, CRE ergonomics and
+correlated-holder exposure, and no exchange rate between those has been agreed. Naming
+one now would be a preference presented as an analysis. Probes that would settle it:
 
 1. **Key custody terms** — HSM or cloud KMS, rotation policy, who can sign, and
    whether a compromise is detectable. Cheap to answer; largest effect on the
@@ -727,6 +908,278 @@ A middle option not evaluated here, should the probes leave the two tied: keep
 `SyncTrigger` with LOL and move only `CREReceiver` plus the workflow to the
 Automation Owner. That buys the CRE ergonomics and the fast CRE-side disarm while
 leaving the fee float and the sync gates behind a quorum.
+
+##### 4.2.B.1 — risk analysis **if 4.2.B is adopted**
+
+Three facts frame every case. **Three independent domains** — *liquidity* (pool
+`owner` = LOL Safe), *automation* (`SyncTrigger.owner`, `CREReceiver.owner`,
+workflow owner / `expectedAuthor` = the EOA), *governance* (gov executor) — and
+4.2.B's point is that the first two stop failing together. **No override, no
+upgrade:** `Ownable` transfer is owner-only and all three contracts are
+non-upgradeable (§2.5), so a dead key is replaced or routed around, never recovered.
+**The automation domain is bounded by one pot:** `triggerSync` fronts every CCIP fee
+from `SyncTrigger`'s own ETH balance and reverts `SyncTriggerInsufficientFloat` once
+that balance is below `getMaxFees()` (0.125 ETH; 0.126005 on Arbitrum — the reserve it
+must hold, not the fee it spends), so *every* automation-side ETH loss, swept or burned,
+draws on the same ~0.5 ETH float and is capped by it.
+
+The cases run **lost, then hostile, per holder** — (a)/(b) the Safe, (c)/(d) the EOA,
+(e)/(f) the CRE path — then (g)/(h) for the two external dependencies that fail with no
+holder failing at all. The three domains partition the *holders*, not the risk: the price
+feed, Lido core, CCIP and the native bridges sit outside all three, which is why the last
+four cases are the ones 4.2.B mostly does not touch.
+
+**(a) LOL Safe keys lost** — *unchanged by 4.2.B; the pool never moves.*
+
+- **Event** — surviving signers fall **below the Safe threshold**, so the Safe can
+  never sign again and control over it is not recoverable.
+- **Scope** — liquidity domain only; users keep being served.
+  - `fastStake` and the sync round-trip are owner-independent — nothing on the value
+    path consults the pool's `owner`.
+- **Degradation until recovered** — no `pause` and no owner-side liquidity
+  management (`sweep`, withdrawal).
+  - Pool depth then drifts with usage alone, un-steerable; a plain wstETH transfer
+    still tops it up, but that only adds to the stranded balance.
+- **Unrecoverable** — the pool's `owner` slot, and with it the **pool balance as of the
+  moment the Safe dies**.
+  - `Ownable` transfer is owner-only and the pool is not upgradeable, so **no** party
+    — governance included — can ever `pause` or `sweep` it again.
+  - No permissionless exit substitutes: `swap` is one-directional (WETH **in**,
+    wstETH **out**, `TOKEN_IN` retained), so `fastStake` only converts the stranded
+    balance from wstETH into WETH in the same locked pool — and that WETH's only other
+    move is `sync()`, whose recipient pool is **pinned into the CCIP message at send
+    time** (§5.1), so it returns as wstETH to that same pool. Value is conserved, never
+    extracted.
+  - **The stranded amount does not grow with usage.** `getFee()` is `0` and the price
+    comes from a heartbeat-guarded, monotonic-checked feed, so both rotations above are
+    value-neutral *for the pool*: `fastStake` exchanges the pool's wstETH for the user's
+    WETH at oracle rate rather than depositing anything new, and the round-trip returns
+    equal value. Only unsolicited additions grow it — a plain wstETH transfer, and any
+    round-trip already in flight.
+- **Recovery** — for the *service*, not the balance: deploy a fresh pool under a live
+  holder and re-point `setOraclePool` (§4.2 ¶1). Delay costs the service and the float,
+  not the principal: the dead pool's wstETH drains through `fastStake` until it reverts
+  `OraclePoolInsufficientTokenOut` for want of output liquidity (§5.3) — users are served
+  at oracle rate throughout and lose nothing — while every further sync burns live
+  `SyncTrigger` ETH to cycle stranded value pointlessly. Revoking `SYNC_ROLE` stops that
+  burn at once; the re-point ends it structurally, since `sync` pulls only from the live
+  pointer. Both are gov-executor calls in the same trust domain, so pulling the revoke
+  first buys time only because it needs no new pool deployed and can be pre-authorized
+  (probe 3). The real mitigation is upstream — the quorum, and sizing the seed to what is
+  acceptable to lose.
+
+**(b) LOL Safe compromised** — *the case 4.2.B shrinks, and the only one on which it
+strictly dominates.*
+
+- **Event** — an attacker reaches the Safe **threshold**. The mirror of (a): the keys
+  still work, they just work for someone else.
+- **Scope** — liquidity domain, and the **largest single-event exposure in the system**.
+  - `sweep(token, recipient, amount)` is `onlyOwner`, uncapped, un-timelocked and —
+    unlike `swap`/`pull` — carries **no `whenNotPaused` guard**, so the whole pool
+    balance, wstETH and WETH alike, leaves in one transaction. `pause` is a kill switch
+    against the *sync path*, never against the pool's own owner.
+  - Under **4.2.A this compromise also delivers the whole of (d)** — the automation
+    setters, the fee float, `expectedAuthor` and the workflow — because one Safe holds
+    all four assignments (§4.2.B, anchor-split row). Under **4.2.B it is confined to the
+    pool**: the automation layer sits behind a key the attacker does not hold.
+- **Degradation until contained** — there is no containment window for the balance.
+  Governance can cut *inflow* by re-pointing `setOraclePool`, which is worth doing on
+  detection, but nothing on-chain stands between a threshold-holding attacker and
+  `sweep`.
+- **Unrecoverable** — the pool balance, in full.
+  - `revokeRole(SYNC_ROLE)` is irrelevant here: `sweep` never touches the sync path, so
+    the §3.4 backstop that contains (d) does not reach this case at all.
+  - Same bound and same upstream mitigation as (a) — quorum quality, and sizing the seed
+    to what is acceptable to lose. The two Safe cases differ in *cause*, not in ceiling.
+- **Recovery** — deploy and seed a fresh pool under an uncompromised holder, re-point
+  `setOraclePool` (gov executor), and re-key or replace the Safe wherever else it
+  appears — until then §3.4's kill-switch table collapses to its gov-executor row. Under
+  4.2.A, add the whole of (d)'s recovery on top; under 4.2.B the automation layer needs
+  no action at all.
+
+**(c) Automation EOA keys lost**
+
+- **Event** — the key is lost.
+- **Scope** — automation domain, and *inert*.
+  - Both contracts keep running at last-good values on the 5/100 WETH + 12 h gates,
+    and no fund-extraction path opens (§2.6.B).
+- **Degradation until recovered** — config is frozen: no CRE-side kill switch
+  (`setForwarder` / `setExpectedAuthor`) and no retuning of gates or fee blobs.
+  - So if lane fees drift past the pinned `FeeOtoD` bound, syncs begin reverting and
+    cannot be fixed in place — degenerating into (e) until the pair is replaced.
+- **Unrecoverable** — the trigger float (~0.5 ETH), any ETH sent to the receiver (the
+  deploy seeds none), and the CRE credit under the lost workflow, which **Lido** can no
+  longer pause or delete.
+  - Each is withdrawable only by the dead owner (`sweep` / `withdrawETH`), and the
+    replacement pair cannot inherit them.
+  - `pauseWorkflow` / `deleteWorkflow` are workflow-owner-gated; Chainlink's registry
+    admin retains `adminPauseWorkflow`, so an out exists but is not Lido's to pull.
+  - Small by construction: this domain holds no liquidity.
+- **Recovery** — redeploy the pair under a fresh key, register a new workflow (needed
+  anyway — the deployed `WorkflowRegistry 2.0.0` at
+  `0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5` exposes no per-workflow ownership
+  transfer), then gov executor
+  `grantRole(SYNC_ROLE, newTrigger)` + `revokeRole(…, oldTrigger)`: the **role, not
+  the contract identity, is the seam** (§2.7). The revoke is the authoritative stop —
+  an abandoned workflow may keep reporting, but `triggerSync` reverts.
+
+**(d) Automation EOA fully malicious**
+
+- **Event** — the key holder acts hostilely.
+- **Scope** — automation domain: exposure is **fees and timing, not principal**.
+  - Synced value can only reach the immutable `SENDER` → L1 → Lido core → recipient
+    pool, and `CREReceiver` forwards **argument-less** allow-listed calls only
+    (§2.6.B).
+  - Out of reach entirely: pool liquidity, `SYNC_ROLE`, proxy upgrades, arbitrary
+    calldata, and where synced value lands.
+- **Degradation until contained** — forced syncs at times and sizes of the holder's
+  choosing, or rebalancing stopped outright (= (e) by hostile means).
+  - **The live gates are not the bound here** — `setDelay` and `setAmounts` are the
+    holder's own setters. `MIN_DELAY = 1 minute` is the only hard floor (`setDelay`
+    reverts below it) and `setAmounts` caps nothing from above (it rejects only
+    `minAmount == 0` and `minAmount > maxAmount`), so the configured 12 h / 100 WETH
+    gates collapse to *once a minute, up to the pool's whole WETH balance*.
+  - Fee blobs can likewise be retuned — mis-set to revert, or over-provisioned so
+    the excess burns ([docs/fees.md](docs/fees.md)) — and `CREReceiver` re-pointed at
+    an attacker forwarder/author.
+- **Unrecoverable** — the ETH the automation domain holds, and nothing else.
+  - **One pot, not two.** Sweeping the float and burning it through forced syncs draw on
+    the *same* balance (third framing fact above), so the ceiling is ~0.5 ETH per lane
+    however the holder mixes them, plus whatever the receiver holds (nothing, by default).
+  - That ceiling also bounds the churn the collapsed gates would otherwise allow: each
+    forced round-trip pays a real CCIP fee out of the float and `triggerSync` reverts
+    once the balance is under `getMaxFees()`, so the hostile sync count is
+    ≈ `(balance − getMaxFees()) / live fee` — order-of-magnitude a handful on the
+    amount-sensitive lanes (OP/Linea, fee scales with amount synced) and a few hundred on
+    the flat ones (Arbitrum/Base), per
+    [docs/otod-fee-amount-sensitivity.md](docs/otod-fee-amount-sensitivity.md). A float
+    top-up during an incident simply extends the attack.
+  - The pool's value survives the churn: every forced round-trip returns equal value as
+    wstETH to the send-time-pinned recipient pool (§5.1). Beyond the ETH, what is lost is
+    the *timing* — the ill-timed rebalances themselves.
+  - `renounceOwnership()` is not overridden on either contract, so the holder can freeze
+    a mis-set configuration permanently and force the (c) redeploy instead of a re-tune.
+- **Recovery** — every automation lever is re-armable by the holder, so pulling
+  `setForwarder` / `setExpectedAuthor` loses the race; only the gov executor's
+  `revokeRole(SYNC_ROLE, syncTrigger)` cannot be re-opened, with `OraclePool.pause()`
+  as an independent stop. Then replace the pair as in (c). Hence an operational
+  precondition for adoption, not just a custody one: **that revoke pre-authorized and
+  rehearsed with a known latency** (probe 3), since 4.2.B promotes it from last-resort
+  backstop to primary containment.
+
+**(e) CRE dies unrecoverably (e.g. Chainlink retires it)**
+
+- **Event** — the trigger source disappears. Liveness failure, not loss: no key,
+  contract or balance is touched.
+- **Scope** — rebalancing only; slow staking unaffected.
+  - Only the *caller* of `sync()` is gone; every on-chain binding stays intact.
+- **Degradation until recovered** — wstETH depletes and WETH accumulates until
+  `fastStake` reverts for want of liquidity (§5.3).
+  - A service-level loss, not a principal one: users fall back to the normal staking
+    route and the pool's balances stay where they are.
+- **Unrecoverable** — nothing on-chain.
+  - At most residual CRE credit, and only if the platform itself is wound down.
+- **Recovery** — `sync()` is gated on `SYNC_ROLE` alone, agnostic to who holds it, so
+  either **swap the trigger's driver** — `setForwarder(newCaller)` (bot, Gelato,
+  Chainlink Automation): one tx per L2, gates and float retained, and one signature
+  under 4.2.B — or **bypass the
+  trigger**: `grantRole(SYNC_ROLE, X)` for any caller fronting its own fees, dropping
+  the on-chain gates. Both are proven (pre-migration ran this way, §2.4; the canary
+  drives `triggerSync` from an EOA forwarder). **Not covered:** the L2→L1 leg is CCIP,
+  which no forwarder swap replaces (§5.1). The latency saved here buys *service*
+  restoration only — for the case where it buys containment, see (f).
+
+**(f) CRE signing path compromised** — *the case where 4.2.B's latency advantage is
+decisive; the mirror of (e) as (d) is of (c).*
+
+- **Event** — the DON quorum or the Forwarder is subverted and emits reports that are
+  **well-formed**. The trigger source does not disappear; it turns.
+- **Scope** — automation domain, and strictly **narrower than (d)**: the attacker holds
+  no owner key.
+  - All three `CREReceiver` gates pass — the caller *is* the configured Forwarder, and
+    `metadata.workflowOwner` is whatever a subverted Forwarder writes or whatever the
+    registry legitimately holds behind a subverted DON. The **allow-list is the gate that
+    still binds**: the only reachable call is the seeded, argument-less
+    `(SyncTrigger, triggerSync())`, so the attacker chooses *when*, and nothing else.
+  - **The live gates hold here** — `setDelay` / `setAmounts` are owner-only and out of
+    reach, so the configured bounds are real bounds, not defaults: `≥ 5 WETH` due,
+    `≤ 100 WETH` per sync, `≥ 12 h` apart, i.e. **≤ 2 syncs × ≤ 100 WETH per lane
+    per day**. This is the bound (d) is commonly mistaken for.
+- **Degradation until contained** — ill-timed rebalances at that rate, plus float burn at
+  the live fee per sync.
+  - Where value lands is untouched: the recipient pool is pinned at send time (§5.1) and
+    `SENDER` is immutable, so every forced sync still returns wstETH to the right pool.
+- **Unrecoverable** — the float spent before containment, bounded as in the frame.
+  Nothing else — no configuration is mutated, so there is no mis-set state to redeploy
+  out of.
+- **Recovery** — `CREReceiver.setForwarder(0x…dead)` or `setExpectedAuthor(other)`
+  (§3.4), and **the disarm wins the race**: the attacker holds no owner key and cannot
+  re-arm, which is precisely the property (d) lacks. Under 4.2.B that is one signature in
+  seconds against a Safe quorum under 4.2.A — **on a case with value at stake, not merely
+  liveness**, which is where the latency axis actually earns its weight in the §4.2.B
+  comparison. `revokeRole(SYNC_ROLE)` remains the backstop; restoring service afterwards
+  is (e)'s recovery.
+
+**(g) Price feed stale, latched, or deprecated** — *4.2.B-neutral: a liquidity-domain
+outage whose only fix is in the governance domain.*
+
+- **Event** — the aggregator behind `PriceOracle` stops updating past its `HEARTBEAT`, is
+  retired, or prints a value the pool then refuses to move off. No key is lost, no party
+  is hostile, and nothing in this repo changed.
+- **Scope** — `fastStake` only, and **fail-closed**.
+  - `getLatestAnswer` reverts `PriceOracleStalePrice` past the heartbeat, so `swap`
+    reverts and users fall back to the normal staking route with nothing at risk.
+  - `pull` never reads the oracle, so `sync` keeps working — and then quiesces on its
+    own, since with `fastStake` dead the pool's WETH stops climbing back to `minAmount`.
+- **Degradation until recovered** — the fast-stake service is down on that lane; balances
+  are untouched.
+  - **The latch is the sharp edge.** `OraclePool` keeps `_lastPrice` and reverts
+    `OraclePoolInvalidPrice` on any *decrease*; it only ever ratchets up and has no
+    setter, so **one accepted swap at a spuriously high print permanently raises the
+    floor** — every honest price below it reverts until the real rate catches up.
+- **Unrecoverable** — nothing; but equally, nothing is fixable **in place**.
+  - `setOracle` reverts `PausableImmutableOraclePoolImmutable` and `_lastPrice` has no
+    reset, so neither failure has an owner-level knob — by the very design (§4.2.A, POOLS
+    table) that makes the pool safe to hand to an operational multisig. Immutability
+    trades this recovery away to buy the no-rewire guarantee — the deal, stated.
+- **Recovery** — (a)'s recovery minus the loss: deploy a fresh pool against a live feed,
+  `sweep` the old one into it (the Safe is alive in this case), and re-point
+  `setOraclePool`. Latency is a DAO vote. **No automation-layer action is involved at any
+  step, which is why this case does not discriminate between 4.2.A and 4.2.B.**
+
+**(h) Lido core staking unavailable on L1** — *the only case that stalls all four lanes
+at once; fail-safe, not fail-lossy.*
+
+- **Event** — Lido staking is paused, or the stake limit is exhausted, when a sync's WETH
+  lands on L1. `_stakeToken` forwards native ETH to `WSTETH`, whose `receive()` submits
+  to stETH; a paused or capped submit reverts inside it.
+- **Scope** — the L1 leg, and `LidoCustomReceiver` is the **single shared instance**
+  all four lanes route through (§4.2.A grouping note), so one L1 condition stalls every
+  lane simultaneously. This is the higher-blast-radius direction that note warns about,
+  in its benign form.
+  - The message is **not** lost: `ccipReceive` runs `_processMessage` inside a
+    `try`/`catch`, so the revert is caught, the message hash is parked, and the delivered
+    WETH stays at the receiver.
+- **Degradation until recovered** — every stalled round-trip is a hole in pool depth: the
+  WETH was `pull`ed at send time and the wstETH never arrives, so L2 output liquidity
+  thins while the value sits on L1.
+  - **It compounds if left alone** — `fastStake` refills the pool's WETH, the 12 h window
+    elapses, and the next sync parks too: one stalled message per lane per cycle. Cutting
+    the feed is the containment, and every domain has a lever: raise `minAmount`/`delay`
+    on `SyncTrigger` (**one signature under 4.2.B**), `OraclePool.pause()` (Safe), or
+    `revokeRole(SYNC_ROLE)` (gov executor).
+- **Unrecoverable** — nothing.
+  - `retryFailedMessage(message)` is **permissionless**: anyone can re-drive a parked
+    message once staking resumes, and a retry that still fails simply reverts, leaving
+    the entry parked for the next attempt.
+  - `recoverTokens(message, to)` is the fallback if the stall outlives the appetite to
+    wait — `DEFAULT_ADMIN_ROLE` on L1, i.e. the **Lido DAO Agent**, pulls the WETH back
+    out for manual return.
+- **Recovery** — wait out the pause and retry; the round-trip then completes to the
+  send-time-pinned pool exactly as designed (§5.1). Nothing in the automation or
+  liquidity domains has to change, and the only 4.2.B-relevant lever is the *speed of
+  stopping the feed*, not the fix itself.
+
 
 ### 4.3 Diagram C — upgradeability (proxy / admin / implementation)
 
@@ -1001,4 +1454,3 @@ out-ranks them — it can upgrade around a pause.
    away the L2 rollback net — a trade-off to decide **explicitly**, not by default.
 3. Independently **confirm the Initial Owner address and the party that controls
    it** before Stage 2 (ties to the §6.1 caveat).
-```
