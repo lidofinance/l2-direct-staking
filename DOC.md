@@ -454,7 +454,7 @@ flowchart TB
     WF -->|signed report| FWD
     FWD -->|onReport| CRER
     CRER -->|allow-listed triggerSync| ST
-    ST -->|trigger sync (SYNC_ROLE)| CS
+    ST -->|"trigger sync (SYNC_ROLE)"| CS
 
     %% cross-chain round-trip
     CS -->|CCIP message + WETH| ROUTER2
@@ -469,11 +469,20 @@ flowchart TB
 
 ### 4.2 Diagram B — ownership & access control
 
+Two ownership arrangements are on the table. **4.2.A is what the migration
+scripts and state-mate configs currently implement**; **4.2.B is a live proposal,
+not a decision** — §4.2.B closes with the open questions a choice would have to
+answer. They differ in *exactly one* respect (who holds the automation-layer
+`owner()` roles), so 4.2.B is written as a delta against 4.2.A rather than a
+second full picture.
+
+#### 4.2.A — current: the LOL multisig owns the automation layer
+
 ```mermaid
 flowchart LR
     DAO["Lido DAO Agent"]
     GOV["L2 Gov Executor<br/>(per network)"]
-    LOL["LOL multisig<br/>(per network)"]
+    LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
     DEP["Lido Deployer<br/>(Stage-1 broadcast only)"]
     IO["Initial Owner"]
     ILO["Initial Liquidity Owner"]
@@ -482,34 +491,242 @@ flowchart LR
     L1PA["L1 ProxyAdmin"]
     CS["L2 CustomSender"]
     L2PA["L2 ProxyAdmin"]
-    ST["SyncTrigger"]
-    NEW["New OraclePool"]
-    OLD["Old OraclePool"]
-    CRER["CREReceiver"]
     WFREG["CRE WorkflowRegistry"]
+
+    subgraph AUTO["Automation layer — detachable (see note)"]
+        CRER["CREReceiver"]
+        ST["SyncTrigger"]
+    end
+
+    subgraph POOLS["Liquidity layer — pointer-selected, one live at a time"]
+        NEW["New OraclePool<br/>oracle · fee · SENDER<br/>frozen at deploy"]
+        OLD["Old OraclePool<br/>same wiring, no longer selected"]
+    end
 
     DAO -->|admin| L1R
     DAO -->|proxy owner| L1PA
     L1PA -->|administers| L1R
 
-    GOV -->|admin + SYNC_ROLE grant/revoke| CS
+    GOV -->|"admin — setOraclePool · SYNC_ROLE grant/revoke · setReceiver"| CS
     GOV -->|proxy owner| L2PA
     L2PA -->|administers| CS
 
-    LOL -->|owner| NEW
+    LOL -->|"owner — pause/unpause · sweep (all liquidity)"| NEW
     LOL -->|owner| ST
     LOL -->|owner| CRER
-    LOL -->|workflow owner via --unsigned| WFREG
+    LOL -->|"workflow owner via --unsigned"| WFREG
     LOL -.->|= expectedAuthor| CRER
 
-    DEP -.->|Stage-1 deploy only — no final role| CS
+    DEP -.->|"Stage-1 deploy only — no final role"| CS
 
-    ST -->|SYNC_ROLE| CS
     CRER -->|forwarder| ST
+    ST ==>|"SYNC_ROLE — the only seam into the core"| CS
 
-    ILO -->|owner| OLD
+    CS ==>|"oraclePool pointer — the live selection; admin-only"| NEW
+    NEW ---|"SENDER (immutable) — welded to this sender"| CS
+    OLD ---|"SENDER (immutable) — still welded, never re-selected"| CS
+
+    ILO -->|"owner — sweep only"| OLD
     IO -.->|revoked — no role| CS
 ```
+
+**Reading the edges.** `-->` a live power the source can exercise · `==>` a live
+power that is the **single load-bearing seam** between layers · `---` (no
+arrowhead) a bond **nobody** can exercise or change — frozen in bytecode ·
+`-.->` no live call path: revoked, or an identity pin rather than a call.
+
+**On the `AUTO` group.** The box answers one question: *which contracts can be
+swapped out without upgrading a proxy or moving value?* `CREReceiver` and
+`SyncTrigger` are grouped because all three of these hold of both and of nothing
+else in the diagram — they are **not upgradeable** (no proxy, no admin slot;
+§4.3), their config owner is the **LOL multisig** (operational, fast — not a DAO
+vote), and they attach to the audited core through **configurable addresses
+only**: `SyncTrigger.forwarder` inside the group, and the single thick
+`SYNC_ROLE` edge outward. Replacing either is a redeploy plus a
+`set…`/role call — no state migration, no `CustomSender`/pool/`L1Receiver`
+change (§2.7 ¶4).
+
+What the box does **not** claim: (a) that the two are interchangeable or should
+be one contract — they sit on opposite sides of a deliberate trust boundary and
+carry different powers (§2.7); (b) that either can be replaced by LOL alone —
+swapping `CREReceiver` is LOL-only (`SyncTrigger.setForwarder`), but a new
+`SyncTrigger` is inert until the **L2 governance executor** grants it
+`SYNC_ROLE`, which is exactly why that edge is drawn thick and separate; (c) that
+detaching is free — with the group unplugged the lane simply stops syncing
+(§5.1: in-flight round-trips still land safely).
+
+**On the `POOLS` group — what binds the new `OraclePool`, and what can move.**
+The pool is *not* pluggable the way the `AUTO` group is. Its binding is a
+**two-way pair, mutable on one side and welded on the other**:
+
+| Binding | Direction | Who can change it |
+|---|---|---|
+| `CustomSender.getOraclePool()` — the live pointer | sender → pool | **L2 governance executor** only (`setOraclePool`, `DEFAULT_ADMIN_ROLE`) — a DAO vote |
+| `OraclePool.SENDER` — the only account allowed to call `swap`/`pull` | pool → sender | **nobody, ever.** Solidity `immutable`, baked into the constructor at deploy |
+| `getOracle()` (price oracle), `getFee()` (= 0) | inside the pool | **nobody, ever.** `setOracle`/`setFee` are overridden to `revert PausableImmutableOraclePoolImmutable()` |
+| `TOKEN_IN` / `TOKEN_OUT` (WETH / wstETH) | inside the pool | **nobody, ever** — `immutable` |
+| `paused` — halts `swap` **and** `pull` | inside the pool | **LOL multisig** (`pause`/`unpause`) — the fast §3.4 kill switch |
+| wstETH liquidity | inside the pool | **LOL multisig** (`sweep`), plus `swap`/`pull` by `SENDER` |
+
+Two consequences worth reading off the diagram:
+
+1. **You cannot rewire a pool — you can only re-point at a different one.**
+   Because `SENDER`, `oracle`, `fee`, and both tokens are frozen, "changing the
+   pool" always means *deploying a new one* and having governance move the
+   pointer. There is no owner-level knob that changes what the pool does; the LOL
+   multisig can only **stop** it (`pause`) or **empty** it (`sweep`), never
+   re-aim it. That is why §2.5 lists it under *not upgradeable* and why its
+   parameters are verified once, as constructor output.
+2. **That asymmetry is exactly what orphans the old pool.** `OLD` is still welded
+   to the *same* `CustomSender` and still carries identical wiring — state-mate
+   pins both pools' `SENDER`/`TOKEN_IN`/`TOKEN_OUT`/`getOracle`/`getFee` to the
+   same values (`config/state/l2.yaml`). The **only** difference is which one the
+   one-directional pointer selects. Nothing revokes the old pool; it is simply
+   never chosen again, keeps its own owner (Initial Liquidity Owner, who retains
+   `sweep`), and safely absorbs in-flight arrivals (§5.1, §6.1).
+
+What the `POOLS` box does **not** claim: that the two pools are
+interchangeable *now* — they differ in owner (LOL vs. Initial Liquidity Owner)
+and in liquidity, and only `NEW` is selected. The group asserts one thing, that
+both sit in the same binding shape, so a pool swap is always a
+deploy-and-re-point, never an edit.
+
+#### 4.2.B — proposal: a dedicated Automation Owner (EOA)
+
+**Status: under consideration, not decided.** Only the automation layer moves.
+The pool, both `ProxyAdmin`s, the `CustomSender` admin, and every `SYNC_ROLE`
+power stay exactly as in 4.2.A.
+
+```mermaid
+flowchart LR
+    DAO["Lido DAO Agent"]
+    GOV["L2 Gov Executor<br/>(per network)"]
+    LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
+    AO["Automation Owner<br/>(EOA — Lido-operated hot key)"]
+
+    L1R["L1Receiver"]
+    L1PA["L1 ProxyAdmin"]
+    CS["L2 CustomSender"]
+    L2PA["L2 ProxyAdmin"]
+    WFREG["CRE WorkflowRegistry"]
+
+    subgraph AUTO["Automation layer — one holder, one key"]
+        CRER["CREReceiver"]
+        ST["SyncTrigger"]
+    end
+
+    subgraph POOLS["Liquidity layer — unchanged from 4.2.A"]
+        NEW["New OraclePool<br/>oracle · fee · SENDER<br/>frozen at deploy"]
+    end
+
+    DAO -->|admin| L1R
+    DAO -->|proxy owner| L1PA
+    L1PA -->|administers| L1R
+
+    GOV -->|"admin — setOraclePool · SYNC_ROLE grant/revoke · setReceiver"| CS
+    GOV -->|proxy owner| L2PA
+    L2PA -->|administers| CS
+
+    LOL -->|"owner — pause/unpause · sweep (all liquidity)"| NEW
+
+    AO -->|"owner — setForwarder · setDelay · setAmounts · setFee* · sweep"| ST
+    AO -->|"owner — setForwarder · setExpectedAuthor · setAllowedCall"| CRER
+    AO -->|"workflow owner — signs directly, no --unsigned"| WFREG
+    AO -.->|= expectedAuthor| CRER
+
+    CRER -->|forwarder| ST
+    ST ==>|"SYNC_ROLE — the only seam into the core"| CS
+    CS ==>|"oraclePool pointer — the live selection; admin-only"| NEW
+    NEW ---|"SENDER (immutable) — welded to this sender"| CS
+```
+
+**This introduces a holder, not a power.** The three `owner()` roles in the box
+already exist in 4.2.A and their on-chain capabilities are byte-identical — no
+contract changes, no redeploy. What changes is *who is assigned to them*, and
+therefore which trust domain they sit in. Keeping that distinct matters here
+because it bounds the whole comparison: nothing in 4.2.B can reach anything
+`SyncTrigger.owner` / `CREReceiver.owner` could not already reach in 4.2.A.
+
+**What 4.2.B changes**
+
+| | 4.2.A | 4.2.B |
+|---|---|---|
+| `SyncTrigger.owner` · `CREReceiver.owner` | LOL multisig | **Automation Owner** |
+| CRE workflow owner (`WorkflowRegistry`) | LOL Safe, registered via `cre workflow deploy --unsigned` (ADR-0001) | **Automation Owner** — an EOA signs workflows natively, so the `--unsigned` workaround is **no longer needed** |
+| `CREReceiver.getExpectedAuthor()` | LOL (= workflow owner) | **Automation Owner** (= workflow owner) — the pin still tracks the workflow owner |
+| §3.4 kill switches `setForwarder(0x…dead)` / `setExpectedAuthor` | Safe quorum — minutes to hours | **one signature — seconds** |
+| Sync-parameter tuning (delay / amounts / fee blobs) | Safe quorum | one signature |
+| Pool `pause` / `sweep`, `SYNC_ROLE` revoke, proxy upgrades | LOL / gov executor | **unchanged** |
+| state-mate anchor | one `*l2LiquidityOwner` covers 4 role assignments | splits into `*l2LiquidityOwner` (pool) + **`*l2AutomationOwner`** (3 automation assignments) |
+
+That last row is worth its own note: today one anchor named `l2LiquidityOwner`
+stands for four different role assignments (pool owner, `SyncTrigger` owner,
+`CREReceiver` owner, `expectedAuthor`) purely because one holder happens to fill
+all four. 4.2.B forces that name apart, which removes an existing overload — the
+anchor is not about liquidity in three of its four uses.
+
+**Blast radius if the hot key is compromised.** Bounded, and bounded by design
+rather than by the key's custody:
+
+- **Reachable:** point `CREReceiver` at an attacker forwarder/author and route
+  allow-listed calls, retune `SyncTrigger`'s delay/amount/fee gates, and
+  `sweep()` the trigger's ETH fee float (~0.5 ETH). Net effect: the attacker can
+  force syncs at times and sizes of their choosing and burn the float.
+- **Not reachable:** pool liquidity (`pause`/`sweep` stay with LOL), `SYNC_ROLE`
+  itself (granted and revoked only by the gov executor), proxy upgrades, and
+  arbitrary calldata — `CREReceiver` forwards **argument-less** calls only
+  (audit-scope F-2) and holds no privilege of its own.
+- The independence §2.7 ¶1 relies on **survives**: that argument already places
+  the cross-domain backstop on `SYNC_ROLE`'s admin, not on the owner axis.
+  4.2.B weakens the owner axis and leaves the backstop intact.
+
+**The double-edge.** The same key both arms and disarms the CRE path. 4.2.B makes
+the §3.4 kill switches an order of magnitude faster to *pull* and also
+compromisable by a single key — and an attacker holding it can re-arm whatever a
+defender just disarmed. Under 4.2.B the gov executor's `revokeRole(SYNC_ROLE)`
+stops being a backstop of last resort and becomes the *only* switch an attacker
+with the key cannot re-open, which raises the value of having that revoke
+rehearsed and ready.
+
+**Evidence that 4.2.B is operable.** The canary flow already runs this shape: the
+deployer EOA transiently owns `SyncTrigger` and `CREReceiver` and is the pinned
+`expectedAuthor` while the simulated sync is driven end to end
+([docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md)). 4.2.B
+is, in effect, that ownership arrangement made permanent — minus the canary's
+extra step of also pointing `getForwarder` at the deployer.
+
+**Getting from A to B** — no redeploy: `transferOwnership` on `SyncTrigger` and
+`CREReceiver` (two LOL Safe txs per L2), `setExpectedAuthor(automationOwner)`,
+re-register the CRE workflow under the EOA (workflow ownership is recorded at
+registration), and split the state-mate anchor.
+
+**Decision record.** Chooser: Lido DAO contributors owning this migration.
+Options: {4.2.A, 4.2.B} — a closed set; no third arrangement is proposed here.
+Shared comparison basis: incident-response latency, single-key compromise
+exposure, CRE registration ergonomics, and operational friction on routine
+parameter tuning — all four judged against the *same* blast-radius bound
+established above. **Result: probe again — not `choose now`.** The two options
+do not order under that basis without further facts, because 4.2.A dominates on
+compromise exposure while 4.2.B dominates on response latency and CRE ergonomics,
+and no exchange rate between those has been agreed. Naming one now would be a
+preference presented as an analysis. Probes that would settle it:
+
+1. **Key custody terms** — HSM or cloud KMS, rotation policy, who can sign, and
+   whether a compromise is detectable. Cheap to answer; largest effect on the
+   compromise-exposure axis.
+2. **Measured LOL quorum latency** — how long a Safe kill-switch tx has actually
+   taken to assemble in practice. Turns "minutes to hours" from an assumption
+   into a number, and the latency axis is currently carrying most of 4.2.B's case.
+3. **Is `revokeRole(SYNC_ROLE)` rehearsed?** Under 4.2.B it is the only
+   attacker-proof switch. If pulling it needs an unrehearsed DAO vote, 4.2.B's
+   faster switches are partly illusory.
+4. **Whether the `--unsigned` (ADR-0001) path has caused real friction** — if it
+   has not, one of 4.2.B's three advantages is theoretical.
+
+A middle option not evaluated here, should the probes leave the two tied: keep
+`SyncTrigger` with LOL and move only `CREReceiver` plus the workflow to the
+Automation Owner. That buys the CRE ergonomics and the fast CRE-side disarm while
+leaving the fee float and the sync gates behind a quorum.
 
 ### 4.3 Diagram C — upgradeability (proxy / admin / implementation)
 
