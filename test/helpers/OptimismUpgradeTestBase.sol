@@ -41,6 +41,9 @@ abstract contract OptimismUpgradeTestBase is UpgradeTestBase, OptimismL2Defaults
         // Old sync automations (to verify revocation)
         L2_OLD_CHAINLINK_AUTOMATION = C.L2_OLD_CHAINLINK_AUTOMATION;
 
+        // Measured 2026-07-29 on an Optimism mainnet fork by `test_creWriteGasCarrier`.
+        CRE_WRITE_GAS_BASELINE = 304_753;
+
         super.setUp();
     }
 
@@ -51,6 +54,7 @@ abstract contract OptimismUpgradeTestBase is UpgradeTestBase, OptimismL2Defaults
     function _l1RpcUrl() internal view override returns (string memory) {
         return vm.envString("L1_RPC_URL");
     }
+
 
     function _defaultL2Config(address initialOwner, address governanceExecutor, address liquidityOwner)
         internal

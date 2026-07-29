@@ -13,6 +13,12 @@ node_modules
 
 # CRE workflow build artifacts
 cre-workflows/**/dist
+# `cre workflow build|deploy` outputs (2.3 MB WASM + its base64 sibling + the compiler's temp entry file)
+cre-workflows/**/binary.wasm
+cre-workflows/**/binary.wasm.br.b64
+cre-workflows/**/.cre_build_tmp.js
+# Repo-local pinned `cre` CLI installed by `just setup-cre-cli`
+/.cre
 /x-ray
 
 # diffyscan configs are generated per lane by `just diffyscan-config` (template is committed)

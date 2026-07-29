@@ -30,7 +30,7 @@ own actor's machine: `INITIAL_OWNER_PRIVATE_KEY` (`activate`, `rollback`) and
 `verify-test` need no keys (read-only).
 
 Optional overrides (defaults are fine): `L2_TEST_WETH_SEED` for `seed-test-weth` (default
-`1e17` = 0.1 WETH; must exceed the 0.05 test minAmount); `L2_SYNC_MIN_AMOUNT_TEST` /
+`1e17` = 0.1 WETH; must exceed the 0.0002 test minAmount); `L2_SYNC_MIN_AMOUNT_TEST` /
 `L2_SYNC_DELAY_TEST` for `verify-test` (auto-read via `yq` from
 `config/state/l2.inputs.test-stage.yaml` — set only if `yq` is not installed).
 
@@ -67,7 +67,7 @@ for c in $L2_ORACLE_POOL $L2_SYNC_TRIGGER $L2_CRE_RECEIVER; do
 cast call $L2_CRE_RECEIVER 'getForwarder()(address)' --rpc-url $L2_RPC_URL       # == $L2_TEST_DEPLOYER
 cast call $L2_CRE_RECEIVER 'getExpectedAuthor()(address)' --rpc-url $L2_RPC_URL  # == $L2_TEST_DEPLOYER
 cast call $L2_SYNC_TRIGGER 'getDelay()(uint48)' --rpc-url $L2_RPC_URL            # == 60 (test delay)
-cast call $L2_SYNC_TRIGGER 'getAmounts()(uint128,uint128)' --rpc-url $L2_RPC_URL # min == 0.05e18 (test)
+cast call $L2_SYNC_TRIGGER 'getAmounts()(uint128,uint128)' --rpc-url $L2_RPC_URL # min == 0.0002e18 (test)
 cast call $L2_ORACLE_POOL 'paused()(bool)' --rpc-url $L2_RPC_URL                 # == false
 cast balance $L2_SYNC_TRIGGER --rpc-url $L2_RPC_URL   # >= 0.5 ETH float; if short: just fund-trigger
                                                       # (Deployer key; re-sends the FULL float, not a
@@ -132,7 +132,7 @@ holds `SYNC_ROLE`, governance executor not yet admin (seal not run), trigger flo
 
 ```sh
 just -E .env.<network> seed-test-weth    # deposit ETH→WETH + transfer into the pool
-                                         # default 0.1 WETH (L2_TEST_WETH_SEED), test minAmount = 0.05
+                                         # default 0.0005 WETH (L2_TEST_WETH_SEED), test minAmount = 0.0002
 # wait ≥ 60 s (L2_SYNC_DELAY_TEST — the canary delay since the last trigger execution)
 just -E .env.<network> simulate-sync     # deployer = forwarder + author: onReport → triggerSync → sync
 ```
@@ -151,7 +151,7 @@ The deployer later `sweep()`s this test residue during `handoff` — no action n
 
 The independent live-RPC oracle for the **pre-handoff** state — the §3.b sibling with the
 shared test-stage overlay (`config/state/l2.inputs.test-stage.yaml`) describing the
-deployer-owned canary shape (owner / forwarder / author = deployer, test min-amount 0.05e18,
+deployer-owned canary shape (owner / forwarder / author = deployer, test min-amount 0.0002e18,
 test delay 60 s). `verify-test` (§1) reads back the same state from the same repo's script —
 state-mate re-derives it from an independently reviewed config (RUNBOOK.md §Def —
 verify vs validate); record this run as part of the G2 evidence before `handoff`:

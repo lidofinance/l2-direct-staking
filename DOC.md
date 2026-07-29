@@ -8,6 +8,16 @@
 > It is **not** a runbook (see `RUNBOOK.md`) and not proof the
 > migration has run. It documents the *target state*: which contracts exist, who
 > owns/admins what, how value and triggers flow, and how it's verified.
+>
+> **Ownership-arrangement change, 2026-07-29.** The automation layer's target
+> holder is now a dedicated **Automation Owner** EOA, not the LOL multisig (§4.2).
+> That arrangement is **not yet on-chain** — the route is
+> [docs/automation-owner-redeploy.md](docs/automation-owner-redeploy.md) and the
+> replaced arrangement is
+> [archived](docs/archive/ownership-lol-owned-automation.md), not deleted. Only
+> §2.2, §2.6, §2.7, §3.2, §3.4, §4.1 and §4.2 changed with it; `script/**`,
+> `config/state/**`, `RUNBOOK.md` and the remaining `docs/*` still encode the
+> replaced shape until that plan's S1 lands.
 
 ---
 
@@ -62,7 +72,7 @@ hostile.
 
 | Component                                | Purpose                                                                                                                                                                                                                                 | Source                                                        |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = owner-only = LOL multisig (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
+| **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = owner-only = the Automation Owner (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
 | **`CREReceiver`** (per L2)               | Receives signed CRE reports and authorizes them three ways (forwarder + report author + `(target, selector)` allow-list), then calls `SyncTrigger.triggerSync()`. Defense-in-depth between the off-chain network and the on-chain sync. | `src/cre/CREReceiver.sol`, `src/cre/interfaces/IReceiver.sol` |
 | **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network every 5 min, polls `SyncTrigger.shouldSyncAmount()` (due-ness + amount) and `canSync()` (executability), and emits a signed report only when a sync is both due and executable.                                                                           | `cre-workflows/sync-automation/*`                             |
 | **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (the shared wiring `config/state/l2.yaml` + each lane's `.deployed.yaml`/`.inputs.yaml` siblings). Not runtime contracts; they define and verify the target state.                                                                                                 | `script/**`                                                   |
@@ -126,7 +136,7 @@ them — it does not redeploy them (except the new pool).
 
 | Component | Where | Purpose | Migration touch |
 |---|---|---|---|
-| **`CustomSenderReferral`** (`CustomSender`) | each L2 | Staking front-end: `fastStake`/`slowStake`/referral; starts the CCIP `sync()` round-trip; holds the oracle-pool pointer and the `SYNC_ROLE`/admin roles. **Upgradeable** (transparent proxy — §2.5). | pool pointer swapped; `SYNC_ROLE` re-granted; admin → L2 governance executor |
+| **`CustomSenderReferral`** (`CustomSender`) | each L2 | Staking front-end: `fastStake`/`slowStake`/referral; starts the CCIP `sync()` round-trip; holds the oracle-pool pointer and the `SYNC_ROLE`/admin roles. **Upgradeable** (transparent proxy — §2.5). | pool pointer swapped; `SYNC_ROLE` re-granted; admin → L2 governance executor; implementation → `CustomSenderSyncAdmin`, moving `SYNC_ROLE`'s admin to `SYNC_ADMIN_ROLE` (§3.1) |
 | **`PausableImmutableOraclePool`** (new) | each L2 | Holds wstETH liquidity; swaps WETH→wstETH at the oracle rate on `fastStake`. `setOracle`/`setFee` permanently disabled. | **deployed fresh**; owner → LOL multisig |
 | **`PausableImmutableOraclePool`** (old) | each L2 | The pre-migration pool. | left orphaned on purpose (§5.1); owner unchanged (Initial Liquidity Owner) |
 | **`LidoCustomReceiver`** (`L1Receiver`) | L1 (shared) | Receives CCIP messages from all four L2s; stakes WETH→wstETH via Lido; delegates to the per-network L1 adapter to bridge wstETH back. **Upgradeable** (transparent proxy — §2.5). | admin → Lido DAO Agent |
@@ -141,7 +151,7 @@ them — it does not redeploy them (except the new pool).
 | `TransparentUpgradeableProxy`, `AccessControl`, `Ownable` | **OpenZeppelin** | Proxy + role/ownership primitives underlying every contract above. |
 | **CRE network + CRE Forwarder** | **Chainlink** (external) | The decentralized network runs the WASM and signs reports; the Forwarder verifies signatures and calls `CREReceiver.onReport`. **Not controllable by Lido** — only gated by the §3.4 kill switches. |
 | **CCIP Router** (per chain) | **Chainlink** (external) | Routes the L2→L1 sync message. |
-| **`WorkflowRegistry 2.0.0`** (`0x4Ac5…E7e5`, L1) | **Chainlink** | Records the CRE workflow owner; `verify-cre-workflow` checks owner = LOL multisig (Safe), status ACTIVE. |
+| **`WorkflowRegistry 2.0.0`** (`0x4Ac5…E7e5`, L1) | **Chainlink** | Records the CRE workflow owner — fixed at registration, **no transfer function**; `verify-cre-workflow` checks that owner (target: the Automation Owner — §4.2; the recipe still pins the LOL Safe) and status ACTIVE. |
 | **WETH / wstETH / stETH** | token issuers / Lido core (external) | Value tokens. wstETH is the bridged output; Lido core staking mints it on L1. |
 | **Native bridges** (OP Standard Bridge, Arbitrum Gateway, Linea Message Service) | L2 ecosystems (external) | The L1→L2 return leg for wstETH. |
 | **Legacy Chainlink Automation** (per L2) + **Gelato bot** (Linea only) | Chainlink / Gelato | Pre-migration `SYNC_ROLE` holders; **revoked** during migration — present here only as removed holders. |
@@ -161,6 +171,22 @@ owner ──owns──▶ ProxyAdmin ──administers (EIP-1967 admin slot)─�
 |---|---|---|---|
 | **`LidoCustomReceiver`** `0x6F35…4588` (L1, shared) | `0x301c…E367` | L1 ProxyAdmin `0x88a4…37BD` | Lido DAO Agent |
 | **`CustomSender`** (per L2) — OP/Base/Linea `0x328d…C997`, Arb `0x7222…4AD1` | OP/Base `0x6549…8703`, Arb `0x220F…c664`, Linea `0xBf96…16f9` | L2 ProxyAdmin — OP/Base/Linea `0x4c8c…2192`, Arb `0x5B42…0217` | L2 governance executor (per net) |
+
+> **One planned upgrade — `CustomSenderSyncAdmin` (§3.1).** Giving the LOL multisig
+> `SYNC_ADMIN_ROLE` needs `_setRoleAdmin`, which is `internal` in OpenZeppelin's
+> `AccessControl` and is never called by the deployed implementation — so it is reachable
+> only through new implementation bytecode. The change is a **subclass** of
+> `CustomSenderReferral` adding one constant and one `DEFAULT_ADMIN_ROLE`-gated
+> `setSyncRoleAdmin(bytes32)`, so every inherited path stays byte-identical (the additive
+> discipline of §2.6) and **no storage is added** — `_setRoleAdmin` writes
+> `RoleData.adminRole` inside the already-namespaced
+> `erc7201:openzeppelin.storage.AccessControl` slot, so there is no layout risk. Three
+> deployment constraints: it must land **per lane before `finalize`**, while
+> `L2ProxyAdmin.owner()` is still the Initial Owner (afterwards it is a DAO vote per
+> lane); the new implementation's constructor must reproduce the current immutables
+> (`TOKEN`, `WNATIVE`, `LINK_TOKEN`, `CCIP_ROUTER`) **exactly**, since a mismatch is
+> silent; and the four `l2CustomSenderImpl` anchors re-pin in state-mate, which is what
+> makes the swap visible as a diff rather than a surprise.
 
 **Not upgradeable** (no proxy, no admin — bytecode fixed at deploy): `SyncTrigger`
 and `CREReceiver` (plain `Ownable` contracts), `PausableImmutableOraclePool`
@@ -238,8 +264,9 @@ four L1 adapters, `FeeCodec`, `CCIPSenderUpgradeable`, `TokenHelper`.)
   `CREReceiverTest.t.sol` (468 lines), i.e. **test code exceeds contract code** —
   plus 4-network fork-integration tests against forked mainnet state using the
   Chainlink Local CCIP simulator (`CREIntegrationTest`, `*PoolUpgrade`).
-- **Bounded blast radius.** Once handed off both are owned by the LOL multisig
-  (deployer-owned during the canary test), and the §3.4 kill switches disable them *without* an upgrade.
+- **Bounded blast radius.** Both are owned by the **Automation Owner** in the target
+  state (§4.2) — deployer-owned during the canary test, LOL-owned on-chain today — and
+  the §3.4 kill switches disable them *without* an upgrade.
 - **Open items.** (1) No third-party audit artifact is in-repo — recommended
   before/with mainnet rollout if not covered externally. (2) Source-verify the deployed
   bytecode on each block explorer with `just verify-sources` (Etherscan v2), then
@@ -257,29 +284,36 @@ sync**. They *could* be written as one; keeping the privilege on its own
 | Axis | `CREReceiver` | `SyncTrigger` |
 |---|---|---|
 | Role | CRE-facing **authorization gate** (3 checks) | **privilege holder + sync domain logic** |
-| On-chain power | none beyond calling its allow-listed target | holds `SYNC_ROLE` on `CustomSender` — grant/revoke by the **L2 governance executor** |
-| Owner (config) | **LOL multisig** — operational, fast | **LOL multisig** — operational, fast |
+| On-chain power | none beyond calling its allow-listed target | holds `SYNC_ROLE` on `CustomSender` — grant/revoke by either `SYNC_ADMIN_ROLE` holder: the **LOL multisig** or the **L2 governance executor** |
+| Owner (config) | **Automation Owner** — one key, one signature | **Automation Owner** — one key, one signature |
 | Knows about | CRE ABI: `onReport`, metadata layout, author, allow-list | sync economics: amount/delay gates, fee blobs |
 | Link to the other | allow-list entry `(SyncTrigger, triggerSync)` | `forwarder` = `CREReceiver` |
 
-**1. Two trust domains — now at the role layer, not the owner.** The **LOL
-multisig** owns the day-to-day config of *both* contracts (operational speed), but
+**1. Two trust domains — at the role layer, not the owner.** The **Automation
+Owner** holds the day-to-day config of *both* contracts (one signature), but
 `SyncTrigger`'s **privilege** — its `SYNC_ROLE` on `CustomSender` — is granted and
-revoked only by the **L2 governance executor** (`CustomSender` `DEFAULT_ADMIN_ROLE`,
-§3.2). So arming or disarming the privileged sync path stays in a trust domain the
-LOL multisig does not control, even though LOL tunes delay/amounts/fees. (Earlier
-this independence also lived in `SyncTrigger`'s *owner* being the governance
-executor; that owner-level split was dropped to cut operational friction — the funds
-the sync path can reach are the LOL-owned pool's anyway — so the cross-domain
-backstop now rides on the `SYNC_ROLE` admin instead.)
+revoked only by a holder of `SYNC_ADMIN_ROLE`: the **LOL multisig** or the **L2
+governance executor** (§3.1). So arming or disarming the privileged sync path stays in
+trust domains the automation holder does not control, even though it tunes
+delay/amounts/fees. The separation that matters for §2.7 is therefore intact —
+what the `SYNC_ADMIN_ROLE` split changes is *which* other domain can re-plug the
+layer, and at what latency (§3.1, §4.2.2 (b)/(c)), not whether the automation holder
+can arm itself. It cannot.
+(Earlier this independence also lived in `SyncTrigger`'s *owner* being the
+governance executor; that owner-level split was dropped to cut operational
+friction — the funds the sync path can reach are the LOL-owned pool's anyway — so
+the cross-domain backstop rides on the `SYNC_ROLE` admin instead. The §4.2 holder
+split is a *different* separation and does not restore that one: it separates
+automation from **liquidity**, not automation from governance, and the backstop
+stays exactly where it was.)
 
 **2. Defense-in-depth keeps the privilege on its own contract.** §3.4 lists kill
-switches on the *same* path held in *different* trust domains: the LOL multisig
+switches on the *same* path held in *different* trust domains: the Automation Owner
 disarms the CRE side (`CREReceiver.setForwarder(0x…dead)` / `setExpectedAuthor`) and
 the sync parameters (`SyncTrigger.setForwarder(0x…dead)`), while the
 L2 governance executor independently revokes the privilege itself
-(`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) from a domain LOL does not
-control. Keeping `SYNC_ROLE` on a dedicated `SyncTrigger` — not bolted onto the CRE
+(`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) from a domain that holder does
+not control. Keeping `SYNC_ROLE` on a dedicated `SyncTrigger` — not bolted onto the CRE
 receiver — keeps that governance revoke a clean, single, CRE-agnostic target.
 
 **3. The privilege keeps a minimal, CRE-agnostic surface.** `SYNC_ROLE` lives in
@@ -313,14 +347,45 @@ off-chain. Each is **per chain / per contract**.
 
 | Role                  | On-chain identity                                              | On (contract)                               | What it can do                                                                                                                                 |
 | --------------------- | -------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Admin**             | `DEFAULT_ADMIN_ROLE` = `0x00`                                  | `CustomSender` (each L2); `L1Receiver` (L1) | grant/revoke all roles; on **`CustomSender`**: `setOraclePool`, `setReceiver`; on **`L1Receiver`**: `setSender`, `setAdapter`, `recoverTokens` |
+| **Admin**             | `DEFAULT_ADMIN_ROLE` = `0x00`                                  | `CustomSender` (each L2); `L1Receiver` (L1) | grant/revoke all roles **except `SYNC_ROLE`**, whose admin is the row below — reachable in one extra call by self-granting `SYNC_ADMIN_ROLE`, of which it *is* the admin; on **`CustomSender`**: `setOraclePool`, `setReceiver`, `setSyncRoleAdmin`; on **`L1Receiver`**: `setSender`, `setAdapter`, `recoverTokens` |
 | **Sync caller**       | `SYNC_ROLE` = `keccak256("SYNC_ROLE")`                         | `CustomSender` (each L2)                    | call `sync()` to start the CCIP round-trip                                                                                                     |
+| **Sync-role admin**   | `SYNC_ADMIN_ROLE` = `keccak256("SYNC_ADMIN_ROLE")` — set as `getRoleAdmin(SYNC_ROLE)` | `CustomSender` (each L2)  | grant/revoke `SYNC_ROLE`, i.e. **re-plug the automation layer**. Held by **both** the LOL multisig and the L2 governance executor, so the §3.4 backstop stays one call for governance while LOL can replace a `SyncTrigger` at Safe latency instead of DAO latency |
 | **Proxy owner**       | `owner()`                                                      | `ProxyAdmin` (L1 + each L2)                 | `upgradeAndCall` to swap the implementation of the `LidoCustomReceiver` proxy (L1) / `CustomSender` proxy (L2) — **strongest power**; see §2.5 |
 | **SyncTrigger owner** | `owner()`                                                      | `SyncTrigger` (each L2)                     | `setForwarder`, `setDelay`, `setAmounts`, `setFeeOtoD/DtoO`, `setMaxGasLimit`, `sweep`                                                                           |
 | **Pool owner**        | `owner()`                                                      | new `OraclePool` (each L2)                  | `pause`/`unpause`/`sweep`; seed/withdraw liquidity                                                                                             |
 | **CREReceiver owner** | `owner()`                                                      | `CREReceiver` (each L2)                     | `setForwarder`, `setExpectedAuthor`, `setAllowedCall`, `withdrawETH`                                                                           |
 | **Workflow owner**    | owner on `WorkflowRegistry` (L1) **= pinned `expectedAuthor`** | Chainlink registry + `CREReceiver`          | deploy / pause / activate / delete the CRE workflow; its signature authorizes reports                                                          |
 | **Forwarder**         | configured `forwarder` on `CREReceiver`                        | `CREReceiver` (each L2)                     | the only `msg.sender` accepted by `onReport`                                                                                                   |
+
+**Why `SYNC_ROLE` has its own admin role.** By default OpenZeppelin leaves every
+role's admin unset, which reads as `DEFAULT_ADMIN_ROLE` — so out of the box only the
+gov executor could re-point `SYNC_ROLE`, and after `finalize` that is a **DAO vote per
+lane**. The one failure that most needs a fast re-plug is **(c) Automation EOA keys
+lost** (§4.2.2): the pair keeps running at last-good values but can never be retuned,
+so recovery means a fresh `SyncTrigger` — and the role, not the contract identity, is
+the seam (§2.7). Routing that through governance makes an *inert* failure expensive to
+clear. `_setRoleAdmin(SYNC_ROLE, SYNC_ADMIN_ROLE)` moves it to a role the **LOL
+multisig** holds, turning weeks into a Safe quorum, while granting the same role to the
+gov executor keeps governance's own `revokeRole` a single call.
+
+Three properties of the OZ mechanism decide how this must be read (they are not
+tunable):
+
+- **Admin means grant *and* revoke.** `getRoleAdmin` returns one role that gates both
+  `grantRole` and `revokeRole`. A revoke-only guardian is not expressible this way; it
+  would need custom code.
+- **Grant targets are unrestricted.** A `SYNC_ADMIN_ROLE` holder can grant `SYNC_ROLE`
+  to **itself** and call `CustomSender.sync()` directly, bypassing every `SyncTrigger`
+  gate. This is why the role is a genuine widening of the LOL domain and not a
+  book-keeping change — priced in full at §4.2.2 (b).
+- **Holders can always self-renounce, and no holder here can.** `renounceRole` is
+  admin-independent, but every current `SYNC_ROLE` holder is a contract with no code
+  path that emits the call, so dropping the role is always the admin's job.
+
+`setSyncRoleAdmin(bytes32)` stays `DEFAULT_ADMIN_ROLE`-gated and permanent rather than a
+one-shot initializer, so governance can re-point or retract the arrangement later
+without another implementation upgrade — it grants no power the proxy owner did not
+already have (§2.5).
 
 ### 3.2 Owners / actors and what they hold
 
@@ -330,18 +395,21 @@ first, then the contract actors, then the external (Chainlink) actor.
 | Owner / actor | Kind | What it holds in the final state | Notes |
 |---|---|---|---|
 | **Lido DAO Agent** `0x3e40…9C8c` | L1 contract/multisig | Admin of `L1Receiver`; owner of L1 `ProxyAdmin` | every action = Aragon DAO vote (days–weeks) |
-| **L2 Governance Executor** (per net) | L2 bridge-executor contract | Admin of `CustomSender` (incl. `SYNC_ROLE` grant/revoke); owner of L2 `ProxyAdmin` | driven by Lido DAO via the L1→L2 governance bridge; holds the proxy-upgrade and `SYNC_ROLE` kill switches |
-| **LOL multisig** (one Safe, same address on all 4 L2s) | L2 multisig | Owner of the new `OraclePool`; owner of `CREReceiver`; owner of `SyncTrigger`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | provides the wstETH seed; holds the CRE pause switch + the `SyncTrigger` sync levers; the workflow is registered under this Safe via `cre workflow deploy --unsigned` (ADR-0001) |
-| **Lido Deployer** (EOA, addr TBD) | off-chain key | **nothing in the final state** — but **transiently owns** the new pool / `SyncTrigger` / `CREReceiver` during the canary test (and is the `CREReceiver` forwarder **and** author then, to drive the simulated sync), all restored to production config and transferred to LOL at `handoff` | **no on-chain admin** and **not the CRE workflow owner**; post-migration holds zero on-chain power over Lido contracts. Canary flow: [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md) |
+| **L2 Governance Executor** (per net) | L2 bridge-executor contract | Admin of `CustomSender`; **`SYNC_ADMIN_ROLE`**; owner of L2 `ProxyAdmin` | driven by Lido DAO via the L1→L2 governance bridge; holds the proxy-upgrade and `SYNC_ROLE` kill switches. `queue(address[] targets, …, bytes[] calldatas, …)` takes an **array**, so a multi-call response is one action set, not one vote each |
+| **LOL multisig** (one Safe, same address on all 4 L2s) | L2 multisig | Owner of the new `OraclePool`; **`SYNC_ADMIN_ROLE` on `CustomSender`** | provides the wstETH seed; holds `pause`/`unpause` and `sweep` on the live pool. `SYNC_ADMIN_ROLE` exists so a lost Automation Owner key can be routed around at Safe latency (§3.1) — it also means a Safe compromise reaches the sync path, which is the whole of §4.2.2 (b). Held the three automation assignments too under the retired arrangement ([archive](docs/archive/ownership-lol-owned-automation.md)), and still does on-chain today |
+| **Automation Owner** (EOA, addr TBD — one key, all 4 L2s) | off-chain key | Owner of `SyncTrigger`; owner of `CREReceiver`; **CRE workflow owner** (= `expectedAuthor` on every L2 `CREReceiver`) | the §4.2 holder split: one signature for every automation lever and both CRE kill switches, and the workflow is signed natively (no `--unsigned`). Reaches fees and timing, never principal (§4.2.2 (d)); key custody terms are still open ([transition plan §8 Q1](docs/automation-owner-redeploy.md)) |
+| **Lido Deployer** (EOA, addr TBD) | off-chain key | **nothing in the final state** — but **transiently owned** the new pool / `SyncTrigger` / `CREReceiver` during the canary test (and was the `CREReceiver` forwarder **and** author then, to drive the simulated sync), all restored to production config and transferred to LOL at `handoff` | **no on-chain admin** and **not the CRE workflow owner**; post-migration holds zero on-chain power over Lido contracts. The §4.2 automation pair is deployed **Automation-Owner-owned from its constructor**, so no handoff transfer repeats for it. Canary flow: [docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md) |
 | **Initial Owner** `0xb5c3…91a8` | EOA — **external (not Lido-controlled)** | **nothing** — revoked from every migrated contract | external migration-handoff key (upstream `chainlink-csr` admin); executes Stage 2 and is renounced once it completes — **but completion across all chains depends on this external party** (§6.4) |
 | **Initial Liquidity Owner** `0x2897…b18c` | EOA | Owner of the **old** pools only | retains `sweep()` on the old pools; no control over any new infrastructure |
-| **`SyncTrigger`** (contract) | L2 contract | Holds `SYNC_ROLE` on `CustomSender` | acts only on calls from its forwarder (`CREReceiver`); config owned by the LOL multisig, but its `SYNC_ROLE` is grant/revocable by the L2 governance executor |
-| **`CREReceiver`** (contract) | L2 contract | Is the configured `forwarder` on `SyncTrigger` | accepts reports only from the CRE Forwarder; owned by LOL, which is also its pinned `expectedAuthor` / CRE workflow owner |
+| **`SyncTrigger`** (contract) | L2 contract | Holds `SYNC_ROLE` on `CustomSender` | acts only on calls from its forwarder (`CREReceiver`); config owned by the Automation Owner, but its `SYNC_ROLE` is grant/revocable by either `SYNC_ADMIN_ROLE` holder — LOL or the L2 governance executor. It cannot drop the role itself: `renounceRole` is available to any holder, but this contract has no code path that emits an arbitrary call |
+| **`CREReceiver`** (contract) | L2 contract | Is the configured `forwarder` on `SyncTrigger` | accepts reports only from the CRE Forwarder; owned by the Automation Owner, which is also its pinned `expectedAuthor` / CRE workflow owner |
 | **CRE Forwarder / CRE network** | Chainlink (external) | The accepted forwarder address; **no on-chain role on Lido contracts** otherwise | **not controllable by Lido**; the §3.4 kill switches override it |
 
-Per-chain accounts (the governance executor is the only account that varies between L2s; the LOL multisig is the same Safe address on all four):
+Per-chain accounts (the governance executor is the only account that varies between L2s;
+the LOL multisig is the same Safe address on all four, and the Automation Owner is one
+EOA across all four — open question Q8 in the transition plan):
 
-| Chain | Governance executor (`CustomSender` admin / proxy owner) | LOL multisig (pool / CREReceiver / SyncTrigger owner) |
+| Chain | Governance executor (`CustomSender` admin / proxy owner) | LOL multisig (new-pool owner) |
 |---|---|---|
 | **Optimism** | `0xEfa0dB536d2c8089685630fafe88CF7805966FC3` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
 | **Arbitrum** | `0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
@@ -349,30 +417,32 @@ Per-chain accounts (the governance executor is the only account that varies betw
 | **Linea** | `0x74Be82F00CC867614803ffd7f36A2a4aF0405670` | `0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6` |
 | **Ethereum L1** (shared) | Lido DAO Agent `0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c` | — |
 
-> **Why the CRE workflow owner is the LOL multisig (Safe), not an EOA.** Unlike every
-> other role, this one is *fixed at registration*: a CRE workflow's owner is whatever
-> account `cre workflow deploy` registers, baked into every signed report as
-> `metadata.workflowOwner`, and `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) exposes **no
-> per-workflow ownership-transfer function** — so the owner can't be *moved* afterwards
-> (changing it means deploying a *new* workflow and re-pinning `setExpectedAuthor` on all
-> four L2s). To avoid that single-key cliff, the workflow is registered under the **LOL
-> multisig (Safe)** — the same Safe that owns each `CREReceiver` — via
-> `cre workflow deploy … --unsigned` (`workflow-owner-address` = the Safe; the emitted
-> `WorkflowRegistry` calldata is executed *from the Safe*). The Safe address becomes both
-> the on-chain owner and the pinned `expectedAuthor`. A lost or compromised *signer* is
-> then handled by **rotating that signer inside the Safe** — the workflow-owner address
-> never changes, so there is **no redeploy and no `setExpectedAuthor` re-pin**. The
-> single-EOA loss/compromise vector folds into the LOL-multisig risk already accepted
-> everywhere else. The Lido Deployer EOA only **broadcasts Stage 1** and funds the
-> SyncTrigger float; it holds **zero on-chain power** afterwards and is **not** the
-> workflow owner. Full rationale, the EOA alternative, and the recovery primitive:
-> [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md). The Safe owner relies on
-> three CRE Early-Access residuals (see ADR-0001 "Residuals"); since the deploy uses no
-> testnet rehearsal and the canary's `simulate-sync` stands in for the real forwarder, the
-> author-gate residual is first proven by the **first production** `CREReceiver.CallExecuted`
-> (RUNBOOK gate **G2-author**).
+> **The CRE workflow owner is the Automation Owner (EOA), and that is a cliff accepted
+> with eyes open.** Unlike every other role, this one is *fixed at registration*: a CRE
+> workflow's owner is whatever account `cre workflow deploy` registers, baked into every
+> signed report as `metadata.workflowOwner`, and `WorkflowRegistry 2.0.0`
+> (`0x4Ac5…E7e5`) exposes **no per-workflow ownership-transfer function** — so the owner
+> can't be *moved* afterwards. Changing it means deploying a *new* workflow and re-pinning
+> `setExpectedAuthor` on all four L2s. Under an EOA owner, a lost or compromised key
+> triggers exactly that (§4.2.2 (c)); [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)
+> chose a **Safe** owner precisely to avoid it, because a Safe absorbs the loss of a
+> single *signer* by rotating that signer while the workflow-owner address never moves.
+> The §4.2 decision overrides that trade: it takes the single-key cliff in exchange for
+> native signing (no `cre workflow deploy … --unsigned` detour), one-signature CRE kill
+> switches, and a Safe compromise that no longer reaches the automation layer. ADR-0001
+> is therefore **superseded** — by ADR-0002, still to be written (transition plan S1.12) —
+> and its three CRE Early-Access residuals carry over unchanged to the EOA owner. Two
+> further consequences of the EOA owner: it must first be a **linked owner**
+> (`cre account link-key`), which has never been done for any account; and **CRE credits
+> are administered against the workflow owner's CRE account**, so billing and
+> `pause`/`activate`/`delete` move with it. The Lido Deployer EOA only **broadcasts
+> deploys** and funds the SyncTrigger float; it holds **zero on-chain power** afterwards
+> and is **not** the workflow owner. Since the deploy uses no testnet rehearsal and the
+> canary's `simulate-sync` stands in for the real forwarder, the author-gate residual is
+> first proven by the **first production** `CREReceiver.CallExecuted` (RUNBOOK gate
+> **G2-author**).
 
-**End-of-life recovery.** Each treasury is reclaimed by the owner that holds it here — now all the LOL multisig: it `sweep`s the `SyncTrigger` float, `withdrawETH`s the `CREReceiver`, and reclaims the new pool's liquidity + CRE credit. Ordered, gated decommission procedure: [`RUNBOOK.md` §4](RUNBOOK.md#4--decommission--sunset-end-of-life).
+**End-of-life recovery.** Each treasury is reclaimed by the owner that holds it here — the **Automation Owner** `sweep`s the `SyncTrigger` float, `withdrawETH`s the `CREReceiver` and reclaims the CRE credit; the **LOL multisig** reclaims the new pool's liquidity. Ordered, gated decommission procedure: [`RUNBOOK.md` §4](RUNBOOK.md#4--decommission--sunset-end-of-life).
 
 ### 3.3 Granting and revoking — both matter
 
@@ -385,7 +455,15 @@ work they later allow. Two points baked into the scripts:
   contract.
 - **Atomic, read-back-or-revert.** Each permission change is followed by an
   in-transaction assertion; a partial migration reverts the whole transaction
-  instead of leaving a half-migrated contract.
+  instead of leaving a half-migrated contract. This matters more than it looks:
+  OZ's `revokeRole` is a **silent no-op** on an account that never held the role, so
+  a mistyped address revokes nothing while the transaction still succeeds. Only the
+  `hasRole` read-back distinguishes the two.
+- **The admin relation is itself state.** `getRoleAdmin(SYNC_ROLE)` must read
+  `SYNC_ADMIN_ROLE`, not `0x00`, and both intended holders must read `true` — checked
+  live by `just audit-ownership` and pinned by state-mate. An implementation rollback
+  would silently return the admin to `DEFAULT_ADMIN_ROLE` and strip LOL's ability to
+  re-plug, without touching any `hasRole` the old config asserted.
 
 ### 3.4 What the project still controls if Chainlink misbehaves
 
@@ -395,19 +473,35 @@ on-chain control of the sync path through **kill switches**:
 | Concern | Owner | Lever |
 |---|---|---|
 | Pool issue | LOL multisig | `OraclePool.pause()` |
-| CRE author-key compromise | LOL multisig | `CREReceiver.setExpectedAuthor(new)` |
-| CRE infra hostile/degraded | LOL multisig | `CREReceiver.setForwarder(0x…dead)` |
-| SyncTrigger misconfigured | LOL multisig | `SyncTrigger.setForwarder(0x…dead)` |
+| CRE author-key compromise | Automation Owner | `CREReceiver.setExpectedAuthor(new)` |
+| CRE infra hostile/degraded | Automation Owner | `CREReceiver.setForwarder(0x…dead)` |
+| SyncTrigger misconfigured | Automation Owner | `SyncTrigger.setForwarder(0x…dead)` |
+| Automation Owner key lost — re-plug the layer | LOL multisig | `CustomSender.grantRole(SYNC_ROLE, newTrigger)` + `revokeRole(SYNC_ROLE, oldTrigger)` |
 | Rogue / compromised sync path (independent backstop) | L2 governance executor | `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)` |
 
-> **CRE workflow owner = LOL multisig (Safe).** A lost or compromised Safe **signer** is handled by
-> rotating that signer inside the Safe (`addOwner` / `swapOwner` / `removeOwner`) — the workflow-owner
-> address never changes, so **no redeploy and no `setExpectedAuthor` re-pin** (§3.2, ADR-0001). The levers
-> above (`setExpectedAuthor` / `setForwarder`) are the recovery hinge only for the catastrophic case where
-> the **whole Safe** is compromised (≥ threshold signers) — the same event that already loses every other
-> LOL-held lever — via the one-time "redeploy + re-pin" primitive
-> ([ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)). The GovExec backstop
-> (`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) stays in an independent trust domain regardless.
+Three of the six now cost **one signature instead of a Safe quorum** — the §4.2
+holder split's main operational gain. Its price is in the same table: rows 2–4 are
+also re-armable by whoever holds that key, so against a compromised Automation Owner
+the last row is the *only* switch that stays shut (§4.2.2 (d)). Rows 1, 5 and 6 sit
+outside that key's reach entirely — it holds neither the pool nor `SYNC_ADMIN_ROLE`.
+
+**Row 5 is the `SYNC_ADMIN_ROLE` gain; row 6 is what it costs.** Both are the same
+capability seen from two sides — whoever can grant `SYNC_ROLE` can also re-grant it
+after governance revokes. Against a **compromised LOL Safe** (not the Automation
+Owner), row 6 alone therefore no longer terminates the incident: the containing action
+set must revoke `SYNC_ADMIN_ROLE` from LOL **and** `SYNC_ROLE` from whatever it granted,
+in that order, in one queued set (§4.2.2 (b)). Against every other failure in this
+table the backstop is unchanged, because no other holder has the role.
+
+> **CRE workflow owner = Automation Owner (EOA).** There is no signer to rotate: the workflow-owner
+> address *is* the key, so a lost or compromised Automation Owner means the one-time **"redeploy +
+> re-pin"** primitive — a new workflow plus `setExpectedAuthor` on all four L2s (§3.2, §4.2.2 (c),
+> and the primitive itself in [ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md), whose
+> *choice* §4.2 supersedes but whose *mechanics* still apply). The levers above
+> (`setExpectedAuthor` / `setForwarder`) are the fast hinge while the key is still trusted, and are
+> re-armable by an attacker who holds it. The GovExec backstop
+> (`CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`) stays in an independent trust domain
+> regardless, and is the containment of record for that case.
 
 ---
 
@@ -418,14 +512,15 @@ in structure.
 
 ### 4.1 Diagram A — components + operational flow (value & control)
 
-**Holder arrangement drawn here: 4.2.B** (§4.2.B — a *proposal*, not a decision;
-§4.2.A is what the scripts implement today). The choice touches this diagram in
-exactly two dashed edges (**A**, **B**) and nowhere else: under 4.2.A they point
-at the **LOL multisig** instead of the Automation Owner, and every numbered edge
-below is unchanged between the two. That is 4.2.B's own claim — *"this
-introduces a holder, not a power"* (§4.2.B) — read off the operational face
-rather than restated: if a holder swap changed any call in the value or control
-path, the claim would be false. It does not.
+**Holder arrangement drawn here: the target one** (§4.2 — a dedicated Automation
+Owner; the retired LOL-owned arrangement is
+[archived](docs/archive/ownership-lol-owned-automation.md) and is still what the
+chain runs). That choice touches this diagram in exactly two dashed edges (**A**,
+**B**) and nowhere else: under the retired arrangement they start at the **LOL
+multisig** instead, and every numbered edge below is identical either way. That is
+§4.2.1's own claim — *"it moved a holder, not a power"* — read off the operational
+face rather than restated: if a holder swap changed any call in the value or
+control path, the claim would be false. It does not.
 
 Every arrow now carries the **method actually invoked**, named as the callee
 declares it — and where no single method exists, the arrow says so instead of
@@ -441,7 +536,7 @@ than crowding the arrow.
 ```mermaid
 flowchart TB
     staker([Staker])
-    AO(["Automation Owner<br/>EOA — 4.2.B holder"])
+    AO(["Automation Owner<br/>EOA — automation-layer holder"])
 
     subgraph L2["L2 (Optimism / Arbitrum / Base / Linea)"]
         CS["CustomSender<br/>(CustomSenderReferral)"]
@@ -490,7 +585,7 @@ flowchart TB
     BR ==>|"17 · L2 finalization"| NEW
     BR -.->|"in-flight at cutover"| OLD
 
-    %% ── 4.2.B holder edges — the ONLY delta vs 4.2.A ─────────────────
+    %% ── holder edges — the ONLY delta vs the retired arrangement ─────
     AO -.->|"A · workflow owner<br/>= expectedAuthor<br/>setExpectedAuthor"| CRER
     AO -.->|"B · float top-up · sweep<br/>setDelay · setAmounts<br/>setFeeOtoD · setFeeDtoO<br/>setForwarder"| ST
 ```
@@ -546,7 +641,7 @@ the fee actually spent; the `maxFeeOtoD` overage refunds to `SyncTrigger` inside
 back: a failed CCIP message parks in `CCIPDefensiveReceiverUpgradeable` for
 `retryFailedMessage`, and a bridge finalization simply appears in the pool.
 
-**Three fixes this pass made to Diagram A, independent of 4.2.A/4.2.B.** They
+**Three fixes this pass made to Diagram A, independent of who holds what.** They
 were mislabels, not new behaviour: (a) `swap` sends wstETH to the **staker**
 (`recipient = msg.sender` of `fastStake`), not back to `CustomSender` — the old
 `OraclePool -.-> CustomSender` "wstETH liquidity" edge drew a hop that does not
@@ -582,18 +677,18 @@ token transfer), so they get their own cells.
 with `onlyRole(SYNC_ROLE)` in the Gate column, rather than the old
 *"trigger sync (SYNC_ROLE)"*, which read as if the role were the thing invoked.
 
-`A.7` governs the 4.2.B overlay. A holder is not a power and not a call, so
-accepting 4.2.B may not redraw the flow — it may only re-point the two dashed
-holder edges. If updating Diagram A for 4.2.B had required touching a numbered
-edge, that would have been evidence *against* §4.2.B's central bound ("nothing in
-4.2.B can reach anything `SyncTrigger.owner` / `CREReceiver.owner` could not
-already reach in 4.2.A"). Edges A and B are dashed for the same reason: neither
+`A.7` governs the holder overlay. A holder is not a power and not a call, so
+adopting the Automation Owner may not redraw the flow — it may only re-point the
+two dashed holder edges. If updating Diagram A for it had required touching a
+numbered edge, that would have been evidence *against* §4.2.1's central bound
+("nothing the Automation Owner can reach was unreachable by `SyncTrigger.owner` /
+`CREReceiver.owner` before"). Edges A and B are dashed for the same reason: neither
 is traversed during a sync. A is an identity **pin** compared inside edge 7, and
 B is an owner lever whose only steady-state trace is the float that edge 8
 spends — which is exactly why a compromise of that key can *force* syncs at times
 and sizes of its choosing and burn the float, yet cannot alter what edges 9–17 do
 with the WETH, cannot touch edges 1–3, and cannot take a wei of pool liquidity
-(§4.2.B "Blast radius").
+(§4.2.1 "Blast radius").
 
 Diagram A stays the *operational* face and does not become the ownership face
 (`C.30`, `E.17`): `AO` appears with two edges and no `owner()` inventory —
@@ -603,77 +698,89 @@ and the gov executor live.
 
 ### 4.2 Diagram B — ownership & access control
 
-Two ownership arrangements are on the table. **4.2.A is what the migration
-scripts and state-mate configs currently implement**; **4.2.B is a live proposal,
-not a decision** — §4.2.B closes with the open questions a choice would have to
-answer. They differ in *exactly one* respect (who holds the automation-layer
-`owner()` roles), so 4.2.B is written as a delta against 4.2.A rather than a
-second full picture. §4.1's Diagram A is drawn under **4.2.B**, where the choice
-shows up as two dashed holder edges and no change to any call — which is the
-same claim as this section's "one respect", seen from the operational face.
+**The holder arrangement: a dedicated Automation Owner.** The automation layer's
+three `owner()` roles and the CRE workflow owner sit on a Lido-operated EOA, held
+apart from the **LOL multisig**, which keeps the pool. This was **chosen on
+2026-07-29** over the arrangement in which the LOL Safe holds all four — the
+decision record is at the end of this section. That losing option is **retired,
+not deleted**: its diagram, the axis on which it still wins, and the superseded
+`probe again` record are kept in
+[docs/archive/ownership-lol-owned-automation.md](docs/archive/ownership-lol-owned-automation.md)
+(`A.16.2` — a retirement withdraws authority, it does not erase the branch).
 
-#### 4.2.A — current: the LOL multisig owns the automation layer
+> **This is the target, and the chain has not moved yet (§6.2).** Today all four
+> assignments still read **LOL Safe** on all four lanes — i.e. the retired
+> arrangement is the live one. What is true per lane at which block, and the
+> ordered route from there to here, is
+> [docs/automation-owner-redeploy.md](docs/automation-owner-redeploy.md); the
+> scripts and state-mate configs listed in its S1 still encode the retired shape.
+> `SYNC_ADMIN_ROLE` is likewise **not on chain yet**: `getRoleAdmin(SYNC_ROLE)` reads
+> `0x0000000000000000000000000000000000000000000000000000000000000000` on all four lanes
+> today, so until the §2.5 implementation upgrade lands, every `SYNC_ROLE` grant/revoke
+> below is `DEFAULT_ADMIN_ROLE`-gated and LOL holds none of it.
 
 ```mermaid
 flowchart TB
-    subgraph HOLDERS["Off-chain holders — signers, not bound to one chain"]
+    subgraph HOLDERS["Off-chain holders"]
         direction LR
-        LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
-        DEP["Lido Deployer<br/>(Stage-1 broadcast only)"]
+        AO["Automation Owner<br/>(EOA — Lido-operated<br/>hot key)"]
+        LOL["LOL multisig<br/>(one Safe,<br/>all 4 L2s)"]
         IO["Initial Owner"]
-        ILO["Initial Liquidity Owner"]
+        ILO["Initial<br/>Liquidity Owner"]
+        AO ~~~ LOL
+        IO ~~~ ILO
     end
 
     subgraph L2G["L2 — per network (×4)"]
         direction LR
         GOV["L2 Gov Executor<br/>(per network)"]
-        CS["L2 CustomSender<br/>(CustomSenderReferral)<br/>transparent proxy — upgradeable"]
+        CS["L2 CustomSender<br/>(CustomSenderReferral)<br/>transparent proxy —<br/>upgradeable"]
         L2PA["L2 ProxyAdmin"]
 
-        subgraph AUTO["Automation layer — detachable (see note)"]
+        subgraph AUTO["Automation layer"]
             CRER["CREReceiver"]
             ST["SyncTrigger"]
         end
 
-        subgraph POOLS["Liquidity layer — pointer-selected, one live at a time"]
-            NEW["New OraclePool<br/>nothing settable after deploy:<br/>SENDER immutable · setOracle/setFee revert"]
-            OLD["Old OraclePool<br/>same wiring, no longer selected"]
+        subgraph POOLS["Liquidity layer"]
+            NEW["New OraclePool<br/>nothing settable<br/>after deploy:<br/>SENDER immutable ·<br/>setOracle/setFee<br/>revert"]
+            OLD["Old OraclePool<br/>same wiring,<br/>no longer selected"]
         end
     end
 
-    subgraph L1G["L1 — Ethereum mainnet (shared by all four lanes)"]
+    subgraph L1G["L1 — Ethereum mainnet"]
         direction LR
         DAO["Lido DAO Agent"]
-        L1R["L1Receiver<br/>(LidoCustomReceiver)<br/>transparent proxy — upgradeable"]
+        L1R["L1Receiver<br/>(LidoCustomReceiver)<br/>transparent proxy —<br/>upgradeable"]
         L1PA["L1 ProxyAdmin"]
-        WFREG["CRE WorkflowRegistry"]
+        WFREG["CRE<br/>WorkflowRegistry"]
     end
 
     DAO -->|admin| L1R
-    DAO -->|proxy owner| L1PA
+    DAO -->|"proxy<br/>owner"| L1PA
     L1PA -->|administers| L1R
 
-    GOV -->|"admin — setOraclePool · SYNC_ROLE grant/revoke · setReceiver"| CS
-    GOV -->|proxy owner| L2PA
+    GOV -->|"admin —<br/>setOraclePool ·<br/>setReceiver ·<br/>setSyncRoleAdmin ·<br/>SYNC_ADMIN_ROLE"| CS
+    GOV -->|"proxy<br/>owner"| L2PA
     L2PA -->|administers| CS
 
-    LOL -->|"owner — pause/unpause · sweep (all liquidity)"| NEW
-    LOL -->|owner| ST
-    LOL -->|owner| CRER
-    LOL -->|"workflow owner via --unsigned"| WFREG
-    LOL -.->|= expectedAuthor| CRER
+    LOL -->|"owner —<br/>pause/unpause<br/>· sweep"| NEW
+    LOL -->|"SYNC_ADMIN_ROLE<br/>— grant/revoke<br/>SYNC_ROLE"| CS
 
-    DEP -.->|"Stage-1 deploy only — no final role"| CS
+    AO -->|"owner —<br/>setForwarder ·<br/>setDelay ·<br/>setAmounts ·<br/>setFee* ·<br/>sweep"| ST
+    AO -->|"owner —<br/>setForwarder ·<br/>setExpectedAuthor<br/>· setAllowedCall"| CRER
+    AO -->|"workflow<br/>owner"| WFREG
+    AO -.->|"= expected<br/>Author"| CRER
 
     CRER -->|forwarder| ST
-    ST ==>|"SYNC_ROLE — the only seam into the core"| CS
+    ST ==>|"SYNC_ROLE —<br/>the only seam<br/>into the core"| CS
 
-    CS ==>|"oraclePool pointer — the live selection; admin-only"| NEW
-    NEW ---|"SENDER (immutable) — welded to this sender"| CS
-    OLD ---|"SENDER (immutable) — still welded, never re-selected"| CS
+    CS ==>|"oraclePool pointer<br/>— the live<br/>selection;<br/>admin-only"| NEW
+    NEW ---|"SENDER —<br/>immutable,<br/>welded to<br/>this sender"| CS
+    OLD ---|"SENDER —<br/>still welded,<br/>never re-selected"| CS
 
-    ILO -->|"owner — sweep only"| OLD
-    IO -.->|revoked — no role| CS
+    ILO -->|"owner —<br/>sweep"| OLD
+    IO -.->|revoked| CS
 
     %% layout only — keeps the L1 group below the L2 group; no power implied
     CS ~~~ L1G
@@ -683,42 +790,52 @@ flowchart TB
 power that is the **single load-bearing seam** between layers · `---` (no
 arrowhead) a bond **nobody** can exercise or change — frozen in bytecode ·
 `-.->` no live call path: revoked, or an identity pin rather than a call ·
-`~~~` invisible, **layout only** (it pins L1 below L2 and carries no meaning).
+`~~~` invisible, **layout only** — it pins L1 below L2 and arranges the holders
+as a 2×2 block, and carries no meaning in either place.
 
 **Reading the groups.** Three groups answer three different questions and must
 not be read as one hierarchy: `HOLDERS` is *who signs* (off-chain keys, no
 chain of their own — the LOL Safe is deployed per L2 but is one holder across
-all four); `L2G` / `L1G` is *where the code lives* — `L2G` is drawn once but
-exists ×4 (one independent instance per network), while everything in `L1G` is a
-**single shared instance** all four lanes route through, which is why an L1
-compromise is the higher-blast-radius one (§6.2); `AUTO` / `POOLS` inside `L2G`
-is *what can be swapped* (see the two notes below). No edge crosses `L2G`↔`L1G`
-in this diagram — the cross-chain value path is §4.1's Diagram A, not this one;
-here the two chains are joined only by shared *holders*.
+all four, and the Automation Owner is one EOA across all four; the **Lido
+Deployer is deliberately absent** — it broadcasts deploys and holds nothing in
+this state, §3.2); `L2G` / `L1G` is
+*where the code lives* — `L2G` is drawn once but exists ×4 (one independent
+instance per network), while everything in `L1G` is a **single shared instance**
+all four lanes route through, which is why an L1 compromise is the
+higher-blast-radius one (§6.2); `AUTO` / `POOLS` inside `L2G` is *what can be
+swapped* (see the two notes below). No edge crosses `L2G`↔`L1G` in this diagram —
+the cross-chain value path is §4.1's Diagram A, not this one; here the two chains
+are joined only by shared *holders*.
 
 **On the `AUTO` group.** The box answers one question: *which contracts can be
 swapped out without upgrading a proxy or moving value?* `CREReceiver` and
 `SyncTrigger` are grouped because all three of these hold of both and of nothing
 else in the diagram — they are **not upgradeable** (no proxy, no admin slot;
-§4.3), their config owner is the **LOL multisig** (operational, fast — not a DAO
-vote), and they attach to the audited core through **configurable addresses
-only**: `SyncTrigger.forwarder` inside the group, and the single thick
-`SYNC_ROLE` edge outward. Replacing either is a redeploy plus a
+§4.3), their config owner is the **Automation Owner** (one signature — not a
+quorum, not a DAO vote), and they attach to the audited core through
+**configurable addresses only**: `SyncTrigger.forwarder` inside the group, and the
+single thick `SYNC_ROLE` edge outward. Replacing either is a redeploy plus a
 `set…`/role call — no state migration, no `CustomSender`/pool/`L1Receiver`
-change (§2.7 ¶4).
+change (§2.7 ¶4). That detachability is not theoretical here: it is exactly the
+route by which this arrangement is reached (below), and the retired,
+LOL-owned pair it replaces stays deployed and de-roled, pinned by a state-mate
+`hasRole(SYNC_ROLE, retired) == false` assertion rather than remembered.
 
 What the box does **not** claim: (a) that the two are interchangeable or should
 be one contract — they sit on opposite sides of a deliberate trust boundary and
-carry different powers (§2.7); (b) that either can be replaced by LOL alone —
-swapping `CREReceiver` is LOL-only (`SyncTrigger.setForwarder`), but a new
-`SyncTrigger` is inert until the **L2 governance executor** grants it
-`SYNC_ROLE`, which is exactly why that edge is drawn thick and separate; (c) that
-detaching is free — with the group unplugged the lane simply stops syncing
-(§5.1: in-flight round-trips still land safely).
+carry different powers (§2.7); (b) that either can be replaced by the Automation
+Owner alone — swapping `CREReceiver` is Automation-Owner-only
+(`SyncTrigger.setForwarder`), but a new `SyncTrigger` is inert until a
+**`SYNC_ADMIN_ROLE` holder** grants it `SYNC_ROLE` — the LOL multisig at Safe
+latency or the L2 governance executor at DAO latency (§3.1) — which is exactly why
+that edge is drawn thick and separate, and why the group is *detachable* without
+being *self-replacing*; (c) that detaching is free — with the group unplugged
+the lane simply stops syncing (§5.1: in-flight round-trips still land safely).
 
 **On the `POOLS` group — what binds the new `OraclePool`, and what can move.**
-The pool is *not* pluggable the way the `AUTO` group is. Its binding is a
-**two-way pair, mutable on one side and welded on the other**:
+The pool is *not* pluggable the way the `AUTO` group is, and it is the part of
+this diagram the ownership change deliberately did **not** touch. Its binding is
+a **two-way pair, mutable on one side and welded on the other**:
 
 | Binding | Direction | Who can change it |
 |---|---|---|
@@ -752,97 +869,35 @@ and in liquidity, and only `NEW` is selected. The group asserts one thing, that
 both sit in the same binding shape, so a pool swap is always a
 deploy-and-re-point, never an edit.
 
-#### 4.2.B — proposal: a dedicated Automation Owner (EOA)
+#### 4.2.1 — what the ownership change moved, and what it did not
 
-**Status: under consideration, not decided.** Only the automation layer moves.
-The pool, both `ProxyAdmin`s, the `CustomSender` admin, and every `SYNC_ROLE`
-power stay exactly as in 4.2.A.
+**It moved a holder, not a power.** Both `owner()` slots in the `AUTO` box and the
+`expectedAuthor` pin existed before the change, and their on-chain capabilities are
+byte-identical — no contract changes, no new function, no new privilege (the fourth
+assignment, the CRE workflow owner, is registered fresh either way: no workflow has
+ever existed under any holder). What changed is *who is assigned to them*, and
+therefore which trust domain they sit in. Keeping that
+distinct (`A.7`: a holder is not a power) bounds the whole comparison: **nothing
+the Automation Owner can reach was unreachable by `SyncTrigger.owner` /
+`CREReceiver.owner` before.** The pool, both `ProxyAdmin`s, the `CustomSender`
+admin, and every `SYNC_ROLE` power are untouched.
 
-```mermaid
-flowchart TB
-    subgraph HOLDERS["Off-chain holders — signers, not bound to one chain"]
-        direction LR
-        LOL["LOL multisig<br/>(one Safe, all 4 L2s)"]
-        AO["Automation Owner<br/>(EOA — Lido-operated hot key)"]
-    end
-
-    subgraph L2G["L2 — per network (×4)"]
-        direction LR
-        GOV["L2 Gov Executor<br/>(per network)"]
-        CS["L2 CustomSender<br/>(CustomSenderReferral)<br/>transparent proxy — upgradeable"]
-        L2PA["L2 ProxyAdmin"]
-
-        subgraph AUTO["Automation layer — one holder, one key"]
-            CRER["CREReceiver"]
-            ST["SyncTrigger"]
-        end
-
-        subgraph POOLS["Liquidity layer — unchanged from 4.2.A"]
-            NEW["New OraclePool<br/>nothing settable after deploy:<br/>SENDER immutable · setOracle/setFee revert"]
-        end
-    end
-
-    subgraph L1G["L1 — Ethereum mainnet (shared by all four lanes)"]
-        direction LR
-        DAO["Lido DAO Agent"]
-        L1R["L1Receiver<br/>(LidoCustomReceiver)<br/>transparent proxy — upgradeable"]
-        L1PA["L1 ProxyAdmin"]
-        WFREG["CRE WorkflowRegistry"]
-    end
-
-    DAO -->|admin| L1R
-    DAO -->|proxy owner| L1PA
-    L1PA -->|administers| L1R
-
-    GOV -->|"admin — setOraclePool · SYNC_ROLE grant/revoke · setReceiver"| CS
-    GOV -->|proxy owner| L2PA
-    L2PA -->|administers| CS
-
-    LOL -->|"owner — pause/unpause · sweep (all liquidity)"| NEW
-
-    AO -->|"owner — setForwarder · setDelay · setAmounts · setFee* · sweep"| ST
-    AO -->|"owner — setForwarder · setExpectedAuthor · setAllowedCall"| CRER
-    AO -->|"workflow owner — signs directly, no --unsigned"| WFREG
-    AO -.->|= expectedAuthor| CRER
-
-    CRER -->|forwarder| ST
-    ST ==>|"SYNC_ROLE — the only seam into the core"| CS
-    CS ==>|"oraclePool pointer — the live selection; admin-only"| NEW
-    NEW ---|"SENDER (immutable) — welded to this sender"| CS
-
-    %% layout only — keeps the L1 group below the L2 group; no power implied
-    CS ~~~ L1G
-```
-
-Same grouping and edge conventions as 4.2.A. The delta is confined to `HOLDERS`
-and its edges into `AUTO`: nothing inside `L1G` moves, and the only `L1G` edge
-that changes holder is the workflow-owner one — the CRE workflow is registered on
-**L1** even though everything it drives is on L2.
-
-**This introduces a holder, not a power.** The three `owner()` roles in the box
-already exist in 4.2.A and their on-chain capabilities are byte-identical — no
-contract changes, no redeploy. What changes is *who is assigned to them*, and
-therefore which trust domain they sit in. Keeping that distinct matters here
-because it bounds the whole comparison: nothing in 4.2.B can reach anything
-`SyncTrigger.owner` / `CREReceiver.owner` could not already reach in 4.2.A.
-
-**What 4.2.B changes**
-
-| | 4.2.A | 4.2.B |
+| | Retired — LOL Safe holds all four | **Target — dedicated Automation Owner** |
 |---|---|---|
 | `SyncTrigger.owner` · `CREReceiver.owner` | LOL multisig | **Automation Owner** |
-| CRE workflow owner (`WorkflowRegistry`) | LOL Safe, registered via `cre workflow deploy --unsigned` (ADR-0001) | **Automation Owner** — an EOA signs workflows natively, so the `--unsigned` workaround is **no longer needed** |
+| CRE workflow owner (`WorkflowRegistry`) | LOL Safe, registered via `cre workflow deploy --unsigned` ([ADR-0001](docs/adr/0001-cre-workflow-owner-multisig.md)) | **Automation Owner** — an EOA signs workflows natively, so the `--unsigned` workaround is **no longer needed**; ADR-0001 is superseded by the pending ADR-0002 |
 | `CREReceiver.getExpectedAuthor()` | LOL (= workflow owner) | **Automation Owner** (= workflow owner) — the pin still tracks the workflow owner |
 | §3.4 kill switches `setForwarder(0x…dead)` / `setExpectedAuthor` | Safe quorum — minutes to hours | **one signature — seconds** |
 | Sync-parameter tuning (delay / amounts / fee blobs) | Safe quorum | one signature |
-| Pool `pause` / `sweep`, `SYNC_ROLE` revoke, proxy upgrades | LOL / gov executor | **unchanged** |
+| CRE credit + workflow lifecycle (`pause`/`activate`/`delete`) | LOL Safe's CRE account | **Automation Owner's CRE account** — a real operational hand-over, not just an address change |
+| Pool `pause` / `sweep`, `SYNC_ROLE` grant/revoke, proxy upgrades | LOL / gov executor | **unchanged** |
 | state-mate anchor | one `*l2LiquidityOwner` covers 4 role assignments | splits into `*l2LiquidityOwner` (pool) + **`*l2AutomationOwner`** (3 automation assignments) |
 
-That last row is worth its own note: today one anchor named `l2LiquidityOwner`
-stands for four different role assignments (pool owner, `SyncTrigger` owner,
-`CREReceiver` owner, `expectedAuthor`) purely because one holder happens to fill
-all four. 4.2.B forces that name apart, which removes an existing overload — the
-anchor is not about liquidity in three of its four uses.
+That last row is worth its own note: the retired arrangement had one anchor named
+`l2LiquidityOwner` standing for four different role assignments (pool owner,
+`SyncTrigger` owner, `CREReceiver` owner, `expectedAuthor`) purely because one
+holder happened to fill all four. The split forces that name apart, which removes
+an existing overload — the anchor is not about liquidity in three of its four uses.
 
 **Blast radius if the hot key is compromised.** Bounded, and bounded by design
 rather than by the key's custody:
@@ -856,65 +911,105 @@ rather than by the key's custody:
   arbitrary calldata — `CREReceiver` forwards **argument-less** calls only
   (audit-scope F-2) and holds no privilege of its own.
 - The independence §2.7 ¶1 relies on **survives**: that argument already places
-  the cross-domain backstop on `SYNC_ROLE`'s admin, not on the owner axis.
-  4.2.B weakens the owner axis and leaves the backstop intact.
+  the cross-domain backstop on `SYNC_ROLE`'s admin, not on the owner axis. Moving
+  the owner axis onto a single key weakens that axis and leaves the backstop intact.
 
-**The double-edge.** The same key both arms and disarms the CRE path. 4.2.B makes
-the §3.4 kill switches an order of magnitude faster to *pull* and also
-compromisable by a single key — and an attacker holding it can re-arm whatever a
-defender just disarmed. Under 4.2.B the gov executor's `revokeRole(SYNC_ROLE)`
+**The double-edge.** The same key both arms and disarms the CRE path. This
+arrangement makes the §3.4 kill switches an order of magnitude faster to *pull*
+and also compromisable by a single key — and an attacker holding it can re-arm
+whatever a defender just disarmed. So the gov executor's `revokeRole(SYNC_ROLE)`
 stops being a backstop of last resort and becomes the *only* switch an attacker
 with the key cannot re-open, which raises the value of having that revoke
-rehearsed and ready.
+rehearsed and ready (open question Q3 below).
 
-**Evidence that 4.2.B is operable.** The canary flow already runs this shape: the
-deployer EOA transiently owns `SyncTrigger` and `CREReceiver` and is the pinned
-`expectedAuthor` while the simulated sync is driven end to end
-([docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md)). 4.2.B
-is, in effect, that ownership arrangement made permanent — minus the canary's
-extra step of also pointing `getForwarder` at the deployer.
+**Evidence that this shape is operable.** The canary flow already ran it on-chain:
+the deployer EOA transiently owned `SyncTrigger` and `CREReceiver` and was the
+pinned `expectedAuthor` while a simulated sync was driven end to end
+([docs/mainnet-simulated-cre-test.md](docs/mainnet-simulated-cre-test.md)) — which
+is this arrangement made permanent, minus the canary's extra step of also pointing
+`getForwarder` at the deployer. **What that does not evidence:** the canary stood
+the deployer *in for* the CRE Forwarder, and no CRE workflow has ever been
+registered under any owner, so the real Forwarder → DON → workflow leg is
+**untested under either arrangement**. The first live DON-driven sync is a new
+milestone, not a re-run (transition plan S8).
 
-**Getting from A to B** — no redeploy: `transferOwnership` on `SyncTrigger` and
-`CREReceiver` (two LOL Safe txs per L2), `setExpectedAuthor(automationOwner)`,
-re-register the CRE workflow under the EOA (workflow ownership is recorded at
-registration), and split the state-mate anchor.
+**How the change is made — redeploy, not transfer.** Both contracts could reach
+this end state through their own setters (`transferOwnership` ×2 per lane plus
+`setExpectedAuthor`), and nothing about the owner is immutable. The chosen route
+is instead a **redeploy** of the pair under the new owner, because it needs no LOL
+Safe signature, gives one-owner-from-birth provenance, and cannot brick a contract
+on a mistyped address — at the cost of new per-lane addresses and the config,
+explorer and diffyscan churn that follows. Ordered stages, actors and gates:
+[docs/automation-owner-redeploy.md](docs/automation-owner-redeploy.md) §4. Two
+constraints out of that plan belong here, because the architecture claims above
+depend on them:
 
-**Decision record.** Chooser: Lido DAO contributors owning this migration.
-Options: {4.2.A, 4.2.B} — a closed set; no third arrangement is proposed here.
-Shared comparison basis: incident-response latency, single-key compromise
-exposure, **what any one compromised holder reaches** (§4.2.B.1 (b) vs. (d) — under
-4.2.A a single Safe compromise takes the pool *and* the automation layer together,
-because one holder fills all four assignments), CRE registration ergonomics, and
-operational friction on routine parameter tuning — all five judged against the *same*
-blast-radius bound established above. **Result: probe again — not `choose now`.** The
-two options do not order under that basis without further facts, because 4.2.A dominates
-on compromise exposure while 4.2.B dominates on response latency, CRE ergonomics and
-correlated-holder exposure, and no exchange rate between those has been agreed. Naming
-one now would be a preference presented as an analysis. Probes that would settle it:
+- **The confinement claim is conditional on one revoke.** "A compromised LOL Safe
+  is confined to the pool" (§4.2.2 (b)) is **false while the retired
+  `SyncTrigger` still holds `SYNC_ROLE`** — the Safe owns it, can `setForwarder`
+  to itself, and can call `triggerSync()` directly, float funding being
+  permissionless. `revokeRole(SYNC_ROLE, retiredTrigger)` is therefore
+  load-bearing, not tidy-up.
+- **It must land before `finalize`.** `SYNC_ROLE`'s admin is
+  `DEFAULT_ADMIN_ROLE`, held by the Initial Owner until the governance seal — one
+  external-party broadcast per lane today, a **DAO vote per lane** afterwards.
+- **`SYNC_ADMIN_ROLE` shares that window, and changes what comes after it.** The
+  §2.5 upgrade that installs it needs the same external party in the same pre-seal
+  window (§6.4), so it does not widen the constraint — but once both land, later
+  re-points cost a LOL Safe transaction, not the DAO vote assumed by point 2 of the
+  record below. The `choose now` stands either way: the window closes on the role
+  install exactly as it closes on the holder swap.
 
-1. **Key custody terms** — HSM or cloud KMS, rotation policy, who can sign, and
-   whether a compromise is detectable. Cheap to answer; largest effect on the
-   compromise-exposure axis.
-2. **Measured LOL quorum latency** — how long a Safe kill-switch tx has actually
-   taken to assemble in practice. Turns "minutes to hours" from an assumption
-   into a number, and the latency axis is currently carrying most of 4.2.B's case.
-3. **Is `revokeRole(SYNC_ROLE)` rehearsed?** Under 4.2.B it is the only
-   attacker-proof switch. If pulling it needs an unrehearsed DAO vote, 4.2.B's
-   faster switches are partly illusory.
-4. **Whether the `--unsigned` (ADR-0001) path has caused real friction** — if it
-   has not, one of 4.2.B's three advantages is theoretical.
+**Decision record** (`C.11`, minimal record shape per `CC-C11.14`).
 
-A middle option not evaluated here, should the probes leave the two tied: keep
-`SyncTrigger` with LOL and move only `CREReceiver` plus the workflow to the
-Automation Owner. That buys the CRE ergonomics and the fast CRE-side disarm while
-leaving the fee float and the sync gates behind a quorum.
+| Field | Value |
+|---|---|
+| **DecisionSubject / granularity** | Lido DAO contributors owning this migration — organization-level. |
+| **OptionSet** | {LOL Safe holds all four assignments · a dedicated Automation Owner EOA holds all four} — a closed set; the pool owner was never in question in either. A third, unevaluated variant is recorded in the archive. |
+| **Comparison basis** | incident-response latency · single-key compromise exposure · **what any one compromised holder reaches** · CRE registration ergonomics · routine-tuning friction — all five judged against the *same* blast-radius bound established above. |
+| **ChoiceRule** | the chooser's judgment on that basis, closed under the cost of delay rather than under probe exhaustion. |
+| **ChoiceResult** | **`choose now` = the dedicated Automation Owner.** Recorded 2026-07-29; supersedes the `probe again` this section previously carried. |
 
-##### 4.2.B.1 — risk analysis **if 4.2.B is adopted**
+Why `choose now` is lawful here even though the two options **still do not order**
+on the stated basis — the retired option dominates on compromise exposure, this one
+on latency, CRE ergonomics and correlated-holder exposure, and no exchange rate
+between those was ever agreed. Two things changed, neither of them a probe result
+(`C.11:4.2.2`):
+
+1. **The switching cost collapsed.** Block-pinned reads on 2026-07-28 showed
+   nothing is running — no workflow has ever been registered on any owner, both
+   floats are 0, the live pool is empty. Changing holders now costs re-doing
+   config and evidence; it costs no downtime, because there is no service to
+   interrupt.
+2. **The window is closing.** Until `finalize`, re-pointing `SYNC_ROLE` is one
+   external-party broadcast per lane. After it, the same change is a DAO vote per
+   lane. Delay itself now costs more than the outstanding probes can return
+   (`C.11:4.3.4` — choose now because delay closes the window in which the
+   preferred option stays cheaply feasible).
+
+**What this closure does *not* claim.** The four probes named as able to settle the
+tie were **never run**, and three of them remain feasible and cheap. They are not
+discharged; they are carried as residual risks (transition plan §8 Q1–Q4) — key
+custody terms (Q1), measured LOL quorum latency (Q2), and whether
+`revokeRole(SYNC_ROLE)` is pre-authorized and rehearsed (Q3), which this
+arrangement promotes from last-resort backstop to primary containment. The fourth
+is answered, and against this option: the `--unsigned` path never caused friction
+because it was never exercised, so that ergonomic advantage is **theoretical**.
+Q1 is the one that could still justify reopening — and reopening means a new
+`C.11` pass over a new option set (the archive's §4 variant), not a re-reading of
+this record.
+
+#### 4.2.2 — risk analysis of the adopted arrangement
 
 Three facts frame every case. **Three independent domains** — *liquidity* (pool
 `owner` = LOL Safe), *automation* (`SyncTrigger.owner`, `CREReceiver.owner`,
 workflow owner / `expectedAuthor` = the EOA), *governance* (gov executor) — and
-4.2.B's point is that the first two stop failing together. **No override, no
+the split's whole point is that the first two stop failing together. That
+independence is **one-directional, by design**: the automation holder can reach
+neither of the others, but the liquidity holder now reaches the sync path through
+`SYNC_ADMIN_ROLE` (§3.1), which is the deliberate price of clearing case (c) without
+a DAO vote. Read the domains as *automation is contained*, not as *all three are
+mutually sealed*. **No override, no
 upgrade:** `Ownable` transfer is owner-only and all three contracts are
 non-upgradeable (§2.5), so a dead key is replaced or routed around, never recovered.
 **The automation domain is bounded by one pot:** `triggerSync` fronts every CCIP fee
@@ -927,9 +1022,15 @@ The cases run **lost, then hostile, per holder** — (a)/(b) the Safe, (c)/(d) t
 (e)/(f) the CRE path — then (g)/(h) for the two external dependencies that fail with no
 holder failing at all. The three domains partition the *holders*, not the risk: the price
 feed, Lido core, CCIP and the native bridges sit outside all three, which is why the last
-four cases are the ones 4.2.B mostly does not touch.
+four cases are the ones the ownership split mostly does not touch.
 
-**(a) LOL Safe keys lost** — *unchanged by 4.2.B; the pool never moves.*
+> **Read (b), (c) and (d) as the target, not as today.** They assume the automation
+> layer is already Automation-Owner-held and the retired `SyncTrigger` has been
+> de-roled. Until the transition's `revokeRole(SYNC_ROLE, retiredTrigger)` lands
+> (§4.2.1), case (b) still carries the whole of case (d) with it, exactly as it did
+> under the retired arrangement.
+
+**(a) LOL Safe keys lost** — *unaffected by the ownership split; the pool never moves.*
 
 - **Event** — surviving signers fall **below the Safe threshold**, so the Safe can
   never sign again and control over it is not recoverable.
@@ -968,8 +1069,8 @@ four cases are the ones 4.2.B mostly does not touch.
   (probe 3). The real mitigation is upstream — the quorum, and sizing the seed to what is
   acceptable to lose.
 
-**(b) LOL Safe compromised** — *the case 4.2.B shrinks, and the only one on which it
-strictly dominates.*
+**(b) LOL Safe compromised** — *the case the ownership split shrinks, and the one
+`SYNC_ADMIN_ROLE` gives part of that gain back.*
 
 - **Event** — an attacker reaches the Safe **threshold**. The mirror of (a): the keys
   still work, they just work for someone else.
@@ -978,24 +1079,56 @@ strictly dominates.*
     unlike `swap`/`pull` — carries **no `whenNotPaused` guard**, so the whole pool
     balance, wstETH and WETH alike, leaves in one transaction. `pause` is a kill switch
     against the *sync path*, never against the pool's own owner.
-  - Under **4.2.A this compromise also delivers the whole of (d)** — the automation
-    setters, the fee float, `expectedAuthor` and the workflow — because one Safe holds
-    all four assignments (§4.2.B, anchor-split row). Under **4.2.B it is confined to the
-    pool**: the automation layer sits behind a key the attacker does not hold.
+  - Under the **retired arrangement this compromise also delivers the whole of (d)** —
+    the automation setters, the fee float, `expectedAuthor` and the workflow — because
+    one Safe holds all four assignments (§4.2.1, anchor-split row). Under the **target
+    the automation *layer* is out of reach** — its setters, float, `expectedAuthor` and
+    workflow sit behind a key the attacker does not hold — **but the sync *path* is
+    not**, because the Safe holds `SYNC_ADMIN_ROLE`.
+  - **What `SYNC_ADMIN_ROLE` hands the attacker.** `grantRole(SYNC_ROLE, self)`, then
+    `CustomSender.sync()` called **directly**, with no `SyncTrigger` in the path at all:
+    no 12 h delay, no 5/100 WETH bounds, no float floor, no pause probe — those gates
+    live in the trigger, and the trigger is bypassed, not reconfigured. Worse than (d)
+    in one specific respect: `feeOtoD` / `feeDtoO` become **caller-supplied per call**,
+    where the trigger path can only use owner-pinned, set-time-validated blobs.
+  - **What it does not hand them.** `sync()` pins the return recipient to
+    `getOraclePool()` in the same call frame, so synced value cannot be redirected — it
+    still lands as wstETH in the pool (§5.1), and the attacker pays each CCIP fee from
+    their own `msg.value`. The residual is *stranding*, not theft: a deliberately
+    underfunded `feeDtoO` can leave a round-trip stuck on L1, recoverable only by
+    `LidoCustomReceiver.recoverTokens` — Lido DAO Agent, an L1 Aragon vote. And since
+    the same attacker owns the pool's `sweep`, this path is the *lesser* of their two
+    options on value.
+  - **Conditional on the revoke:** while the retired, Safe-owned
+    `SyncTrigger` still holds `SYNC_ROLE`, the Safe can re-point its forwarder to itself
+    and drive `triggerSync()` directly (§4.2.1). Under `SYNC_ADMIN_ROLE` that transition
+    revoke stops being the thing that seals this case — it removes one path while the
+    role keeps another open.
 - **Degradation until contained** — there is no containment window for the balance.
   Governance can cut *inflow* by re-pointing `setOraclePool`, which is worth doing on
   detection, but nothing on-chain stands between a threshold-holding attacker and
   `sweep`.
 - **Unrecoverable** — the pool balance, in full.
-  - `revokeRole(SYNC_ROLE)` is irrelevant here: `sweep` never touches the sync path, so
-    the §3.4 backstop that contains (d) does not reach this case at all.
+  - `revokeRole(SYNC_ROLE)` does not reach the *balance*: `sweep` never touches the sync
+    path, so the §3.4 backstop that contains (d) cannot save the pool here — that was
+    already true before `SYNC_ADMIN_ROLE` and is unchanged by it.
+  - What **is** changed: the backstop no longer terminates the sync-path half of this
+    case on its own, because the attacker can re-grant what governance revokes. The
+    containing action set must strip `SYNC_ADMIN_ROLE` from LOL **and** `SYNC_ROLE` from
+    whatever it granted — one queued set (the executor's `queue` takes arrays), but at
+    DAO latency, during which forced churn continues at the attacker's own fee expense.
+    `setOraclePool` re-pointing cuts it faster and is the first move on detection, since
+    `sync()` reverts once the pool pointer no longer holds the WETH.
   - Same bound and same upstream mitigation as (a) — quorum quality, and sizing the seed
     to what is acceptable to lose. The two Safe cases differ in *cause*, not in ceiling.
 - **Recovery** — deploy and seed a fresh pool under an uncompromised holder, re-point
-  `setOraclePool` (gov executor), and re-key or replace the Safe wherever else it
-  appears — until then §3.4's kill-switch table collapses to its gov-executor row. Under
-  4.2.A, add the whole of (d)'s recovery on top; under 4.2.B the automation layer needs
-  no action at all.
+  `setOraclePool` (gov executor), strip `SYNC_ADMIN_ROLE` from the Safe, and re-key or
+  replace it wherever else it appears — until then §3.4's kill-switch table collapses to
+  its gov-executor row. Under the retired arrangement, add the whole of (d)'s recovery on
+  top; under the target the automation layer's own contracts need no action, but the
+  `SYNC_ROLE` set does: audit what the compromised Safe granted before restoring service,
+  since `hasRole` is a point query and the role is **not enumerable** — the candidate
+  list has to come from `RoleGranted` logs, not from a read.
 
 **(c) Automation EOA keys lost**
 
@@ -1018,10 +1151,20 @@ strictly dominates.*
 - **Recovery** — redeploy the pair under a fresh key, register a new workflow (needed
   anyway — the deployed `WorkflowRegistry 2.0.0` at
   `0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5` exposes no per-workflow ownership
-  transfer), then gov executor
-  `grantRole(SYNC_ROLE, newTrigger)` + `revokeRole(…, oldTrigger)`: the **role, not
-  the contract identity, is the seam** (§2.7). The revoke is the authoritative stop —
-  an abandoned workflow may keep reporting, but `triggerSync` reverts.
+  transfer), then **`grantRole(SYNC_ROLE, newTrigger)` + `revokeRole(…, oldTrigger)`
+  from the LOL multisig** under `SYNC_ADMIN_ROLE`: the **role, not the contract
+  identity, is the seam** (§2.7). The revoke is the authoritative stop — an abandoned
+  workflow may keep reporting, but `triggerSync` reverts.
+  - **This is the case `SYNC_ADMIN_ROLE` was added for** (§3.1). Without it the two role
+    calls are a DAO vote per lane, so an *inert* failure — no funds at risk, the lane
+    merely frozen at last-good config — would cost weeks and four governance actions to
+    clear, and would stay frozen the whole time. With it the same repair is one Safe
+    transaction per lane, and the gov executor keeps an identical, independent path.
+  - Both calls belong in **one** transaction so no window exists in which two triggers
+    hold the role; assert `hasRole` before and after, since a mistyped old-trigger
+    address makes `revokeRole` a silent no-op that looks like success.
+  - Unchanged by the role: nothing recovers the float, the receiver's ETH or the CRE
+    credit under the dead key — those are gone whoever signs the re-plug.
 
 **(d) Automation EOA fully malicious**
 
@@ -1063,9 +1206,9 @@ strictly dominates.*
   `setForwarder` / `setExpectedAuthor` loses the race; only the gov executor's
   `revokeRole(SYNC_ROLE, syncTrigger)` cannot be re-opened, with `OraclePool.pause()`
   as an independent stop. Then replace the pair as in (c). Hence an operational
-  precondition for adoption, not just a custody one: **that revoke pre-authorized and
-  rehearsed with a known latency** (probe 3), since 4.2.B promotes it from last-resort
-  backstop to primary containment.
+  precondition of this arrangement, not just a custody one: **that revoke pre-authorized
+  and rehearsed with a known latency** (open question Q3, §4.2.1), since the ownership
+  split promotes it from last-resort backstop to primary containment.
 
 **(e) CRE dies unrecoverably (e.g. Chainlink retires it)**
 
@@ -1082,15 +1225,18 @@ strictly dominates.*
 - **Recovery** — `sync()` is gated on `SYNC_ROLE` alone, agnostic to who holds it, so
   either **swap the trigger's driver** — `setForwarder(newCaller)` (bot, Gelato,
   Chainlink Automation): one tx per L2, gates and float retained, and one signature
-  under 4.2.B — or **bypass the
+  under this arrangement — or **bypass the
   trigger**: `grantRole(SYNC_ROLE, X)` for any caller fronting its own fees, dropping
-  the on-chain gates. Both are proven (pre-migration ran this way, §2.4; the canary
+  the on-chain gates. The second path is a `SYNC_ADMIN_ROLE` call, so it too is now
+  a LOL Safe transaction rather than a DAO vote (§3.1) — the same widening that
+  prices case (b) buys the faster restoration here. Both are proven
+  (pre-migration ran this way, §2.4; the canary
   drives `triggerSync` from an EOA forwarder). **Not covered:** the L2→L1 leg is CCIP,
   which no forwarder swap replaces (§5.1). The latency saved here buys *service*
   restoration only — for the case where it buys containment, see (f).
 
-**(f) CRE signing path compromised** — *the case where 4.2.B's latency advantage is
-decisive; the mirror of (e) as (d) is of (c).*
+**(f) CRE signing path compromised** — *the case where the one-signature latency
+advantage is decisive; the mirror of (e) as (d) is of (c).*
 
 - **Event** — the DON quorum or the Forwarder is subverted and emits reports that are
   **well-formed**. The trigger source does not disappear; it turns.
@@ -1114,13 +1260,13 @@ decisive; the mirror of (e) as (d) is of (c).*
   out of.
 - **Recovery** — `CREReceiver.setForwarder(0x…dead)` or `setExpectedAuthor(other)`
   (§3.4), and **the disarm wins the race**: the attacker holds no owner key and cannot
-  re-arm, which is precisely the property (d) lacks. Under 4.2.B that is one signature in
-  seconds against a Safe quorum under 4.2.A — **on a case with value at stake, not merely
-  liveness**, which is where the latency axis actually earns its weight in the §4.2.B
-  comparison. `revokeRole(SYNC_ROLE)` remains the backstop; restoring service afterwards
+  re-arm, which is precisely the property (d) lacks. That is one signature in seconds
+  here, against a Safe quorum under the retired arrangement — **on a case with value at
+  stake, not merely liveness**, which is where the latency axis actually earns its weight
+  in the §4.2.1 comparison. `revokeRole(SYNC_ROLE)` remains the backstop; restoring service afterwards
   is (e)'s recovery.
 
-**(g) Price feed stale, latched, or deprecated** — *4.2.B-neutral: a liquidity-domain
+**(g) Price feed stale, latched, or deprecated** — *holder-neutral: a liquidity-domain
 outage whose only fix is in the governance domain.*
 
 - **Event** — the aggregator behind `PriceOracle` stops updating past its `HEARTBEAT`, is
@@ -1139,13 +1285,14 @@ outage whose only fix is in the governance domain.*
     floor** — every honest price below it reverts until the real rate catches up.
 - **Unrecoverable** — nothing; but equally, nothing is fixable **in place**.
   - `setOracle` reverts `PausableImmutableOraclePoolImmutable` and `_lastPrice` has no
-    reset, so neither failure has an owner-level knob — by the very design (§4.2.A, POOLS
+    reset, so neither failure has an owner-level knob — by the very design (§4.2, POOLS
     table) that makes the pool safe to hand to an operational multisig. Immutability
     trades this recovery away to buy the no-rewire guarantee — the deal, stated.
 - **Recovery** — (a)'s recovery minus the loss: deploy a fresh pool against a live feed,
   `sweep` the old one into it (the Safe is alive in this case), and re-point
   `setOraclePool`. Latency is a DAO vote. **No automation-layer action is involved at any
-  step, which is why this case does not discriminate between 4.2.A and 4.2.B.**
+  step, which is why this case does not discriminate between the two ownership
+  arrangements at all.**
 
 **(h) Lido core staking unavailable on L1** — *the only case that stalls all four lanes
 at once; fail-safe, not fail-lossy.*
@@ -1154,7 +1301,7 @@ at once; fail-safe, not fail-lossy.*
   lands on L1. `_stakeToken` forwards native ETH to `WSTETH`, whose `receive()` submits
   to stETH; a paused or capped submit reverts inside it.
 - **Scope** — the L1 leg, and `LidoCustomReceiver` is the **single shared instance**
-  all four lanes route through (§4.2.A grouping note), so one L1 condition stalls every
+  all four lanes route through (§4.2 grouping note), so one L1 condition stalls every
   lane simultaneously. This is the higher-blast-radius direction that note warns about,
   in its benign form.
   - The message is **not** lost: `ccipReceive` runs `_processMessage` inside a
@@ -1166,7 +1313,7 @@ at once; fail-safe, not fail-lossy.*
   - **It compounds if left alone** — `fastStake` refills the pool's WETH, the 12 h window
     elapses, and the next sync parks too: one stalled message per lane per cycle. Cutting
     the feed is the containment, and every domain has a lever: raise `minAmount`/`delay`
-    on `SyncTrigger` (**one signature under 4.2.B**), `OraclePool.pause()` (Safe), or
+    on `SyncTrigger` (**one Automation-Owner signature**), `OraclePool.pause()` (Safe), or
     `revokeRole(SYNC_ROLE)` (gov executor).
 - **Unrecoverable** — nothing.
   - `retryFailedMessage(message)` is **permissionless**: anyone can re-drive a parked
@@ -1177,7 +1324,7 @@ at once; fail-safe, not fail-lossy.*
     out for manual return.
 - **Recovery** — wait out the pause and retry; the round-trip then completes to the
   send-time-pinned pool exactly as designed (§5.1). Nothing in the automation or
-  liquidity domains has to change, and the only 4.2.B-relevant lever is the *speed of
+  liquidity domains has to change, and the only holder-sensitive lever is the *speed of
   stopping the feed*, not the fix itself.
 
 
@@ -1354,13 +1501,27 @@ authorization to run it.
   canary deploy + activate (pool / SyncTrigger / CREReceiver immutables, the trigger's funded fee
   float, infra deployer-owned, pool repointed, `SYNC_ROLE` granted, seal not run); `verify-stage2`
   after the LOL handoff (infra LOL-owned + production-configured, Initial Owner still admin).
-- **`verify-cre-workflow`** — `WorkflowRegistry` shows owner = LOL multisig (Safe),
+- **`verify-cre-workflow`** — `WorkflowRegistry` shows the expected workflow owner,
   status ACTIVE.
+
+> Both bullets above describe the checks **as they exist today**, i.e. against the
+> replaced ownership arrangement (they assert LOL-owned automation and a LOL workflow
+> owner). Splitting them onto the Automation Owner — additive `automationOwner`
+> overloads for `_assertSyncInfrastructure` / `verifyCanaryStage2` /
+> `finalizeGovernanceSeal`, plus the state-mate anchor split — is S1.5/S1.7 of the
+> transition plan. `finalizeGovernanceSeal` in particular still **asserts** the
+> automation owner is the liquidity owner, so it fails closed against the §4.2 target
+> until updated.
 - **state-mate** — ≥45 live-RPC assertions per chain: admin held only by the L2
   governance executor and `SYNC_ROLE` only by the new `SyncTrigger` — asserted as the
   **complete** role-member set (`roleMembers`), not mere presence, with explicit
   `hasRole = false` checks on every party that must not retain it (the Initial Owner,
-  the legacy automation(s), and the Lido Deployer hot key) — new pool wired, allow-list
+  the legacy automation(s), and the Lido Deployer hot key) — plus, once §2.5 lands,
+  `getRoleAdmin(SYNC_ROLE) == SYNC_ADMIN_ROLE`, that role's complete member set
+  (`[LOL multisig, governance executor]`), and the re-pinned `l2CustomSenderImpl`:
+  the admin *relation* has to be pinned as tightly as the memberships, since a
+  rollback to the stock implementation silently restores `0x00` as the admin while
+  leaving every `hasRole` assertion above still passing — new pool wired, allow-list
   `(SyncTrigger, triggerSync) = true`, EIP-1967 impl/admin slots, etc. — the
   on-chain check of every binding in §3.
 - **Pinned-constant source (governance executor)** — the `runDeployTest` / `runActivate` /
@@ -1387,6 +1548,15 @@ the LOL multisig** at `runHandoff`. The irreversible admin + `ProxyAdmin` handof
 *pre-existing* `chainlink-csr` contracts is `runFinalize` — and *that* is the part the external
 Initial Owner executes (along with `runActivate`).
 
+**`SYNC_ADMIN_ROLE` adds one more broadcast to that external party's list, and it is
+order-critical.** The §2.5 implementation upgrade goes through the L2 `ProxyAdmin`,
+whose `owner()` is the Initial Owner until `finalize` — so installing the role is
+**one `upgrade` + one `setSyncRoleAdmin` + two `grantRole` calls per lane, all before
+the seal**. Miss the window on a lane and that lane keeps the default
+`DEFAULT_ADMIN_ROLE` admin: not broken, but its case-(c) repair reverts to a DAO vote
+while its three siblings clear at Safe latency — a per-lane asymmetry worth catching
+in the §6.3 verification rather than discovering during an incident.
+
 The **Initial Owner** that executes Stage 2 is **not a Lido in-house actor** — it
 is the external party that deployed and currently administers the pre-migration
 `chainlink-csr` contracts (§2.3). The whole point of Stage 2 is to take that power
@@ -1412,9 +1582,9 @@ in severity:
 
 Owning a `ProxyAdmin` is the **strongest power in the system (§2.5)**, so any
 un-migrated chain leaves the external party able to rewrite that chain's logic at
-will. The §3.4 kill switches **do not cover this**: they are held by LOL /
-governance over the *new* contracts, but a retained external `ProxyAdmin`
-out-ranks them — it can upgrade around a pause.
+will. The §3.4 kill switches **do not cover this**: they are held by LOL / the
+Automation Owner / governance over the *new* contracts, but a retained external
+`ProxyAdmin` out-ranks them — it can upgrade around a pause.
 
 **What bounds the damage (by design):**
 

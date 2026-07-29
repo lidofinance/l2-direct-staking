@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 import {L2UpgradeActions} from "script/shared/L2UpgradeActions.s.sol";
 import {L1MigrationConstants as L1} from "script/l1/L1MigrationConstants.sol";
@@ -26,6 +27,11 @@ import {CREReceiver} from "src/cre/CREReceiver.sol";
  * Each broadcast step has a read-only verifier (runVerifyTest / runVerifyStage2) and an anvil-rehearsal
  * `*Unlocked` twin that impersonates the Initial Owner.
  *
+ * Standing OUTSIDE that state machine:
+ *
+ *   (any stage) — runDeployAutomation()  Actor: Automation Owner  (redeploy the SyncTrigger + CREReceiver
+ *                 pair alone, owned by a declared Automation Owner; pool untouched, SYNC_ROLE untouched)
+ *
  * The governance executor, predecessor OraclePool, and CRE forwarder are sourced ONLY from the per-network
  * constants (_expectedGovernanceExecutor / _expectedOldOraclePool / _expectedCREForwarder, cross-checked to
  * the .inputs.yaml anchors by verify-constants-sync) — never from env.
@@ -35,6 +41,10 @@ import {CREReceiver} from "src/cre/CREReceiver.sol";
  *   - INITIAL_OWNER_PRIVATE_KEY (initial-owner-actor steps; *Unlocked twins impersonate instead)
  *   - L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER (output of runDeployTest; consumed by later steps)
  *   - L2_LIQUIDITY_OWNER (optional, defaults to network LOL multisig)
+ *   - L2_AUTOMATION_OWNER + L2_AUTOMATION_OWNER_PRIVATE_KEY (or L2_AUTOMATION_OWNER_PK) — runDeployAutomation
+ *     only; the two MUST be the same account. The address is declared explicitly so the deploy carries its
+ *     own intent, and the key cross-check keeps a typo from baking a wrong owner into the SyncTrigger
+ *     constructor.
  */
 abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     // ── Network hooks ────────────────────────────────────────────────
@@ -108,6 +118,42 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return vm.envOr("L2_LIQUIDITY_OWNER", _defaultLiquidityOwner());
     }
 
+    /// @dev Automation Owner signing key, accepting either spelling (`_PK` is what `.env` carries), with
+    ///      NO default — mirrors {_envInitialOwnerPrivateKey}. Only {runDeployAutomation} reads it.
+    function _envAutomationOwnerPrivateKey() internal view returns (uint256) {
+        try vm.envUint("L2_AUTOMATION_OWNER_PRIVATE_KEY") returns (uint256 value) {
+            return value;
+        } catch {
+            return vm.envUint("L2_AUTOMATION_OWNER_PK");
+        }
+    }
+
+    /// @dev When `L2_DEPLOY_CANARY_PARAMS=true`, {runDeployAutomation} uses the same low min-amount + delay
+    ///      overrides as {runDeployTest} (`L2_SYNC_MIN_AMOUNT_TEST` / `L2_SYNC_DELAY_TEST`, defaulting to the
+    ///      shared overlay values 0.0002e18 / 60s). Owner, forwarder and author stay production (Automation Owner
+    ///      + real CRE forwarder) — only the SyncTrigger timing knobs differ.
+    function _envDeployCanaryParams() internal view returns (bool) {
+        try vm.envString("L2_DEPLOY_CANARY_PARAMS") returns (string memory value) {
+            bytes32 h = keccak256(bytes(value));
+            return h == keccak256("true") || h == keccak256("1");
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Production cfg by default; the canary overlay when {_envDeployCanaryParams} is set.
+    function _deployAutomationCfg(address initialOwner, address governanceExecutor, address liquidityOwner)
+        internal
+        view
+        returns (L2UpgradeConfig memory cfg)
+    {
+        if (_envDeployCanaryParams()) {
+            cfg = _canaryTestCfg(initialOwner, governanceExecutor, liquidityOwner);
+        } else {
+            cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
+        }
+    }
+
     error L2UpgradeGovernanceExecutorNotPinned();
 
     /// @dev Returns this network's governance executor — the per-network LIDO_L2_GOVERNANCE_EXECUTOR
@@ -154,7 +200,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     ///      `syncDelay` anchors in the shared state-mate overlay `config/state/l2.inputs.test-stage.yaml`,
     ///      supplied via `L2_SYNC_MIN_AMOUNT_TEST` / `L2_SYNC_DELAY_TEST` by the canary recipes (deploy-test /
     ///      verify-test). The inline literals here are only a fallback for a direct `forge` invocation with
-    ///      neither env set (kept byte-equal to the overlay: 0.05e18 / 60s). Production values are restored at
+    ///      neither env set (kept byte-equal to the overlay: 0.0002e18 / 60s). Production values are restored at
     ///      {handoffToLiquidityOwner}.
     function _canaryTestCfg(address initialOwner, address governanceExecutor, address liquidityOwner)
         internal
@@ -162,7 +208,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         returns (L2UpgradeConfig memory cfg)
     {
         cfg = _buildConfig(initialOwner, governanceExecutor, liquidityOwner);
-        cfg.minSyncAmount = uint128(vm.envOr("L2_SYNC_MIN_AMOUNT_TEST", uint256(0.05e18)));
+        cfg.minSyncAmount = uint128(vm.envOr("L2_SYNC_MIN_AMOUNT_TEST", uint256(0.0002e18)));
         cfg.minSyncDelay = uint48(vm.envOr("L2_SYNC_DELAY_TEST", uint256(1 minutes)));
     }
 
@@ -351,6 +397,174 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
             _creForwarder()
         );
         vm.stopBroadcast();
+    }
+
+    // ── SYNC_ROLE rotation (CustomSender role admin) ────────────────
+
+    /// @dev The SyncTrigger being RETIRED — the account whose `SYNC_ROLE` this rotation revokes. Required,
+    ///      with no on-chain discovery fallback: `CustomSender` is not `AccessControlEnumerable`, so the
+    ///      current holder cannot be read off the chain, and OZ `revokeRole` is a silent no-op on a wrong
+    ///      address ({repointSyncRole} therefore asserts the address really holds the role).
+    ///
+    ///      `L2_RETIRED_SYNC_TRIGGER` is read first — that is the variable `.env.<network>` gains once a
+    ///      `deploy-automation` run repoints `L2_SYNC_TRIGGER` at the NEW pair. `L2_SYNC_TRIGGER` is the
+    ///      fallback, correct on a lane whose redeploy has not happened yet (there the live trigger IS the
+    ///      one being retired). On a redeployed lane that carries no retired pin, both would resolve to the
+    ///      new address — exactly the accident {repointSyncRole}'s `L2UpgradeSyncRoleHolderUnchanged` gate
+    ///      exists to stop, rather than silently de-automating the lane.
+    function _envRetiredSyncRole() internal view returns (address) {
+        try vm.envAddress("L2_RETIRED_SYNC_TRIGGER") returns (address value) {
+            return value;
+        } catch {
+            return vm.envAddress("L2_SYNC_TRIGGER");
+        }
+    }
+
+    /// @dev The account that will hold `SYNC_ROLE` after the rotation. Deliberately a DISTINCT variable from
+    ///      `L2_SYNC_TRIGGER` so this step never depends on the order in which an operator edits `.env`.
+    function _envNextSyncRole() internal view returns (address) {
+        return vm.envAddress("L2_SYNC_TRIGGER_NEW");
+    }
+
+    /// @dev Set `L2_REPOINT_ALLOW_ANY_TARGET=true` to waive the {_assertSyncRoleTarget} identity guard and
+    ///      grant `SYNC_ROLE` to something that is not a lane-matched SyncTrigger. Off by default: the guard
+    ///      is the only automated check standing between a mistyped address and an armed `sync()` caller.
+    function _envStrictSyncRoleTarget() internal view returns (bool) {
+        return !vm.envOr("L2_REPOINT_ALLOW_ANY_TARGET", false);
+    }
+
+    /// @notice Rotate `SYNC_ROLE` on this lane's CustomSender from the retired holder to
+    ///         `L2_SYNC_TRIGGER_NEW`. Actor: the CustomSender's role admin — `DEFAULT_ADMIN_ROLE`, i.e. the
+    ///         Initial Owner until {runFinalize} seals it to the governance executor. Standing OUTSIDE the
+    ///         canary state machine: it neither reads nor writes the oracle-pool pointer, the ownership of
+    ///         any deployed contract, or the predecessor automations' roles.
+    ///
+    ///         Two transactions, grant then revoke — see {repointSyncRole} for why that order, and use
+    ///         {runPrintRepointSyncRoleCalldata} if the admin needs them batched atomically instead.
+    function runRepointSyncRole() public {
+        uint256 key = _envInitialOwnerPrivateKey();
+        _runRepointSyncRoleBody(vm.addr(key), key);
+    }
+
+    /// @notice Same as runRepointSyncRole but impersonates the CustomSender admin (anvil dress rehearsal
+    ///         only) — the twin of runActivateUnlocked / runFinalizeUnlocked.
+    function runRepointSyncRoleUnlocked() public {
+        _runRepointSyncRoleBody(_envInitialOwnerAddress(), 0);
+    }
+
+    function _runRepointSyncRoleBody(address admin, uint256 key) internal {
+        assertL2ChainId(_expectedChainId());
+        L2UpgradeConfig memory cfg =
+            _buildConfig(admin, _governanceExecutor(), _envLiquidityOwnerAddress());
+        address retiredHolder = _envRetiredSyncRole();
+        address nextHolder = _envNextSyncRole();
+
+        console2.log("CustomSender  %s", vm.toString(cfg.customSender));
+        console2.log("role admin    %s", vm.toString(admin));
+        console2.log("SYNC_ROLE     %s -> %s", vm.toString(retiredHolder), vm.toString(nextHolder));
+
+        if (key != 0) vm.startBroadcast(key);
+        else vm.startBroadcast(admin);
+        repointSyncRole(cfg, retiredHolder, nextHolder, admin, _envStrictSyncRoleTarget());
+        vm.stopBroadcast();
+    }
+
+    /// @notice Read-only companion to {runRepointSyncRole}: run every entry gate against live state and
+    ///         print the two `CustomSender` calldatas, so the rotation can be handed to a role admin that
+    ///         does not broadcast from this repo — the Initial Owner is an external party today, and after
+    ///         {runFinalize} the admin is a bridge executor that can only be reached by a DAO vote. Emitting
+    ///         both calls lets them be batched into ONE transaction (multisend / governance action), which
+    ///         is the only way to get the zero-length two-holder window the two-transaction broadcast cannot.
+    /// @dev The gates are exercised by running the REAL action under `vm.startPrank` with no broadcast, so
+    ///      the writes' own guards are what report here. A separate `view` re-implementation of the checks
+    ///      would be a second copy, free to drift from the one that actually protects the transactions.
+    function runPrintRepointSyncRoleCalldata() public {
+        assertL2ChainId(_expectedChainId());
+        address admin = _envInitialOwnerAddress();
+        L2UpgradeConfig memory cfg =
+            _buildConfig(admin, _governanceExecutor(), _envLiquidityOwnerAddress());
+        address retiredHolder = _envRetiredSyncRole();
+        address nextHolder = _envNextSyncRole();
+
+        // Dry run against live state: no vm.startBroadcast here, so the writes land only in this script's
+        // local EVM and no transaction is ever submitted. Every gate reports exactly as on the real run.
+        vm.startPrank(admin);
+        repointSyncRole(cfg, retiredHolder, nextHolder, admin, _envStrictSyncRoleTarget());
+        vm.stopPrank();
+
+        console2.log("Entry gates PASS against live state. Two calls, in this order, from %s:", vm.toString(admin));
+        console2.log("TO=%s", vm.toString(cfg.customSender));
+        console2.log(
+            "DATA_1_GRANT=%s",
+            vm.toString(abi.encodeWithSelector(IAccessControl.grantRole.selector, SYNC_ROLE, nextHolder))
+        );
+        console2.log(
+            "DATA_2_REVOKE=%s",
+            vm.toString(abi.encodeWithSelector(IAccessControl.revokeRole.selector, SYNC_ROLE, retiredHolder))
+        );
+        console2.log("VALUE=0");
+    }
+
+    // ── Automation-layer redeploy (dedicated Automation Owner) ──────
+
+    error L2UpgradeAutomationOwnerKeyMismatch(address keyAddress, address declaredOwner);
+
+    /// @notice Deploy a FRESH CREReceiver + SyncTrigger pair owned by an explicitly declared Automation
+    ///         Owner. The OraclePool is NOT touched — it stays deployed and LOL-owned; this entry point
+    ///         exists to move the automation layer alone onto a dedicated owner (docs/automation-owner-redeploy.md
+    ///         §S3) without re-running the canary or disturbing the liquidity domain.
+    ///
+    ///         Actor: the Automation Owner itself — it broadcasts, so it owns the CREReceiver from
+    ///         `msg.sender` and {deploySyncInfrastructure}'s transfer branch is a no-op (one owner from
+    ///         birth, no in-broadcast ownership hop). It is also passed as the SyncTrigger's `initialOwner`
+    ///         and as the CREReceiver's `expectedAuthor` (the CRE workflow author pin), matching the target
+    ///         arrangement in DOC.md §4.2 where all three automation slots are the same address.
+    ///
+    ///         Config: `_buildConfig` (production: 12 h delay, 5/100 ETH min/max amounts) by default, or
+    ///         `_canaryTestCfg` when `L2_DEPLOY_CANARY_PARAMS=true` (0.0002 WETH min + 60 s delay — same knobs
+    ///         as {runDeployTest}, overridable via `L2_SYNC_MIN_AMOUNT_TEST` / `L2_SYNC_DELAY_TEST`). Either
+    ///         way the real per-network `_creForwarder()` pin and Automation Owner ownership are unchanged.
+    ///         `fundFloat = false`: the native fee float is funded by a separate, permissionless step
+    ///         (`just fund-trigger`, or a bare transfer from anyone) so the deploy and the funding stay
+    ///         distinct transactions, exactly as in {runDeployTest}.
+    ///
+    ///         This deploys ONLY. It does not grant the new trigger SYNC_ROLE and does not revoke the
+    ///         predecessor's — that is a separate CustomSender-admin transaction signed by the Initial
+    ///         Owner, and until it runs the newly deployed pair is inert.
+    ///
+    /// @dev The owner is read from `L2_AUTOMATION_OWNER` — required, with NO default and no fallback
+    ///      constant, unlike the `_expectedGovernanceExecutor` / `_expectedCREForwarder` /
+    ///      `_expectedOldOraclePool` pins. Those are fixed per-network facts; the Automation Owner is a
+    ///      migration-time choice. To keep an env-sourced value out of an IRREVERSIBLE constructor
+    ///      argument by accident, the declared address is cross-checked against the broadcasting key: a
+    ///      typo in either one reverts here rather than deploying a pair owned by the wrong address.
+    function runDeployAutomation() public returns (address syncTrigger, address creReceiverAddr) {
+        assertL2ChainId(_expectedChainId());
+
+        address automationOwner = vm.envAddress("L2_AUTOMATION_OWNER");
+        uint256 ownerKey = _envAutomationOwnerPrivateKey();
+        // The declared owner and the signing key must be the same account. Without this, a mistyped
+        // L2_AUTOMATION_OWNER deploys a pair owned by an address nobody holds the key to (the SyncTrigger's
+        // owner is a constructor argument — unrecoverable), while the broadcast still succeeds.
+        if (vm.addr(ownerKey) != automationOwner) {
+            revert L2UpgradeAutomationOwnerKeyMismatch(vm.addr(ownerKey), automationOwner);
+        }
+
+        L2UpgradeConfig memory cfg = _deployAutomationCfg(
+            _envInitialOwnerAddress(), _governanceExecutor(), _envLiquidityOwnerAddress()
+        );
+
+        vm.startBroadcast(ownerKey);
+        (syncTrigger, creReceiverAddr) =
+            deploySyncInfrastructure(cfg, _creForwarder(), automationOwner, automationOwner, false);
+        vm.stopBroadcast();
+
+        console2.log("L2_DEPLOY_CANARY_PARAMS=%s", _envDeployCanaryParams() ? "true" : "false");
+        console2.log("L2_SYNC_MIN_AMOUNT=%s", vm.toString(cfg.minSyncAmount));
+        console2.log("L2_SYNC_DELAY=%s", vm.toString(cfg.minSyncDelay));
+        console2.log("L2_SYNC_TRIGGER=%s", vm.toString(syncTrigger));
+        console2.log("L2_CRE_RECEIVER=%s", vm.toString(creReceiverAddr));
+        console2.log("L2_AUTOMATION_OWNER=%s", vm.toString(automationOwner));
     }
 
     // ── Config-sync helper (read-only, no chain access) ──────────────

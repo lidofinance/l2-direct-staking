@@ -39,7 +39,7 @@
 # For the pre-handoff CANARY state, pass `--overrides config/state/l2.inputs.test-stage.yaml` (or use
 # the `test-<net>-upgrade-state-verify-canary` recipes): the shared overlay redefines those four anchors
 # to the deployer/test values the canary sets (l2LiquidityOwner + l2CreForwarder → deployer;
-# syncMinAmount → 0.05e18; syncDelay → 60). For a mainnet canary, set the overlay's two deployer
+# syncMinAmount → 0.0002e18; syncDelay → 60). For a mainnet canary, set the overlay's two deployer
 # addresses to the real deployer locally (uncommitted). The customSender ACL + proxyAdmin.owner flip at
 # `finalize` (not handoff), so they stay production-pinned here and pass only post-seal — at Stage 1 the
 # Solidity verifier (runVerifyTest) covers them instead.
@@ -174,10 +174,10 @@ l2:
         SENDER: *l2CustomSender
         DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector
         WNATIVE: *l2Weth
-        owner: *l2LiquidityOwner # production: LOL owns the sync levers; GovExec keeps the kill switch via CustomSender SYNC_ROLE admin, DOC §3.4 (canary overlay redefines *l2LiquidityOwner to the deployer)
+        owner: *l2AutomationOwner # production: LOL owns the sync levers; GovExec keeps the kill switch via CustomSender SYNC_ROLE admin, DOC §3.4 (canary overlay redefines *l2LiquidityOwner to the deployer)
         getDelay: *syncDelay # production (12h); the canary overlay redefines *syncDelay to 60s
         getAmounts:
-          result: [*syncMinAmount, *syncMaxAmount] # production min (5e18); the canary overlay redefines *syncMinAmount to 0.05e18
+          result: [*syncMinAmount, *syncMaxAmount] # production min (5e18); the canary overlay redefines *syncMinAmount to 0.0002e18
         getForwarder: *l2CreReceiver # pinned during Stage 1 deploy
         getFeeOtoD: *feeOtoD # FeeCodec.encodeCCIP(maxFee, payInLink, gasLimit) — set during migration
         getFeeDtoO: *feeDtoO # FeeCodec.encode<Net>L1toL2(...) — lane-specific encoding, set during migration
@@ -192,9 +192,9 @@ l2:
       name: CREReceiver
       address: *l2CreReceiver
       checks:
-        owner: *l2LiquidityOwner # production; the canary overlay redefines *l2LiquidityOwner to the deployer (pre-handoff)
+        owner: *l2AutomationOwner # production; the canary overlay redefines *l2LiquidityOwner to the deployer (pre-handoff)
         getForwarder: *l2CreForwarder # production CRE forwarder; the canary overlay redefines *l2CreForwarder to the deployer (it drives onReport directly)
-        getExpectedAuthor: *l2LiquidityOwner # production: CRE workflow owner = LOL = CREReceiver owner, ADR-0001 (canary overlay redefines *l2LiquidityOwner to the deployer)
+        getExpectedAuthor: *l2AutomationOwner # production: CRE workflow owner = LOL = CREReceiver owner, ADR-0001 (canary overlay redefines *l2LiquidityOwner to the deployer)
         isCallAllowed:
           - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
             result: true

@@ -25,6 +25,116 @@ import {UpgradeTestBase, MockBridgeAdapter} from "test/helpers/UpgradeTestBase.s
  *        contract OptimismPoolUpgradeTest is OptimismUpgradeTestBase, PoolUpgradeTests {}
  */
 abstract contract PoolUpgradeTests is UpgradeTestBase {
+    /// @dev Mirror of `writeGasLimit` in cre-workflows/sync-automation/config.deploy.<net>.json — the gas
+    ///      the CRE DON budgets for the on-chain write it transmits. Kept in lockstep with the JSON by
+    ///      `just verify-constants-sync`; measured against reality by {test_creWriteGasCarrier}.
+    ///
+    ///      Set from that measurement, not from a guess: the worst lane (Arbitrum) consumes ~339k for the
+    ///      receiver→trigger→`ccipSend` path, which under the same x1.25 gas-repricing projection the
+    ///      `FeeOtoD.gasLimit` carrier applies would be ~424k — 85 % of the previous 500_000 BEFORE the
+    ///      forwarder's own report/signature verification, which the DON's transaction also pays for and
+    ///      this measurement excludes. 750_000 restores real headroom on both counts. The limit is a
+    ///      ceiling, not a spend (unused gas is not burned), so over-provisioning costs nothing on-chain;
+    ///      whether CRE bills credits against the limit rather than actual usage is NOT verified — if it
+    ///      does, revisit with the measured numbers in hand.
+    uint256 internal constant CRE_WRITE_GAS_LIMIT = 750_000;
+
+    /// @dev Regression tolerance over the recorded per-lane baseline in {_creWriteGasBaseline}.
+    ///      The budget-utilization check alone is a weak tripwire — headroom deliberately sized for the
+    ///      forwarder verification and future gas repricing would also silently absorb a real regression
+    ///      in THIS code (at a 750_000 budget an 80 % bar only trips at 600_000, ~77 % above what the
+    ///      worst lane actually consumes). So the tripwire is pinned to the measurement, not the budget.
+    uint256 internal constant CRE_WRITE_GAS_REGRESSION_BPS = 13_500; // measured baseline + 35 %
+
+    /// @notice `writeGasLimit` adequacy carrier (A.10 `validatedBy`): measures the gas the DON-delivered
+    ///         write actually consumes — `CREReceiver.onReport` (report decode + author gate + allow-list
+    ///         lookup) → `SyncTrigger.triggerSync` → `CustomSender.sync` → CCIP `ccipSend` with the WETH
+    ///         transfer — and asserts it fits the configured budget with headroom. Without this the 500_000
+    ///         in the workflow config is an assumption, and an under-budget write fails in the most
+    ///         expensive way available: the report is delivered, the write reverts out of gas, no
+    ///         `CallExecuted` is emitted, and the symptom is indistinguishable from a credit outage or a
+    ///         wrong author pin.
+    ///
+    ///         Deliberately SELF-CONTAINED — it deploys its own pool + pair on the fork instead of going
+    ///         through {_bindCanaryL2}, which requires the deployer-owned canary fingerprint that no lane
+    ///         carries any more. So this number stays reproducible after the lanes are handed off.
+    ///
+    ///         Caveat, stated not hidden (same discipline as the `FeeOtoD.gasLimit` carrier below): the
+    ///         figure is a LOWER BOUND on what `writeGasLimit` must cover. It starts at the receiver's
+    ///         entry point, so it omits the `KeystoneForwarder`'s own report/signature verification, which
+    ///         is inside the DON's transaction but outside this project's code. The 80 % adequacy bar below
+    ///         is what reserves room for it.
+    function test_creWriteGasCarrier() public {
+        L2UpgradeConfig memory cfg = _canaryCfg(); // low min-amount + delay: a small seed syncs at once
+        address author = makeAddr("creWriteGasAuthor"); // stands in for the CRE workflow owner
+        address owner = makeAddr("creWriteGasOwner");
+
+        vm.selectFork(l2Fork);
+        // Pool ownership is irrelevant to the measured path (owner-only calls are pause/sweep, not sync),
+        // so it stays with the config's liquidity owner.
+        PausableImmutableOraclePool pool = _deployL2Pool(cfg);
+
+        // The REAL per-lane forwarder is the `msg.sender` the receiver will see in production, so wire it
+        // (and prank it) rather than a stand-in: `_extractWorkflowOwner`/author checks are then exercised
+        // exactly as the DON drives them. `fundFloat = true` seeds the fee float from the deployer, so the
+        // deploying EOA needs a balance to front it — the trigger pays the sync fees from its own balance.
+        vm.deal(owner, 1 ether);
+        vm.startPrank(owner);
+        (address trigger, address receiver) = deploySyncInfrastructure(cfg, creForwarder, author, owner, true);
+        vm.stopPrank();
+
+        // startPrank, not prank: activateForTesting makes TWO external calls (setOraclePool + grantSyncRole)
+        // and both are admin-gated on the CustomSender.
+        vm.startPrank(INITIAL_OWNER);
+        activateForTesting(cfg, address(pool), trigger);
+        vm.stopPrank();
+
+        // Seed the pool above the min and clear the delay so the sync is due and un-throttled.
+        uint256 seed = uint256(cfg.minSyncAmount) + 0.05 ether;
+        deal(L2_WETH, address(pool), seed);
+        deal(L2_WSTETH, address(pool), 100 ether); // pool must be able to quote/serve the other side
+        vm.warp(block.timestamp + cfg.minSyncDelay + 1);
+        assertGt(SyncTrigger(payable(trigger)).shouldSyncAmount(), 0, "write-gas carrier: sync must be due");
+
+        bytes memory metadata = abi.encodePacked(bytes32(0), bytes10(0), author);
+        bytes memory report = abi.encode(trigger, abi.encodePacked(SyncTrigger.triggerSync.selector));
+
+        // `gasleft()` is not an external call, so it does not consume the pending prank.
+        vm.prank(creForwarder);
+        uint256 gasBefore = gasleft();
+        CREReceiver(payable(receiver)).onReport(metadata, report);
+        uint256 measuredGas = gasBefore - gasleft();
+
+        assertEq(IERC20(L2_WETH).balanceOf(address(pool)), 0, "write-gas carrier: the measured write must sync");
+
+        console2.log("[writeGasLimit carrier] L2 CCIP selector:", L2_CCIP_CHAIN_SELECTOR);
+        console2.log("  measured onReport->ccipSend gas (LOWER BOUND - excludes forwarder verification):", measuredGas);
+        console2.log("  configured writeGasLimit:", CRE_WRITE_GAS_LIMIT);
+        console2.log("  utilization (bps of writeGasLimit):", measuredGas * 10_000 / CRE_WRITE_GAS_LIMIT);
+        console2.log("  repricing-projected gas (x1.25):", measuredGas * 125 / 100);
+
+        // Tripwire: measured gas vs the recorded per-lane baseline. This is the check that catches a real
+        // regression in this code, because it does not move when the budget does.
+        uint256 baseline = CRE_WRITE_GAS_BASELINE;
+        if (baseline != 0) {
+            uint256 ceiling = baseline * CRE_WRITE_GAS_REGRESSION_BPS / 10_000;
+            console2.log("  recorded baseline:", baseline);
+            console2.log("  regression ceiling (baseline +35%):", ceiling);
+            assertLt(measuredGas, ceiling, "write gas regressed >35% above this lane's recorded baseline");
+        } else {
+            console2.log("  no recorded baseline for this lane - budget-adequacy check only");
+        }
+
+        // Independent second floor: whatever the baseline says, the measurement must still fit the budget
+        // with room for the forwarder verification it excludes (80 % bar, as Monitoring §5 applies to the
+        // destination gas limit).
+        assertLt(
+            measuredGas * 10_000 / CRE_WRITE_GAS_LIMIT,
+            8_000,
+            "measured write gas must stay under 80% of the configured writeGasLimit"
+        );
+    }
+
     function test_migrateL2() public {
         (PausableImmutableOraclePool newPool, address newSyncTrigger) = _deployAndMigrateL2WithSyncTrigger();
 
@@ -1000,7 +1110,242 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         );
     }
 
+    // ──────────────── SYNC_ROLE rotation (repointSyncRole) ───────────────
+
+    /// @notice The automation cutover (docs/automation-owner-redeploy.md §S6): the CustomSender role admin
+    ///         moves SYNC_ROLE from the live trigger to a freshly deployed one. The rotation must move the
+    ///         role and NOTHING else — the oracle-pool pointer, the admin role, and the predecessor
+    ///         automations' roles (whose live per-lane state varies) all survive untouched.
+    function test_repointSyncRoleRotatesToFreshTrigger() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        address pool = ICustomSender(L2_CUSTOM_SENDER).getOraclePool();
+        L2UpgradeConfig memory cfg = _repointCfg();
+        SyncTrigger next = _deployAutomationOwnedTrigger(cfg);
+
+        // Which predecessor still holds SYNC_ROLE differs by lane (Linea's live holder is the Gelato bot,
+        // not the Chainlink upkeep), so capture whatever is true now and require it to be unchanged after.
+        bool chainlinkHadRole = L2_OLD_CHAINLINK_AUTOMATION != address(0)
+            && IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION);
+        bool gelatoHadRole = L2_OLD_GELATO_AUTOMATION != address(0)
+            && IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION);
+
+        vm.startPrank(INITIAL_OWNER);
+        repointSyncRole(cfg, address(retired), address(next), INITIAL_OWNER, true);
+        vm.stopPrank();
+
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(next)), "new trigger armed");
+        assertFalse(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(retired)), "retired de-roled");
+        assertEq(ICustomSender(L2_CUSTOM_SENDER).getOraclePool(), pool, "pool pointer untouched");
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "admin untouched"
+        );
+        if (L2_OLD_CHAINLINK_AUTOMATION != address(0)) {
+            assertEq(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_CHAINLINK_AUTOMATION),
+                chainlinkHadRole,
+                "predecessor chainlink role untouched (the seal's business, not this step's)"
+            );
+        }
+        if (L2_OLD_GELATO_AUTOMATION != address(0)) {
+            assertEq(
+                IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, L2_OLD_GELATO_AUTOMATION),
+                gelatoHadRole,
+                "predecessor gelato role untouched (the seal's business, not this step's)"
+            );
+        }
+    }
+
+    /// @notice The rotated-in trigger is not merely role-holding but actually able to sync — the retired one
+    ///         is not. This is what makes the cutover a cutover rather than a role bookkeeping change.
+    function test_repointSyncRoleTransfersSyncCapability() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        address pool = ICustomSender(L2_CUSTOM_SENDER).getOraclePool();
+        L2UpgradeConfig memory cfg = _repointCfg();
+        SyncTrigger next = _deployAutomationOwnedTrigger(cfg);
+
+        // Both triggers get a due sync and a funded float, so the ONLY difference between them is the role.
+        // The seed clears BOTH minAmounts: the live trigger may carry the low canary value and the fresh pair
+        // the production one, and it must be over the higher of the two for either `shouldSync` to be true.
+        (uint128 retiredMin,) = retired.getAmounts();
+        (uint128 nextMin,) = next.getAmounts();
+        deal(L2_WETH, pool, uint256(retiredMin > nextMin ? retiredMin : nextMin) + 0.05 ether);
+        vm.deal(address(retired), cfg.syncTriggerInitialFloat);
+        vm.deal(address(next), cfg.syncTriggerInitialFloat);
+        // Both throttles down to MIN_DELAY first, so the warp that makes the sync due stays well inside the
+        // CCIP price feed's heartbeat — warping past a 12 h production delay trips StaleTokenPrice on a fork
+        // (same reason test_consecutiveSyncCycles shortens the delay). The delay is irrelevant to what this
+        // test measures: who may call `sync()`. `next`'s clock starts at its deploy, i.e. now.
+        // Read the owners and MIN_DELAY into locals FIRST: every one of them is an external call, and an
+        // external call in an argument position would consume the vm.prank before setDelay ever runs.
+        uint48 minDelay = next.MIN_DELAY();
+        address retiredOwner = Ownable(address(retired)).owner();
+        address nextOwner = Ownable(address(next)).owner();
+        vm.prank(retiredOwner);
+        retired.setDelay(minDelay);
+        vm.prank(nextOwner);
+        next.setDelay(minDelay);
+        vm.warp(block.timestamp + uint256(minDelay) + 1);
+        assertTrue(retired.canSync(), "retired trigger executable before the rotation");
+        assertFalse(next.canSync(), "fresh trigger inert before the rotation (no SYNC_ROLE)");
+
+        vm.startPrank(INITIAL_OWNER);
+        repointSyncRole(cfg, address(retired), address(next), INITIAL_OWNER, true);
+        vm.stopPrank();
+
+        assertTrue(next.canSync(), "rotated-in trigger executable");
+        assertFalse(retired.canSync(), "retired trigger inert");
+        // And the capability is real, not just predicted: the new trigger drains the pool through
+        // CustomSender.sync(), which is gated on SYNC_ROLE alone.
+        vm.prank(next.getForwarder());
+        next.triggerSync();
+        assertEq(IERC20(L2_WETH).balanceOf(pool), 0, "rotated-in trigger synced the pool WETH");
+    }
+
+    /// @notice OZ `revokeRole` is a SILENT no-op on an account that does not hold the role, so a mistyped
+    ///         retired address would otherwise report success while leaving the real holder armed. The gate
+    ///         turns that false pass into a revert, before any write.
+    function test_repointSyncRoleRevertsWhenRetiredHolderLacksRole() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        L2UpgradeConfig memory cfg = _repointCfg();
+        SyncTrigger next = _deployAutomationOwnedTrigger(cfg);
+        address mistyped = makeAddr("mistypedRetiredHolder");
+
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradeRetiredHolderLacksSyncRole.selector, mistyped));
+        this.repointSyncRole(cfg, mistyped, address(next), INITIAL_OWNER, true);
+
+        assertTrue(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(retired)), "real holder still armed"
+        );
+        assertFalse(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(next)), "nothing granted");
+    }
+
+    /// @notice Both inputs resolving to one address — the `.env` state right after `deploy-automation`
+    ///         overwrites `L2_SYNC_TRIGGER` — would grant then revoke the SAME account and leave the lane
+    ///         with no automation at all.
+    function test_repointSyncRoleRevertsWhenHolderUnchanged() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        L2UpgradeConfig memory cfg = _repointCfg();
+
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradeSyncRoleHolderUnchanged.selector, address(retired)));
+        this.repointSyncRole(cfg, address(retired), address(retired), INITIAL_OWNER, true);
+
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(retired)), "still armed");
+    }
+
+    /// @notice The strict-target identity guard, over all four ways a target can fail it: not a contract,
+    ///         not a SyncTrigger at all, a SyncTrigger bound to ANOTHER lane's CustomSender, and one bound to
+    ///         the right sender but the wrong destination chain. `SENDER` and `DEST_CHAIN_SELECTOR` are
+    ///         immutable, so a wrong-lane pair (the L2 proxy addresses repeat across OP-stack chains) can
+    ///         only be replaced, never corrected — the guard has to catch it before the grant, not after.
+    function test_repointSyncRoleRevertsOnTargetThatIsNotALaneMatchedTrigger() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        L2UpgradeConfig memory cfg = _repointCfg();
+        address eoa = makeAddr("notAContract");
+
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradeSyncRoleTargetNotContract.selector, eoa));
+        this.repointSyncRole(cfg, address(retired), eoa, INITIAL_OWNER, true);
+
+        // A real deployed contract that simply is not a SyncTrigger: `SENDER()` does not exist on it, so the
+        // probe staticcall fails and reports a named error rather than a decode panic.
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradeSyncRoleTargetNotSyncTrigger.selector, L2_WETH));
+        this.repointSyncRole(cfg, address(retired), L2_WETH, INITIAL_OWNER, true);
+
+        address wrongSender = address(new MockSyncRoleTarget(L2_OLD_ORACLE_POOL, cfg.destChainSelector));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                L2UpgradeSyncRoleTargetSenderMismatch.selector, wrongSender, L2_OLD_ORACLE_POOL, L2_CUSTOM_SENDER
+            )
+        );
+        this.repointSyncRole(cfg, address(retired), wrongSender, INITIAL_OWNER, true);
+
+        uint64 wrongSelector = cfg.destChainSelector + 1;
+        address wrongDest = address(new MockSyncRoleTarget(L2_CUSTOM_SENDER, wrongSelector));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                L2UpgradeSyncRoleTargetSelectorMismatch.selector, wrongDest, wrongSelector, cfg.destChainSelector
+            )
+        );
+        this.repointSyncRole(cfg, address(retired), wrongDest, INITIAL_OWNER, true);
+
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(retired)), "still armed");
+    }
+
+    /// @notice Waiving the identity guard (`L2_REPOINT_ALLOW_ANY_TARGET=true`) is what lets the role go to
+    ///         something deliberately not a SyncTrigger — e.g. an EOA armed for a manual `sync()`. The rest
+    ///         of the gates still apply.
+    function test_repointSyncRoleAllowsNonTriggerTargetWhenGuardWaived() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        L2UpgradeConfig memory cfg = _repointCfg();
+        address manualCaller = makeAddr("manualSyncCaller");
+
+        vm.startPrank(INITIAL_OWNER);
+        repointSyncRole(cfg, address(retired), manualCaller, INITIAL_OWNER, false);
+        vm.stopPrank();
+
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, manualCaller), "EOA armed");
+        assertFalse(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(retired)), "retired de-roled");
+    }
+
+    /// @notice The declared role admin is asserted, never trusted: broadcasting from a key that does not
+    ///         hold `DEFAULT_ADMIN_ROLE` fails with a named error before any write, rather than an opaque
+    ///         `AccessControlUnauthorizedAccount` halfway through.
+    function test_repointSyncRoleRevertsForNonAdminActor() public {
+        SyncTrigger retired = _bindLiveSyncRoleHolder();
+        L2UpgradeConfig memory cfg = _repointCfg();
+        SyncTrigger next = _deployAutomationOwnedTrigger(cfg);
+        address notAdmin = makeAddr("notTheSenderRoleAdmin");
+
+        vm.expectRevert(abi.encodeWithSelector(L2UpgradeSenderAdminMissing.selector, notAdmin));
+        this.repointSyncRole(cfg, address(retired), address(next), notAdmin, true);
+
+        assertTrue(IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, address(retired)), "still armed");
+    }
+
     // ──────────────── Internal test helpers ──────────────────────────────
+
+    /// @dev Production config for the rotation tests. The rotation reads only `customSender` /
+    ///      `destChainSelector` from it, but `_deployAutomationOwnedTrigger` deploys from the same struct, so
+    ///      the fresh trigger is lane-matched by construction — exactly as `deploy-automation` builds it.
+    function _repointCfg() internal view returns (L2UpgradeConfig memory) {
+        return _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
+    }
+
+    /// @dev Bind to the lane's LIVE `SYNC_ROLE` holder — the account the rotation retires. Deliberately NOT
+    ///      {_bindCanaryL2}: that seam requires the deployer-owned canary fingerprint, and every lane is past
+    ///      it (`handoff` has run, the pair is owned by the LOL Safe). The rotation is indifferent to who owns
+    ///      the trigger — it is a CustomSender role operation — so the weaker binding is also the honest one:
+    ///      it starts these tests from the state an operator will actually run `repoint-sync-role` against.
+    ///
+    ///      Requires INITIAL_OWNER to still hold `DEFAULT_ADMIN_ROLE`: past {finalizeGovernanceSeal} the admin
+    ///      is a bridge executor with no key to prank as, and the rotation stops being a broadcastable step.
+    ///      If the live lane has not been activated yet, the grant is pranked so a retired holder exists.
+    function _bindLiveSyncRoleHolder() internal returns (SyncTrigger holder) {
+        vm.selectFork(l2Fork);
+        address envTrigger = vm.envOr("L2_SYNC_TRIGGER", address(0));
+        require(
+            envTrigger != address(0),
+            "repoint tests: set L2_SYNC_TRIGGER (source .env.<network>; value lives in config/state/l2-<net>.deployed.yaml)"
+        );
+        holder = SyncTrigger(payable(envTrigger));
+        require(holder.SENDER() == L2_CUSTOM_SENDER, "repoint tests: L2_SYNC_TRIGGER is not bound to this lane's CustomSender");
+        require(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER),
+            "repoint tests: Initial Owner no longer holds CustomSender admin (lane sealed) - the rotation needs a DAO vote"
+        );
+
+        if (!IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, envTrigger)) {
+            vm.startPrank(INITIAL_OWNER);
+            grantSyncRole(L2_CUSTOM_SENDER, envTrigger);
+            vm.stopPrank();
+        }
+    }
+
+    /// @dev The v2 SyncTrigger `deploy-automation` (runDeployAutomation) produces: production config, the
+    ///      real CRE forwarder, owned by a dedicated Automation Owner. Deployed WITHOUT SYNC_ROLE — inert
+    ///      until the rotation arms it.
+    function _deployAutomationOwnedTrigger(L2UpgradeConfig memory cfg) internal returns (SyncTrigger) {
+        return deploySyncTrigger(cfg, creForwarder, makeAddr("automationOwner"));
+    }
 
     function _deployAndLoadSyncTrigger()
         internal
@@ -1017,5 +1362,19 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
     {
         vm.warp(block.timestamp + L2_SYNC_DELAY);
         syncNeeded = syncTrigger.shouldSyncAmount() > 0;
+    }
+}
+
+/// @notice Stand-in for a SyncTrigger deployed against the WRONG lane or the wrong destination chain — the
+///         two immutable-mismatch cases `L2UpgradeActions._assertSyncRoleTarget` rejects. A real one cannot
+///         be constructed on a fork (the SyncTrigger constructor reads `WNATIVE` off its `SENDER`, and there
+///         is exactly one CustomSender per lane), so only the two probed getters are reproduced.
+contract MockSyncRoleTarget {
+    address public immutable SENDER;
+    uint64 public immutable DEST_CHAIN_SELECTOR;
+
+    constructor(address sender, uint64 destChainSelector) {
+        SENDER = sender;
+        DEST_CHAIN_SELECTOR = destChainSelector;
     }
 }

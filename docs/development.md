@@ -75,6 +75,22 @@ just test-cre-all
 
 Note: the workflow tests shell out to `bun test`, so Bun must be installed and available on `PATH`.
 
+The `cre` CLI is **not** part of the bun deps — it is a separate Go binary. `just setup-cre-cli`
+installs the pinned release (`CRE_CLI_VERSION` in the `justfile`) into the gitignored `.cre/bin/`
+inside the repo, checksum-verified, with no `sudo`, no `$HOME` writes and no shell-rc edit; run CLI
+commands via `just cre …`, which executes them from the `project.yaml` directory. See
+[CRE workflow §Setup](cre.md#setup).
+
+## Env model
+
+One canonical name per fact: secrets (one key per actor) in the gitignored root `.env`, lane facts and
+RPC bindings in the committed `.env.<network>`, machine-level `RPC_<CHAIN>_REMOTE` in your shell. Every
+tool-specific spelling — `CRE_ETH_PRIVATE_KEY`, `CRE_WORKFLOW_OWNER`, `L2_<NET>_RPC_URL` — is derived
+at call time by [`script/shared/cre-env.sh`](../script/shared/cre-env.sh); writing one by hand
+reintroduces a copy that rots on the next key rotation. **`just env-doctor`** prints everything that
+resolves (secrets as set/unset only) and cross-checks signing key → address → `.inputs.yaml` anchor →
+on-chain pin. Tiers and the full variable list: [RUNBOOK §Env model](../RUNBOOK.md).
+
 ## Optimism state-mate command split
 
 The upgrade-state flow is split into dedicated commands:

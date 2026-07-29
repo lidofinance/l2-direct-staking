@@ -101,7 +101,7 @@ values live in `config/state/l2-<net>.inputs.yaml` and are cross-checked against
 
 | Parameter | Canary (Stage 1) | Production (restored at `handoff`) |
 |---|---|---|
-| `SyncTrigger` min / max sync amount | **0.05 ETH** / 100 ETH | 5 ETH / 100 ETH |
+| `SyncTrigger` min / max sync amount | **0.0002 ETH** / 100 ETH | 5 ETH / 100 ETH |
 | `SyncTrigger` delay | **60 s** | 43 200 s (12 h) |
 | `SyncTrigger` max gas limit | 7 000 000 (per-lane, e.g. Optimism) | same |
 | Fee blobs (`feeOtoD` / `feeDtoO`), max native fee 0.125 ETH | per-lane anchors in `l2-<net>.inputs.yaml` | same |
@@ -146,7 +146,7 @@ per deployed lane, in order:
 | 1 | `fund-trigger` (0.5 ETH float) | Lido Deployer | deployer balance ≥ 0.5 ETH + gas — **currently held on Optimism only**; Arbitrum/Base/Linea hold ~0.05 ETH |
 | 2 | `activate` (repoint pool, grant `SYNC_ROLE`) | Initial Owner | — (reversible; `rollback` stays available) |
 | 3 | `verify-test`, then re-run the canary state-mate | Deployer (read-only) | the two `activate`-gated state-mate failures must clear |
-| 4 | `seed-test-weth` → wait 60 s → `simulate-sync` | Lido Deployer | a small WETH seed (≥ 0.05 ETH) |
+| 4 | `seed-test-weth` → wait 60 s → `simulate-sync` | Lido Deployer | a small WETH seed (≥ 0.0002 ETH) |
 
 **Not unlocked by this deployment:**
 
@@ -154,6 +154,6 @@ per deployed lane, in order:
 * **The L1 seal / `finalize` (3→4)** — a *cross-lane* gate: it requires **all four** lanes deployed,
   handed off and validated (RUNBOOK gate table, G3). All four are now deployed, but the gate also
   needs every lane's sync test and handoff — the deploys alone do not open it.
-* **Production configuration** — the live contracts still run test knobs (0.05 ETH / 60 s) and
+* **Production configuration** — the live contracts still run test knobs (0.0002 ETH / 60 s) and
   deployer ownership; nothing about the canary evidence certifies the production ACL table above.
   That claim is only established by the post-`handoff` state-mate run *without* the canary overlay.

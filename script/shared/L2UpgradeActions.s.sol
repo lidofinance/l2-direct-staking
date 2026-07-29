@@ -28,6 +28,16 @@ contract L2UpgradeActions {
     error L2UpgradePostConditionFailed(string what);
     error L2UpgradeFloatBelowFloor(uint256 initialFloat, uint256 floor);
 
+    // ── repointSyncRole entry gates (see {repointSyncRole}) ──
+    error L2UpgradeSyncRoleHolderUnchanged(address holder);
+    error L2UpgradeRetiredHolderLacksSyncRole(address retiredHolder);
+    error L2UpgradeSenderAdminMissing(address account);
+    error L2UpgradeSyncRoleAdminNotDefault(bytes32 syncRoleAdmin);
+    error L2UpgradeSyncRoleTargetNotContract(address nextHolder);
+    error L2UpgradeSyncRoleTargetNotSyncTrigger(address nextHolder);
+    error L2UpgradeSyncRoleTargetSenderMismatch(address nextHolder, address targetSender, address expectedSender);
+    error L2UpgradeSyncRoleTargetSelectorMismatch(address nextHolder, uint64 targetSelector, uint64 expectedSelector);
+
     struct L2UpgradeConfig {
         address initialOwner;
         address governanceExecutor;
@@ -369,6 +379,103 @@ contract L2UpgradeActions {
 
         IAccessControl(customSender).revokeRole(SYNC_ROLE, oldAutomation);
         emit L2SyncRoleRevoked(customSender, oldAutomation);
+    }
+
+    /// @notice Rotate `SYNC_ROLE` on {L2UpgradeConfig-customSender} from `retiredHolder` to `nextHolder` —
+    ///         the whole of the automation-layer cutover that the CustomSender's role admin owns
+    ///         (docs/automation-owner-redeploy.md §S6). Grants first, then revokes; nothing else is touched
+    ///         (oracle-pool pointer, `DEFAULT_ADMIN_ROLE`, and the predecessor automations' roles all stay
+    ///         as they were — the predecessors are the governance seal's business, {finalizeGovernanceSeal}).
+    ///
+    ///         Actor: the account holding `getRoleAdmin(SYNC_ROLE)` on the CustomSender. That is
+    ///         `DEFAULT_ADMIN_ROLE` (upstream never calls `_setRoleAdmin`), held by the Initial Owner until
+    ///         {finalizeGovernanceSeal} moves it to the governance executor. `admin` is the address expected
+    ///         to be broadcasting; it is asserted, never trusted.
+    ///
+    /// @dev Grant-BEFORE-revoke is deliberate and load-bearing. `forge script` emits one transaction per
+    ///      call, so the pair is NOT atomic: if the second transaction fails to land, the lane is left with
+    ///      BOTH triggers holding the role (redundant automation, throttled by the shared per-sender sync
+    ///      delay) rather than NEITHER (an automation outage). An operator who needs the zero-length
+    ///      two-holder window the plan doc asks for must batch the two calls through a multisend — take the
+    ///      calldata from `runPrintRepointSyncRoleCalldata()`.
+    ///
+    ///      Entry gates (all evaluated before the first write, so a mistake costs no transaction):
+    ///        - `retiredHolder != nextHolder` — after a `deploy-automation` run overwrote `L2_SYNC_TRIGGER`
+    ///          in `.env`, both inputs can easily resolve to the SAME address; that would revoke the role
+    ///          from the very account just granted it and leave the lane with no automation at all.
+    ///        - `hasRole(SYNC_ROLE, retiredHolder)` — OZ `revokeRole` is a SILENT no-op on an account that
+    ///          does not hold the role, so a mistyped retired address would otherwise report success while
+    ///          leaving the old holder armed (the false-pass class §2.3 of the plan doc calls out).
+    ///        - `hasRole(DEFAULT_ADMIN_ROLE, admin)` and `getRoleAdmin(SYNC_ROLE) == DEFAULT_ADMIN_ROLE` —
+    ///          fail with a named error instead of an opaque `AccessControlUnauthorizedAccount`, and catch
+    ///          the (unexpected) case of an implementation upgrade introducing a dedicated role manager.
+    ///        - `strictTarget` — see {_assertSyncRoleTarget}.
+    /// @param strictTarget Require `nextHolder` to be a SyncTrigger bound to this lane's CustomSender and
+    ///        destination chain selector. Keep it true for the automation cutover. Pass false ONLY to grant
+    ///        the role to something that is deliberately not a lane-matched SyncTrigger (e.g. an EOA armed
+    ///        for a manual `sync()`); the on-chain identity guard is then gone, so the address is checked by
+    ///        nothing but the operator's eyes.
+    function repointSyncRole(
+        L2UpgradeConfig memory cfg,
+        address retiredHolder,
+        address nextHolder,
+        address admin,
+        bool strictTarget
+    ) public {
+        _requireNonZeroL2(cfg.customSender);
+        _requireNonZeroL2(retiredHolder);
+        _requireNonZeroL2(nextHolder);
+        _requireNonZeroL2(admin);
+        if (retiredHolder == nextHolder) revert L2UpgradeSyncRoleHolderUnchanged(nextHolder);
+
+        IAccessControl sender = IAccessControl(cfg.customSender);
+
+        bytes32 syncRoleAdmin = sender.getRoleAdmin(SYNC_ROLE);
+        if (syncRoleAdmin != DEFAULT_ADMIN_ROLE) revert L2UpgradeSyncRoleAdminNotDefault(syncRoleAdmin);
+        if (!sender.hasRole(DEFAULT_ADMIN_ROLE, admin)) revert L2UpgradeSenderAdminMissing(admin);
+        if (!sender.hasRole(SYNC_ROLE, retiredHolder)) revert L2UpgradeRetiredHolderLacksSyncRole(retiredHolder);
+        if (strictTarget) _assertSyncRoleTarget(cfg, nextHolder);
+
+        // Snapshotted, not assumed: the closing assertion proves this rotation moved the role and NOTHING
+        // else — the liquidity domain's pointer is out of this step's scope.
+        address poolBefore = ICustomSender(cfg.customSender).getOraclePool();
+
+        grantSyncRole(cfg.customSender, nextHolder);
+        revokeSyncRole(cfg.customSender, retiredHolder);
+
+        _requireL2PostCondition(sender.hasRole(SYNC_ROLE, nextHolder), "repoint sync role grant");
+        _requireL2PostCondition(!sender.hasRole(SYNC_ROLE, retiredHolder), "repoint sync role revoke");
+        _requireL2PostCondition(sender.hasRole(DEFAULT_ADMIN_ROLE, admin), "repoint admin unchanged");
+        _requireL2PostCondition(
+            ICustomSender(cfg.customSender).getOraclePool() == poolBefore, "repoint oraclePool untouched"
+        );
+    }
+
+    /// @dev The `strictTarget` identity guard of {repointSyncRole}: `nextHolder` must be a deployed
+    ///      SyncTrigger whose IMMUTABLE `SENDER` / `DEST_CHAIN_SELECTOR` match this lane's config. Both are
+    ///      constructor-set and unfixable, so a pair deployed against the wrong lane (the L2 proxy addresses
+    ///      are identical across OP-stack chains) or the wrong destination selector can only be replaced,
+    ///      never corrected — worth catching before the grant rather than after. `SENDER()` is probed by
+    ///      raw staticcall so a non-SyncTrigger target reports a named error instead of a decode panic.
+    function _assertSyncRoleTarget(L2UpgradeConfig memory cfg, address nextHolder) private view {
+        if (nextHolder.code.length == 0) revert L2UpgradeSyncRoleTargetNotContract(nextHolder);
+
+        SyncTrigger target = SyncTrigger(payable(nextHolder));
+        (bool senderOk, bytes memory senderRet) = nextHolder.staticcall(abi.encodeWithSelector(target.SENDER.selector));
+        (bool selectorOk, bytes memory selectorRet) =
+            nextHolder.staticcall(abi.encodeWithSelector(target.DEST_CHAIN_SELECTOR.selector));
+        if (!senderOk || senderRet.length != 32 || !selectorOk || selectorRet.length != 32) {
+            revert L2UpgradeSyncRoleTargetNotSyncTrigger(nextHolder);
+        }
+
+        address targetSender = abi.decode(senderRet, (address));
+        if (targetSender != cfg.customSender) {
+            revert L2UpgradeSyncRoleTargetSenderMismatch(nextHolder, targetSender, cfg.customSender);
+        }
+        uint64 targetSelector = abi.decode(selectorRet, (uint64));
+        if (targetSelector != cfg.destChainSelector) {
+            revert L2UpgradeSyncRoleTargetSelectorMismatch(nextHolder, targetSelector, cfg.destChainSelector);
+        }
     }
 
     /// @dev The CCIP-encoded OtoD fee blob for a config — the single source for the sites that need it

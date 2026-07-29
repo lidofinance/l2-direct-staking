@@ -80,7 +80,7 @@ The three canary syncs form a natural experiment: **same code, same method, same
 amount, same signer, all within 7 minutes.** Differences are attributable to the lane.
 
 Constants across all three: deployer `0xBeed…D50c`; new pool
-`0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8`; seed 0.05 WETH; return
+`0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8`; seed 0.0005 WETH; return
 40321732721620264 wei (≈0.0403 wstETH) — identical on all three.
 
 | | Base | Optimism | Linea |

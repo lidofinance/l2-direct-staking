@@ -56,6 +56,7 @@ externals:
   #   Dev-fork runs deploy from Anvil acct #0, but the fork inherits the mainnet CustomSender proxy on
   #   which neither EOA holds admin, so the check holds unchanged there — no local edit needed.
   - &l2LidoDeployer "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
+  - &l2AutomationOwner "0xBdF111fec2e818Ad9c76fbBaE46144746AD55773"
   - &l2OldOraclePool "0x6F357d53d6bE3238180316BA5F8f11467e164588"
   - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
   # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only

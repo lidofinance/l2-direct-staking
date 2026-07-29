@@ -88,6 +88,13 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
     address internal L2_OLD_CHAINLINK_AUTOMATION;
     address internal L2_OLD_GELATO_AUTOMATION;
 
+    /// @dev Recorded `CREReceiver.onReport → CustomSender.sync → ccipSend` gas for this lane, measured by
+    ///      `PoolUpgradeTests.test_creWriteGasCarrier` on a mainnet fork and set in each lane base's
+    ///      `setUp`. That test asserts a fresh measurement stays within +35 % of this number — the tripwire
+    ///      for a real gas regression in our own path, independent of how much headroom the CRE workflow's
+    ///      `writeGasLimit` carries. A lane that leaves it 0 keeps only the budget-adequacy check.
+    uint256 internal CRE_WRITE_GAS_BASELINE;
+
     // ──────────────── Fork state ────────────────────────────────────────
 
     uint256 internal l1Fork;
@@ -101,6 +108,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
 
     /// @dev Returns the L1 RPC URL env var value.
     function _l1RpcUrl() internal view virtual returns (string memory);
+
 
     /// @dev Returns a default L2 upgrade config for the network.
     function _defaultL2Config(address initialOwner, address governanceExecutor, address liquidityOwner)
@@ -251,7 +259,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
     ///      triggers a sync promptly. Production values are restored at {handoffToLiquidityOwner}.
     function _canaryCfg() internal view returns (L2UpgradeConfig memory cfg) {
         cfg = _defaultL2Config(INITIAL_OWNER, LIDO_L2_GOVERNANCE_EXECUTOR, lidoL2LiquidityOwner);
-        cfg.minSyncAmount = 0.05 ether;
+        cfg.minSyncAmount = 0.0002 ether;
         cfg.minSyncDelay = 60;
     }
 

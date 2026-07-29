@@ -25,25 +25,51 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
 
 - **Toolchain:** `forge`/`cast`/`anvil` (Foundry), `node`+`corepack`(yarn), `bun`, `jq`, **`yq`**.
   > ⚠️ `yq` is required by `verify-constants-sync` and `balances-*` — install it (`brew install yq`) or those recipes fail.
-- **Deps:** `(cd lib/state-mate && corepack yarn install --immutable)` (state-mate) · `just setup-cre` (CRE bun deps). `forge build` pulls Solidity submodules. **Re-run the state-mate `yarn install` after any `lib/state-mate` submodule bump** — the verify recipes only auto-install when `node_modules` is absent, so a stale tree won't refresh on its own.
+- **Deps:** `(cd lib/state-mate && corepack yarn install --immutable)` (state-mate) · `just setup-cre` (CRE bun deps) · `just setup-cre-cli` (pinned `cre` CLI → repo-local `.cre/bin/`; run CLI commands via `just cre …`). `forge build` pulls Solidity submodules. **Re-run the state-mate `yarn install` after any `lib/state-mate` submodule bump** — the verify recipes only auto-install when `node_modules` is absent, so a stale tree won't refresh on its own.
 - **Review deploy params:** `config/state/l2-<network>.inputs.yaml` is the single place to review every deploy parameter before Stage 1 — knobs in `config:` (gas, sync amounts/delay, encoded fee blobs), third-party facts in `externals:` (tokens, CCIP router/selector, governance actors). `just verify-constants-sync` proves it (and the generated `.deployed.yaml`) match the Solidity constants the deploy reads.
-- **Per-network env** — one `.env.<network>` per L2 (`L2_NETWORK` is the discriminator):
+- **Env model** — one canonical name per fact, in three tiers; every tool-specific spelling is
+  **derived at call time** by `script/shared/cre-env.sh`, never hand-copied. `just env-doctor` prints
+  what actually resolves and cross-checks the copies (signing key → address vs the declared actor
+  address vs the `.inputs.yaml` anchor vs the live on-chain pin). Run it first when anything looks off.
+
+  | Tier | Where | Holds |
+  |---|---|---|
+  | Machine | shell profile, never in the repo | `RPC_<CHAIN>_REMOTE` (upstream), `RPC_<CHAIN>` (local fork proxy) |
+  | Secrets | root `.env` (gitignored) | one key per actor + API tokens — **no RPCs, no CRE_\* aliases** |
+  | Lane | `.env.<network>` (committed) | `L2_NETWORK`, RPC bindings, deployed addresses, `CRE_WORKFLOW_ID` |
+
+  > ⚠️ **`-E` vs `NETWORK=`.** `just -E .env.<net> <recipe>` *replaces* the dotenv path, so it loads only
+  > that file — the root `.env`'s keys are **not** loaded. `NETWORK=<net> just <recipe>` loads both and is
+  > the form to prefer. The CRE recipes and `env-doctor` work either way (`cre-env.sh`'s
+  > `cre_env_load_secrets` fills the secrets tier itself), but a recipe that reads a key directly —
+  > `verify-sources` (`ETHERSCAN_API_KEY`), `diffyscan` (`GITHUB_API_TOKEN`), the broadcast recipes
+  > (`*_PRIVATE_KEY`) — needs `NETWORK=` or an exported value.
 
   ```env
-  L1_RPC_URL=https://...                 # Ethereum mainnet (same in all 4 files)
-  L2_RPC_URL=https://...                 # this L2's RPC
-  L2_NETWORK=linea                       # optimism|arbitrum|base|linea
+  # root .env — secrets tier
   L2_LIDO_DEPLOYER_PRIVATE_KEY=0x...     # Lido Deployer — signs deploy-test + handoff
   INITIAL_OWNER_PRIVATE_KEY=0x...        # Initial Owner (cold key) — signs activate + finalize
+  L2_AUTOMATION_OWNER=0x...              # Automation Owner address (declared next to its key)
+  L2_AUTOMATION_OWNER_PK=0x...           # …its key: signs deploy-automation AND the CRE workflow
+  DEPLOYER=0x...                         # Lido Deployer address (audit-ownership labels)
   ETHERSCAN_API_KEY=...                  # etherscan.io v2 key (one key, all 4 lanes) — for `verify-sources`
+  # DERIVED, never written here: CRE_ETH_PRIVATE_KEY (= the AO key), CRE_WORKFLOW_OWNER
+  #   (= L2_AUTOMATION_OWNER), L2_<NET>_RPC_URL (= L2_RPC_URL). A hand-written copy rots on rotation.
+  ```
+
+  ```env
+  # .env.<network> — lane tier (L2_NETWORK is the discriminator)
+  L2_NETWORK=linea                       # optimism|arbitrum|base|linea
+  L1_RPC_URL=${RPC_ETHEREUM_REMOTE}      # Ethereum mainnet (same binding in all 4 files)
+  L2_RPC_URL=${RPC_LINEA_REMOTE}         # this L2's RPC
   # Pinned per network in <Lane>MigrationConstants.sol and read directly by the forge scripts — NOT env
   # vars (verified by `just verify-constants-sync`): the L2 governance executor, the predecessor OraclePool
   # (rollback target), the CRE forwarder, and the Lido DAO Agent. See the table below for their values.
   # canary test overrides — optional: default to the syncMinAmount / syncDelay anchors in the shared
   #   overlay config/state/l2.inputs.test-stage.yaml (an explicit value here wins); production restored at `handoff`:
-  L2_SYNC_MIN_AMOUNT_TEST=50000000000000000   # 0.05 WETH so a small seed triggers a sync (prod 5e18)
+  L2_SYNC_MIN_AMOUNT_TEST=200000000000000    # 0.0002 WETH so a small seed triggers a sync (prod 5e18)
   L2_SYNC_DELAY_TEST=60                        # seconds between syncs during the test (prod 12h)
-  L2_TEST_WETH_SEED=100000000000000000         # 0.1 WETH seeded by seed-test-weth (> the test min)
+  L2_TEST_WETH_SEED=500000000000000          # 0.0005 WETH seeded by seed-test-weth (> the test min)
   # appended after deploy-test:  L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER / L2_TEST_DEPLOYER
   # appended after deploy-cre-workflow:  CRE_WORKFLOW_ID
   #   (regenerate config/state/l2-<network>.deployed.yaml from the final addresses before state-mate)
@@ -286,7 +312,7 @@ just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly
 ### Canary validation — all 4 lanes, run per network after `deploy-test`
 
 **Stage-1 canary deployments (live, 2026-07).** The three deployer-owned contracts (test params:
-`minAmount` 0.05 WETH, `delay` 60 s) landed at the **same addresses on all 4 networks** — a fresh
+`minAmount` 0.0002 WETH, `delay` 60 s) landed at the **same addresses on all 4 networks** — a fresh
 deployer (`0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c`) with the same nonce sequence per lane. The
 authoritative copies (with the `# deploy-commit:` stamp diffyscan pins to) are
 `config/state/l2-<network>.deployed.yaml`. The deploy **parameters** the state-mate run checks against

@@ -11,7 +11,7 @@
 # canary values are lane-invariant — same deployer + amounts — and differ from every lane's production
 # base, so this one file serves all four.
 config:
-  - &syncMinAmount 50000000000000000 # 0.05e18  canary SyncTrigger.getAmounts()[0]  (prod base: 5e18)
+  - &syncMinAmount 200000000000000 # 0.0002e18  canary SyncTrigger.getAmounts()[0]  (prod base: 5e18)
   - &syncDelay 60                    # 1 min    canary SyncTrigger.getDelay()        (prod base: 12h / 43200)
 externals:
   # Pre-handoff the deployer owns pool / SyncTrigger / CREReceiver AND stands in for the CRE forwarder

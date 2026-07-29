@@ -77,7 +77,7 @@ Each recipe is one broadcast by one actor: `just -E .env.<network> <recipe>`.
 
 `config/state/l2.yaml` ships the **production profile**: the 7 checks that `handoff` restores reference the production anchors (`*l2LiquidityOwner`, `*l2CreForwarder`, `*syncDelay`, `*syncMinAmount`), all defined in `config/state/l2-<net>.inputs.yaml`. The final (post-handoff, 3→4) run verifies these **directly — no overlay, no edits**.
 
-For the **pre-handoff canary** state, apply the shared overlay `config/state/l2.inputs.test-stage.yaml` via state-mate's `--overrides` (or use the `test-<net>-upgrade-state-verify-canary` recipes). It redefines those four anchors to the deployer/test values the canary sets: `l2LiquidityOwner` + `l2CreForwarder` → the deployer (it owns the infra and stands in for the CRE forwarder + author), `syncMinAmount` → `0.05e18`, `syncDelay` → `60`. One file serves all four lanes (the canary values are lane-invariant). state-mate enforces, per lane, that every overlay label already exists in the base, keeps its section, and changes value; `just verify-externals-coverage` mirrors all three pre-commit (no RPC).
+For the **pre-handoff canary** state, apply the shared overlay `config/state/l2.inputs.test-stage.yaml` via state-mate's `--overrides` (or use the `test-<net>-upgrade-state-verify-canary` recipes). It redefines those four anchors to the deployer/test values the canary sets: `l2LiquidityOwner` + `l2CreForwarder` → the deployer (it owns the infra and stands in for the CRE forwarder + author), `syncMinAmount` → `0.0002e18`, `syncDelay` → `60`. One file serves all four lanes (the canary values are lane-invariant). state-mate enforces, per lane, that every overlay label already exists in the base, keeps its section, and changes value; `just verify-externals-coverage` mirrors all three pre-commit (no RPC).
 
 The `customSender` ACL + `proxyAdmin.owner` flip at `finalize` (not `handoff`), so they stay production-pinned here and pass only post-seal — at Stage 1 the Solidity `verify-test` (`runVerifyTest`) covers them.
 
@@ -89,7 +89,7 @@ The `customSender` ACL + `proxyAdmin.owner` flip at `finalize` (not `handoff`), 
 | `oraclePool.owner` | `*l2LiquidityOwner` | deployer |
 | `syncTrigger.owner` | `*l2LiquidityOwner` | deployer |
 | `syncTrigger.getDelay` | `*syncDelay` (12h) | `60` |
-| `syncTrigger.getAmounts[0]` | `*syncMinAmount` (5e18) | `0.05e18` |
+| `syncTrigger.getAmounts[0]` | `*syncMinAmount` (5e18) | `0.0002e18` |
 | `creReceiver.owner` | `*l2LiquidityOwner` | deployer |
 | `creReceiver.getForwarder` | `*l2CreForwarder` | deployer |
 | `creReceiver.getExpectedAuthor` | `*l2LiquidityOwner` | deployer |

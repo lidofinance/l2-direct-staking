@@ -3,6 +3,11 @@
 # ==========================================================================
 # The workflow polls SyncTrigger.shouldSyncAmount() + canSync() and, when a sync is both
 # due and executable, encodes a triggerSync() call and delivers it via the CRE Receiver.
+#
+# Targets mirror ../project.yaml: `simulate-settings` plus one `production-<net>` per lane. Each
+# production target names its own workflow AND its own config file, so the lane is fully determined by
+# `--target` (`just deploy-cre-workflow` derives it from L2_NETWORK) — no --config override needed, and
+# the four lanes cannot collide on one registered workflow name under the same owner.
 
 # ==========================================================================
 simulate-settings:
@@ -14,10 +19,37 @@ simulate-settings:
     secrets-path: ""
 
 # ==========================================================================
-production-settings:
+production-optimism:
   user-workflow:
-    workflow-name: "lido-sync-automation-production"
+    workflow-name: "lido-sync-automation-optimism"
   workflow-artifacts:
     workflow-path: "./main.ts"
-    config-path: "./config.deploy.json"
+    config-path: "./config.deploy.optimism.json"
+    secrets-path: ""
+
+# ==========================================================================
+production-arbitrum:
+  user-workflow:
+    workflow-name: "lido-sync-automation-arbitrum"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.deploy.arbitrum.json"
+    secrets-path: ""
+
+# ==========================================================================
+production-base:
+  user-workflow:
+    workflow-name: "lido-sync-automation-base"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.deploy.base.json"
+    secrets-path: ""
+
+# ==========================================================================
+production-linea:
+  user-workflow:
+    workflow-name: "lido-sync-automation-linea"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.deploy.linea.json"
     secrets-path: ""

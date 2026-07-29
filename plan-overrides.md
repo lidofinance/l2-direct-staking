@@ -48,7 +48,7 @@ The 4 canary anchors and their values (lane-invariant — same deployer + amount
 | `l2.yaml` check | production anchor (base) | canary value (overlay) |
 |---|---|---|
 | `syncTrigger.getDelay` | `syncDelay` 43200 | `60` |
-| `syncTrigger.getAmounts[0]` | `syncMinAmount` 5e18 | `0.05e18` |
+| `syncTrigger.getAmounts[0]` | `syncMinAmount` 5e18 | `0.0002e18` |
 | pool/trigger/receiver `owner`, `getExpectedAuthor` | `l2LiquidityOwner` (real LOL) | deployer `0xf39F…` |
 | `creReceiver.getForwarder` | `l2CreForwarder` (real fwd) | deployer `0xf39F…` |
 
@@ -93,7 +93,7 @@ gate passes against every lane's production base, so one file serves all four:
 # for the final run. Every label here MUST exist in each l2-<net>.inputs.yaml and differ (state-mate
 # enforces both per lane; verify-externals-coverage mirrors it pre-commit).
 config:
-  - &syncMinAmount 50000000000000000 # 0.05e18  canary getAmounts()[0]  (prod 5e18)
+  - &syncMinAmount 200000000000000 # 0.0002e18  canary getAmounts()[0]  (prod 5e18)
   - &syncDelay 60                    # 1 min    canary getDelay()        (prod 12h)
 externals:
   # Pre-handoff the deployer owns pool/SyncTrigger/CREReceiver and is the CRE forwarder + author.
@@ -132,7 +132,7 @@ Canary state-mate path:
 ## Verification
 1. `cd lib/state-mate && yarn install --immutable && yarn test` — new `overrides.test.ts` passes.
 2. `yq '.. | select(anchor=="syncMinAmount")' config/state/l2.inputs.test-stage.yaml`
-   → `50000000000000000`; repeat for `syncDelay` → `60`. Confirms the recipe sourcing.
+   → `200000000000000`; repeat for `syncDelay` → `60`. Confirms the recipe sourcing.
 3. `just verify-constants-sync` and `just verify-externals-coverage` stay green (no RPC).
 4. `forge build` + `just test` (138 unit tests) green (only a comment changes in `.s.sol`).
 5. Layering gates (config-validation phase, before RPC): run state-mate **with** `--overrides`

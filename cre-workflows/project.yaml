@@ -1,35 +1,75 @@
 # ==========================================================================
 # CRE PROJECT SETTINGS FILE
 # ==========================================================================
-# Project-specific settings for CRE CLI targets.
+# Project-specific settings for CRE CLI targets, in the schema of the pinned CLI (CRE_CLI_VERSION in the
+# justfile, v1.27.0): per target an `rpcs` group, and optionally an `account` group.
+#
+# `${VAR}` interpolation works in **rpc `url` fields only** — the CLI does not expand it in other
+# settings. So the two values here come from the environment via script/shared/cre-env.sh, which the
+# `just cre …` and `just deploy-cre-workflow` recipes source:
+#   ${L1_RPC_URL}   Ethereum mainnet   — .env.<network>, bound to ${RPC_ETHEREUM_REMOTE}
+#   ${L2_RPC_URL}   this lane's L2     — .env.<network>, bound to ${RPC_<NET>_REMOTE}
+#
+# The workflow OWNER is deliberately not written here. On the signed path the CLI derives it from
+# `CRE_ETH_PRIVATE_KEY` (exported by cre-env.sh from the root .env Automation Owner key, cross-checked
+# against `L2_AUTOMATION_OWNER` and against the on-chain `CREReceiver.getExpectedAuthor()` before any
+# registration) — so the address stays in ONE place instead of being copied into this committed file.
+# The `CRE_DEPLOY_UNSIGNED=true` (multi-sig owner) route has no key to derive from and therefore needs a
+# LITERAL address added to the target it deploys, `account: { workflow-owner-address: "0x…" }`; the CLI
+# will say so explicitly if it is missing.
+#
+# Two schema notes for whoever bumps the CLI:
+#   • the older `cre-cli: don-family: "zone-a"` block here was REMOVED — v1.27.0 has no `don-family`
+#     (nor any `cre-cli`) settings key, so it was silently ignored. The DON family is read from the
+#     `CRE_CLI_DON_FAMILY` environment variable instead, which cre-env.sh sets.
+#   • unrecognized keys do NOT fail the load, which is why stale ones are deleted rather than left as
+#     decoration: config that looks live but is ignored is worse than no config.
 
 # ==========================================================================
 default: &default
-  cre-cli:
-    don-family: "zone-a"
   rpcs: &rpcs
     - chain-name: ethereum-mainnet-optimism-1
-      url: "${L2_OPTIMISM_RPC_URL}"
+      url: "${L2_RPC_URL}"
     - chain-name: ethereum-mainnet
       url: "${L1_RPC_URL}"
 
 # ==========================================================================
-# simulate/test deliberately do NOT set workflow-owner-address: local simulation
-# runs under whatever key the CLI uses and must not require CRE_WORKFLOW_OWNER.
 simulate-settings: *default
 
 # ==========================================================================
 test-settings: *default
 
 # ==========================================================================
-# Production only: the CRE workflow owner is the LOL multisig (Safe) — NOT the EOA that runs the
-# CLI. Deploy with `cre workflow deploy … --unsigned` so the CLI emits raw WorkflowRegistry calldata
-# you execute from the Safe; the Safe address becomes the on-chain owner and the
-# `CREReceiver.expectedAuthor` pin. `CRE_WORKFLOW_OWNER` is set per-network in .env.<network> to the
-# network's LOL multisig (ADR-0001, DOC.md §3.2). A throwaway CRE_ETH_PRIVATE_KEY is still needed for
-# RPC-client init but never signs the owner transaction.
-production-settings:
-  cre-cli:
-    don-family: "zone-a"
-    workflow-owner-address: "${CRE_WORKFLOW_OWNER}"
-  rpcs: *rpcs
+# Production: one target PER LANE. The lane's `chain-name` (matching the workflow config's
+# `chainSelectorName`) is the only per-lane literal — URLs and owner are the same interpolations
+# everywhere, so a lane is chosen by `--target=production-<net>`, which `just deploy-cre-workflow`
+# derives from L2_NETWORK. Per-lane targets also give each lane its own workflow-name in
+# sync-automation/workflow.yaml; one shared name would make lane 2 upsert over lane 1's registration.
+#
+production-optimism:
+  rpcs:
+    - chain-name: ethereum-mainnet-optimism-1
+      url: "${L2_RPC_URL}"
+    - chain-name: ethereum-mainnet
+      url: "${L1_RPC_URL}"
+
+production-arbitrum:
+  rpcs:
+    - chain-name: ethereum-mainnet-arbitrum-1
+      url: "${L2_RPC_URL}"
+    - chain-name: ethereum-mainnet
+      url: "${L1_RPC_URL}"
+
+production-base:
+  rpcs:
+    - chain-name: ethereum-mainnet-base-1
+      url: "${L2_RPC_URL}"
+    - chain-name: ethereum-mainnet
+      url: "${L1_RPC_URL}"
+
+production-linea:
+  rpcs:
+    - chain-name: ethereum-mainnet-linea-1
+      url: "${L2_RPC_URL}"
+    - chain-name: ethereum-mainnet
+      url: "${L1_RPC_URL}"
