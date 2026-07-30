@@ -66,17 +66,16 @@ for i in "${!addrs[@]}"; do
 done
 
 # Stamp the deploy commit as a COMMENT — state-mate's .deployed loader accepts only the `deployed:`
-# section, so a real key would be rejected. `just diffyscan-config` greps this stamp to pin the
-# GitHub tree the explorer-published sources are diffed against. If the sources that land in the
-# deployed contracts are dirty at deploy time the pinned commit won't match what was deployed, so
-# stamp a "-dirty" suffix and let config generation refuse it. Scope the check to what actually
-# affects the deployed sources — src/, lib/, and the build config — so unrelated dirt (.env, docs,
-# state config) doesn't force a needless refusal. Use `git status --porcelain`
-# (not `git diff`, which misses UNTRACKED source), with `:/`-anchored pathspecs so the check is
-# correct from any caller working directory.
+# section, so a real key would be rejected. Records which tree produced the on-chain bytecode (audit
+# trail; config/diffyscan/l2-<net>.yaml pins the same commit for source diffs). If the sources that
+# land in the deployed contracts are dirty at deploy time the stamp won't match what was deployed,
+# so append a "-dirty" suffix. Scope the check to what actually affects the deployed sources —
+# src/, lib/, and the build config — so unrelated dirt (.env, docs, state config) doesn't force a
+# needless dirty stamp. Use `git status --porcelain` (not `git diff`, which misses UNTRACKED source),
+# with `:/`-anchored pathspecs so the check is correct from any caller working directory.
 deploy_commit="$(git rev-parse HEAD)"
 if [[ -n "$(git status --porcelain -- :/src :/lib :/foundry.toml :/remappings.txt)" ]]; then
-  echo "write-deployed-yaml: WARNING — source tree dirty at deploy (src/lib/build config); stamping deploy-commit '-dirty' (diffyscan-config will refuse it)" >&2
+  echo "write-deployed-yaml: WARNING — source tree dirty at deploy (src/lib/build config); stamping deploy-commit '-dirty'" >&2
   deploy_commit="${deploy_commit}-dirty"
 fi
 

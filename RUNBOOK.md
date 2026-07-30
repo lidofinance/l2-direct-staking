@@ -295,8 +295,8 @@ just -E .env.<network> verify-sources       # publish pool+trigger+receiver SOUR
 #   (Etherscan v2; needs ETHERSCAN_API_KEY). Off the critical path, re-runnable + idempotent; reads the actual
 #   on-chain constructor args, and the same contracts persist to production, so this covers the prod deploy too.
 just -E .env.<network> diffyscan            # third-party cross-check of the published sources: diffyscan diffs the
-#   explorer copy against the deploy commit on GitHub (pinned via the '# deploy-commit:' stamp in
-#   config/state/<net>.deployed.yaml). Needs diffyscan on PATH + GITHUB_API_TOKEN; run after verify-sources.
+#   explorer copy against the deploy commit pinned in config/diffyscan/l2-<net>.yaml. Needs diffyscan
+#   on PATH + GITHUB_API_TOKEN; run after verify-sources.
 ```
 
 ### Stage 1 — canary sync test — Duty: **Lido Deployer**, per network
@@ -317,24 +317,24 @@ just -E .env.<network> simulate-sync        # call CREReceiver.onReport directly
 **Stage-1 canary deployments (live, 2026-07).** The three deployer-owned contracts (test params:
 `minAmount` 0.0002 WETH, `delay` 60 s) landed at the **same addresses on all 4 networks** — a fresh
 deployer (`0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c`) with the same nonce sequence per lane. The
-authoritative copies (with the `# deploy-commit:` stamp diffyscan pins to) are
-`config/state/<network>.deployed.yaml`. State-mate validates only the production parameters in
-the effective `config/state/l2.common.inputs.yaml` + `<network>.inputs.yaml` composition (shared sync
-amounts/delay and actors; lane-specific gas, fee blobs, tokens, and CCIP infrastructure).
-`just verify-constants-sync` proves those values match the pinned Solidity constants.
+authoritative address copies are `config/state/<network>.deployed.yaml`; diffyscan pins the
+deploy commit + explorer in `config/diffyscan/l2-<network>.yaml`. State-mate validates only the
+production parameters in the effective `config/state/l2.common.inputs.yaml` + `<network>.inputs.yaml`
+composition (shared sync amounts/delay and actors; lane-specific gas, fee blobs, tokens, and CCIP
+infrastructure). `just verify-constants-sync` proves those values match the pinned Solidity constants.
 
 | Contract | Address (identical on Optimism · Arbitrum · Base · Linea) |
 |---|---|
 | OraclePool (`PausableImmutableOraclePool`) | `0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8` |
-| SyncTrigger | `0x1594705D5f9BbDb36453ACF15C94d041c0E02c62` |
-| CREReceiver | `0x29113eD7AE4C97Ee2F20A5511C852aa37C0d6b85` |
+| SyncTrigger | `0x871a5cddE9813627Ff37A2895A0c9B117A664622` |
+| CREReceiver | `0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A` |
 
 | Network | deploy-commit | diffyscan source explorer |
 |---|---|---|
-| Optimism | `730cf53` | `optimism.blockscout.com` (override) |
-| Arbitrum | `ecbfcf5` | Etherscan v2 (default) |
-| Base | `ecbfcf5` | `base.blockscout.com` (override) |
-| Linea | `ecbfcf5` | Etherscan v2 (default) |
+| Optimism | `3d1d484` | `optimism.blockscout.com` |
+| Arbitrum | `3d1d484` | Etherscan v2 |
+| Base | `3d1d484` | `base.blockscout.com` |
+| Linea | `3d1d484` | Etherscan v2 |
 
 Concrete per-network command lines for this deployment (state-mate first, then diffyscan; rationale
 for each in the numbered steps below):
@@ -351,9 +351,10 @@ just -E .env.linea    test-linea-upgrade-state-verify
 # ⚠ `just -E .env.<net>` REPLACES the default dotenv list, so the shared `.env` is NOT loaded —
 #   export ETHERSCAN_API_KEY (e.g. `set -a; source .env; set +a`) and GITHUB_API_TOKEN
 #   (fine-grained PAT ≤30 days WITH contents-read on lidofinance/l2-direct-staking) first.
-DIFFYSCAN_EXPLORER_HOSTNAME=optimism.blockscout.com just -E .env.optimism diffyscan
+# Explorer hostname is baked into config/diffyscan/l2-<net>.yaml (no DIFFYSCAN_EXPLORER_HOSTNAME).
+just -E .env.optimism diffyscan
 just -E .env.arbitrum diffyscan
-DIFFYSCAN_EXPLORER_HOSTNAME=base.blockscout.com     just -E .env.base     diffyscan
+just -E .env.base     diffyscan
 just -E .env.linea    diffyscan
 ```
 
@@ -411,14 +412,11 @@ just -E .env.<network> verify-test
 #    both broken), then Blockscout auto-imports the exact_match within minutes.
 just -E .env.<network> verify-sources        # Etherscan-family publication
 
-#    diffyscan: explorer copy vs the pinned '# deploy-commit:' in config/state/<net>.deployed.yaml.
-#    Default (no override) reads Etherscan v2 — works wherever verify-sources published (arbitrum, linea).
-#    For the Sourcify/Blockscout lanes use the override: optimism.blockscout.com | arbitrum.blockscout.com
-#    | base.blockscout.com (Linea has NO *.blockscout.com instance).
-#    GITHUB_API_TOKEN must read lidofinance/l2-direct-staking (org policy: fine-grained PAT, ≤30-day
-#    lifetime); without it only the pool (all-public sources) can be diffed.
-DIFFYSCAN_EXPLORER_HOSTNAME=<network>.blockscout.com \
-  just -E .env.<network> diffyscan           # omit the override to read Etherscan v2
+#    diffyscan: explorer copy vs the commit pinned in config/diffyscan/l2-<net>.yaml
+#    (Optimism/Base → Blockscout; Arbitrum/Linea → Etherscan v2). GITHUB_API_TOKEN must read
+#    lidofinance/l2-direct-staking (org policy: fine-grained PAT, ≤30-day lifetime); without it
+#    only the pool (all-public sources) can be diffed.
+just -E .env.<network> diffyscan
 
 # 4. Behavioral rehearsal on a fork of the live chain (keyless, non-destructive, binds to the real canary).
 just -E .env.<network> test-<network>-canary-acceptance

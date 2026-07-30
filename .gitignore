@@ -21,7 +21,5 @@ cre-workflows/**/.cre_build_tmp.js
 /.cre
 /x-ray
 
-# diffyscan configs are generated per lane by `just diffyscan-config` (template is committed)
-config/diffyscan/*.generated.yaml
 /.diffyscan_cache
 /digest

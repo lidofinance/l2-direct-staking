@@ -83,9 +83,8 @@ Commands run from the repo root (full ladder + expected pre-`activate` failures:
 just -E .env.<network> test-<network>-upgrade-state-verify  # production state-mate expectations;
         # expected to fail until the current on-chain setup completes handoff/finalization
 just -E .env.<network> verify-test          # Stage-1 invariants (run after fund-trigger + activate)
-just -E .env.<network> diffyscan            # explorer sources vs the pinned deploy commit on GitHub
-        # (reads Etherscan v2 — verified on all 4 lanes; DIFFYSCAN_EXPLORER_HOSTNAME=<net>.blockscout.com
-        # switches the read to a Blockscout instance if ever needed)
+just -E .env.<network> diffyscan            # explorer sources vs the commit pinned in
+        # config/diffyscan/l2-<net>.yaml (Optimism/Base → Blockscout; Arbitrum/Linea → Etherscan v2)
 just -E .env.<network> test-<network>-canary-acceptance  # behavioral rehearsal on a fork of the live chain
 ```
 

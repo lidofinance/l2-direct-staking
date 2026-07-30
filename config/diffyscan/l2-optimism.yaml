@@ -1,0 +1,30 @@
+---
+# diffyscan config for Optimism — explorer sources vs the pinned deploy commit.
+# Addresses are final; edit this file only if a redeploy ever changes them.
+# Explorer: Blockscout (Etherscan v2 free-tier rejects Optimism verification submissions).
+contracts:
+  "0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8": PausableImmutableOraclePool
+  "0x871a5cddE9813627Ff37A2895A0c9B117A664622": SyncTrigger
+  "0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A": CREReceiver
+
+explorer_hostname: optimism.blockscout.com
+explorer_chain_id: 10
+explorer_token_env_var: ETHERSCAN_API_KEY
+
+github_repo:
+  url: https://github.com/lidofinance/l2-direct-staking
+  commit: "3d1d484c31d39881cdbe8423614e3043e89e027f"
+  relative_root: ""
+
+# Verified-source paths that live in git submodules — GitHub serves those paths as gitlinks, not
+# files, so diffyscan must fetch them from their own repos. Keys are longest-prefix-matched and
+# stripped (lib/chainlink-csr/contracts/… → contracts/… in the dep repo).
+dependencies:
+  "lib/chainlink-csr":
+    url: https://github.com/Aphyla/chainlink-csr
+    commit: "62108f7b6cc664e36dbc8100c4b48974d59f572e"
+    relative_root: ""
+  "lib/openzeppelin-contracts":
+    url: https://github.com/OpenZeppelin/openzeppelin-contracts
+    commit: "dbb6104ce834628e473d2173bbc9d47f81a9eec3"
+    relative_root: ""
