@@ -378,8 +378,8 @@ rerun), Linea + Optimism 2026-07-24 (`runHandoff-latest.json`).
 > Until then `verify-stage2` / state-mate fail on those lanes, **G2-handoff cannot hold**, and
 > `finalize`'s interlock (asserts owner = the pinned LOL) reverts.
 
-Still pending on lanes whose `config/state/<network>.deployed.yaml` still contains the zero workflow-ID
-stub: G2-handoff evidence (`verify-stage2` + CRE workflow registration), the production float (trigger balance = 0
+The CRE workflow IDs are now recorded for all four lanes (including Base, deployed 2026-07-30).
+Still pending: G2-handoff evidence (`verify-stage2` + `verify-cre-workflow`), the production float (trigger balance = 0
 on all lanes — swept at `handoff` as designed; fund before relying on sync), `finalize` (only
 `runFinalizeUnlocked` fork-rehearsal artifacts exist), `migrate-l1`, and the LOL seed.
 diffyscan: on all 4 lanes the pool diffs green (11/11 identical files, both explorer schemes); the

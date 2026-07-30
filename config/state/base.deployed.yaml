@@ -7,9 +7,9 @@
 # (anchors first) ahead of the shared wiring l2.yaml so the *aliases resolve.
 # deploy-commit: 3d1d484c31d39881cdbe8423614e3043e89e027f
 deployed:
-  # Zero bytes32 is a fail-closed stub until the workflow is deployed and recorded.
+  # Content-derived CRE workflow ID, recorded after the Base workflow deployment.
   l1:
-    - &creWorkflowId "0x0000000000000000000000000000000000000000000000000000000000000000"
+    - &creWorkflowId "0x009e0a713e8d99a0e3a7191ddbf007994bb9250a6663f950f235887c7ed64ce5"
   l2:
     - &l2OraclePool "0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8"
     - &l2SyncTrigger "0x871a5cddE9813627Ff37A2895A0c9B117A664622"

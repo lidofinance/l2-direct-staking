@@ -1,8 +1,9 @@
 # RUNBOOK — Pool Switch (activate) + Live Canary Sync
 
 > **Status (2026-07-24): §1 activate, §2 live sync, and `handoff` are DONE on all 4 lanes**
-> (evidence + carriers: RUNBOOK.md §Evidence status). Current work is §3 (post-handoff checks,
-> CRE workflow registration, float funding) — **blocked on Arbitrum + Base**: their handoff
+> (evidence + carriers: RUNBOOK.md §Evidence status). CRE workflow registration is now complete
+> on all four lanes (Base was registered 2026-07-30). Current work is §3 post-handoff verification
+> and float funding — **blocked on Arbitrum + Base**: their handoff
 > (2026-07-23) transferred pool/trigger/receiver + `expectedAuthor` to the superseded LOL Safe
 > `0x5A9d…8A61`, not the required `0xFc83…66E6` (re-pinned 2026-07-24, commit `b6ec13d`); only
 > the old Safe can transfer them onward. §4 `finalize` has not run on any lane.
@@ -240,25 +241,24 @@ cast balance $L2_SYNC_TRIGGER --rpc-url $L2_RPC_URL                             
 > now-LOL-owned pool — a nonzero wstETH balance here is that in-flight residue, not a missed
 > sweep. It is LOL-`sweep()`-recoverable, or simply left in place as (a sliver of) pool seed.
 
-**3.d CRE workflow: deploy + verify** — Actor: **LOL** (Safe), per lane, after `handoff`
+**3.d CRE workflow: deploy + verify** — Actor: **Automation Owner**, per lane, after `handoff`
 and before `finalize` (RUNBOOK.md §G2-handoff — the production sync path must be live before
 the seal; until the pool is seeded no real sync can fire):
 
 ```sh
 just -E .env.$L2_NETWORK update-cre-config      # fill deploy config with live trigger/receiver addrs
-just -E .env.$L2_NETWORK deploy-cre-workflow    # emits UNSIGNED WorkflowRegistry calldata
-# → execute that calldata FROM THE LOL SAFE (the tx sender becomes the workflow owner —
-#   must equal CREReceiver.expectedAuthor; the recipe aborts up front if they'd mismatch).
+just -E .env.$L2_NETWORK deploy-cre-workflow    # signed by the Automation Owner
+# → the registry owner must equal CREReceiver.expectedAuthor; the recipe aborts up front if they mismatch.
 # → persist the printed id:
 just record-cre-workflow-id "$L2_NETWORK" 0x...
-just -E .env.$L2_NETWORK verify-cre-workflow    # Evidence: ACTIVE, owner == LOL Safe
+just -E .env.$L2_NETWORK verify-cre-workflow    # Evidence: ACTIVE, owner == Automation Owner
 ```
 
-Points of attention: the workflow owner is the **Safe**, never the CLI EOA (`--unsigned`
-flow; a throwaway `CRE_ETH_PRIVATE_KEY` only inits the RPC client); fund the CRE credit
-under the LOL Safe's CRE account (dashboard-only — docs/monitoring.md §4).
+Points of attention: the workflow owner is the **Automation Owner** EOA, which signs the
+registration transaction; fund the CRE credit under that owner's CRE account (dashboard-only —
+docs/monitoring.md §4).
 
-A green result confirms the *registry* side only. Whether the DON embeds the Safe as the
+A green result confirms the *registry* side only. Whether the DON embeds the Automation Owner as the
 report author (`expectedAuthor` gate) is first proven by the first production
 `CREReceiver.CallExecuted` on this lane — gate G2-author; if reports revert `InvalidAuthor`,
 see RUNBOOK.md §G2-author for the re-pin procedure.
