@@ -1,7 +1,0 @@
----
-# .inputs sibling of l2-linea-extras.yaml. Holds the de-role TARGET only: Linea's legacy Gelato keeper
-# (LineaMigrationConstants L2_OLD_GELATO_AUTOMATION) whose SYNC_ROLE the extras config asserts is
-# revoked post-migration. Mirrored by `just verify-constants-sync`. (The CustomSender that role is
-# read off is a deployed contract, pinned in the l2-linea-extras.deployed.yaml sibling.)
-externals:
-  - &l2OldGelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe"

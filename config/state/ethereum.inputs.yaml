@@ -1,6 +1,6 @@
 ---
 # Single review surface for the L1 (Ethereum mainnet) verification parameters (sibling of
-# l1.yaml). Mirrors script/l1/L1MigrationConstants.sol + the per-net constants; kept in
+# ethereum.yaml). Mirrors script/l1/L1MigrationConstants.sol + the per-net constants; kept in
 # lockstep by `just verify-constants-sync`; the wiring config's `checks:` cross-check each vs chain.
 # (ethMainnetCcipChainSelector is intentionally absent — it is not read in any L1 check; it is
 #  cross-checked via the per-L2 inputs, where it IS referenced.)

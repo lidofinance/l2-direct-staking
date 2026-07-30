@@ -1,0 +1,73 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "workflowId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getWorkflowById",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes32",
+            "name": "workflowId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "address",
+            "name": "owner",
+            "type": "address"
+          },
+          {
+            "internalType": "uint64",
+            "name": "createdAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "enum WorkflowRegistry.WorkflowStatus",
+            "name": "status",
+            "type": "uint8"
+          },
+          {
+            "internalType": "string",
+            "name": "workflowName",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "binaryUrl",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "configUrl",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "tag",
+            "type": "string"
+          },
+          {
+            "internalType": "bytes",
+            "name": "attributes",
+            "type": "bytes"
+          },
+          {
+            "internalType": "string",
+            "name": "donFamily",
+            "type": "string"
+          }
+        ],
+        "internalType": "struct WorkflowRegistry.WorkflowMetadataView",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]

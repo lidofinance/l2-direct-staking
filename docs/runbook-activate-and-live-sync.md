@@ -22,17 +22,15 @@
 > on one lane before the next.
 
 `L2_ORACLE_POOL`, `L2_SYNC_TRIGGER`, `L2_CRE_RECEIVER`, `L2_TEST_DEPLOYER` are expected in
-`.env.<network>` (authoritative copies: `config/state/l2-<network>.deployed.yaml`).
+`.env.<network>` (authoritative copies: `config/state/<network>.deployed.yaml`).
 
 Signing keys are exported in the shell only, never stored in `.env.<network>`, each on its
 own actor's machine: `INITIAL_OWNER_PRIVATE_KEY` (`activate`, `rollback`) and
 `L2_LIDO_DEPLOYER_PRIVATE_KEY` (`seed-test-weth`, `simulate-sync`). `preflight-check` and
 `verify-test` need no keys (read-only).
 
-Optional overrides (defaults are fine): `L2_TEST_WETH_SEED` for `seed-test-weth` (default
-`1e17` = 0.1 WETH; must exceed the 0.0002 test minAmount); `L2_SYNC_MIN_AMOUNT_TEST` /
-`L2_SYNC_DELAY_TEST` for `verify-test` (auto-read via `yq` from
-`config/state/l2.inputs.test-stage.yaml` — set only if `yq` is not installed).
+Optional overrides (defaults are fine): `L2_TEST_WETH_SEED` for `seed-test-weth`; and
+`L2_SYNC_MIN_AMOUNT_TEST` / `L2_SYNC_DELAY_TEST` for `verify-test` (defaults: 0.0002 WETH / 60 s).
 
 ## 0. Preconditions (read-only, no keys)
 
@@ -43,7 +41,7 @@ four canary addresses, matching the deployed.yaml (same three contract addresses
 ```sh
 grep -E 'L2_(ORACLE_POOL|SYNC_TRIGGER|CRE_RECEIVER|TEST_DEPLOYER)=' .env.<network>
 yq '.deployed.l2[] | select(anchor == "l2OraclePool" or anchor == "l2SyncTrigger" or anchor == "l2CreReceiver")' \
-  config/state/l2-<network>.deployed.yaml
+  config/state/<network>.deployed.yaml
 ```
 
 **0.b Legacy-lane health.**
@@ -147,27 +145,19 @@ L2→L1 message delivered, WETH staked on L1; wstETH lands back in the **new** p
 
 The deployer later `sweep()`s this test residue during `handoff` — no action now.
 
-## 2.5 Pre-handoff state-mate validation (read-only, no keys)
+## 2.5 Production state-mate validation before handoff (read-only, no keys)
 
-The independent live-RPC oracle for the **pre-handoff** state — the §3.b sibling with the
-shared test-stage overlay (`config/state/l2.inputs.test-stage.yaml`) describing the
-deployer-owned canary shape (owner / forwarder / author = deployer, test min-amount 0.0002e18,
-test delay 60 s). `verify-test` (§1) reads back the same state from the same repo's script —
-state-mate re-derives it from an independently reviewed config (RUNBOOK.md §Def —
-verify vs validate); record this run as part of the G2 evidence before `handoff`:
+State-mate always evaluates the permanent production expectations. Before handoff, the current
+on-chain canary setup is therefore expected to fail. Record the failures as the explicit remaining
+migration delta; use `verify-test` (§1) for the canary-specific invariants.
 
 ```sh
-just -E .env.<network> test-<network>-upgrade-state-verify-canary
+just -E .env.<network> test-<network>-upgrade-state-verify
 ```
 
-Evidence: `Total: 82 checks`. Run **after** `activate` (§1): the pre-activate group
-(`getOraclePool` still old pool, new trigger's `SYNC_ROLE` false, `shouldSyncAmount` via the
-old pool) has cleared, so the ONLY expected failures are the finalize-gated group —
-`CustomSender` `DEFAULT_ADMIN_ROLE` still Initial Owner not governance executor (two checks +
-the ACL mirror), legacy automation still holding `SYNC_ROLE`, `proxyAdmin.owner` still Initial
-Owner. Anything else red is a real defect — stop before `handoff`. (Full expected-failure
-annotations: RUNBOOK.md §Canary validation, step 1.) The committed overlay deployer anchors
-are the real canary deployer (`L2_TEST_DEPLOYER`) — no local edit needed for mainnet lanes.
+After `activate`, expect production ownership, forwarder/author, amount/delay, legacy-role, and
+finalization checks to remain red until their corresponding migration steps complete. The same
+command becomes the production acceptance check after handoff/finalization.
 
 ## Rollback (only from here, before handoff)
 
@@ -259,7 +249,8 @@ just -E .env.$L2_NETWORK update-cre-config      # fill deploy config with live t
 just -E .env.$L2_NETWORK deploy-cre-workflow    # emits UNSIGNED WorkflowRegistry calldata
 # → execute that calldata FROM THE LOL SAFE (the tx sender becomes the workflow owner —
 #   must equal CREReceiver.expectedAuthor; the recipe aborts up front if they'd mismatch).
-# → record the printed id: CRE_WORKFLOW_ID=... in .env.$L2_NETWORK
+# → persist the printed id:
+just record-cre-workflow-id "$L2_NETWORK" 0x...
 just -E .env.$L2_NETWORK verify-cre-workflow    # Evidence: ACTIVE, owner == LOL Safe
 ```
 

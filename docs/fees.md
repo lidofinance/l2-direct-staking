@@ -263,10 +263,10 @@ Order-of-magnitude on the `gasLimit` bump: at the [measured fee slopes](#consequ
 - Constants live in `script/<net>/<Net>MigrationConstants.sol` (`L2_SYNC_DESTINATION_MAX_FEE`, `L2_SYNC_DESTINATION_GAS_LIMIT`).
 - New SyncTrigger deploys pick up the values via the `SyncTrigger` constructor (the `feeOtoD` arg that `L2UpgradeActions.deploySyncTrigger` builds from these constants).
 - For SyncTriggers already deployed before the bump, the lever is owner-only `setFeeOtoD` (the LOL multisig; per [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state)); the source-of-truth bytes are the constants in `script/<net>/<Net>MigrationConstants.sol`, which `verify-test` (`runVerifyTest`) keccak-compares against `SyncTrigger`'s stored blobs (`script/shared/L2UpgradeActions.s.sol`), so any future bump must update those constants in lockstep with the on-chain change.
-- The byte-for-byte fee encodings are derived from those constants by `FeeCodec` in `lib/chainlink-csr` (`encodeCCIP` for FeeOtoD, the per-network `encode*L1toL2` for FeeDtoO) and pinned by the `verify-test` keccak check above. state-mate also re-checks them post-migration: the shared wiring `config/state/l2.yaml` asserts `getFeeOtoD` / `getFeeDtoO` / `getMaxFees` against the per-lane `config/state/l2-<net>.inputs.yaml` anchors, which `verify-constants-sync` cross-checks against `FeeCodec(constants)` (see [DOC.md §5.2](../DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way)). Refund mechanics, failure modes, and per-network differences are in the [Failure modes and recovery](#failure-modes-and-recovery) and [L1→L2 vs L2→L1](#l1l2-vs-l2l1--why-the-two-legs-differ) sections above.
+- The byte-for-byte fee encodings are derived from those constants by `FeeCodec` in `lib/chainlink-csr` (`encodeCCIP` for FeeOtoD, the per-network `encode*L1toL2` for FeeDtoO) and pinned by the `verify-test` keccak check above. state-mate also re-checks them post-migration: the shared wiring `config/state/l2.yaml` asserts `getFeeOtoD` / `getFeeDtoO` / `getMaxFees` against the per-lane `config/state/<net>.inputs.yaml` anchors, which `verify-constants-sync` cross-checks against `FeeCodec(constants)` (see [DOC.md §5.2](../DOC.md#52-fee-parameters-per-chain--and-why-they-are-set-this-way)). Refund mechanics, failure modes, and per-network differences are in the [Failure modes and recovery](#failure-modes-and-recovery) and [L1→L2 vs L2→L1](#l1l2-vs-l2l1--why-the-two-legs-differ) sections above.
 - **After any post-deploy `setFeeDtoO`, re-validate off-chain — the on-chain check won't catch a
   lane-mismatched blob.** `setFeeDtoO` enforces only the generic `len>=17`, so update the lane's
-  `config/state/l2-<net>.inputs.yaml` `feeDtoO` anchor (and the matching `<Net>MigrationConstants.sol`
+  `config/state/<net>.inputs.yaml` `feeDtoO` anchor (and the matching `<Net>MigrationConstants.sol`
   bytes) in lockstep, then run the lane **state-mate** (live `getFeeDtoO` vs the anchor) and
   `just verify-constants-sync` (anchor vs `FeeCodec(constants)`). Otherwise a wrong blob surfaces only on
   L1 as a parked `MessageFailed`, recoverable via `recoverTokens` ([`audit-scope.md §D` F-4](audit-scope.md#d-fee-configuration--liveness)).
@@ -555,7 +555,7 @@ in the table after it describes the *reactive* case where the limit was already 
    80% alert, not from the breach.
 4. **Lockstep the oracle**: update the fee constants in `script/<net>/<Net>MigrationConstants.sol` — the
    bytes `verify-test` keccak-checks against the on-chain blobs (per [Operational handoff](#operational-handoff)) —
-   **and** the matching `config/state/l2-<net>.inputs.yaml` `feeOtoD` / `feeDtoO` anchors, which the live
+   **and** the matching `config/state/<net>.inputs.yaml` `feeOtoD` / `feeDtoO` anchors, which the live
    state-mate run now pins (`getFeeOtoD` / `getFeeDtoO`) and `verify-constants-sync` cross-checks against
    `FeeCodec(constants)`. Keep all three in lockstep with the on-chain change.
 5. **Re-run the carrier + acceptance** (`just measure-fee-gas`, `just test-acceptance`) and,
@@ -707,7 +707,7 @@ on is confirmed, so it is the forward-looking bound — which is also why the ca
 
 ### Reproduction
 
-(2026-06-17; per-lane `CustomSender` from `config/state/l2-<net>.inputs.yaml` (externals) — OP/Base/Linea
+(2026-06-17; per-lane `CustomSender` from `config/state/<net>.inputs.yaml` (externals) — OP/Base/Linea
 share `0x328de900…`, Arbitrum is `0x72229141…`.)
 
 ```bash

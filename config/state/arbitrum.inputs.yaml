@@ -1,0 +1,47 @@
+---
+# Arbitrum-specific deploy parameters and external facts. State-mate composes this lane delta with
+# config/state/l2.common.inputs.yaml ahead of the shared config/state/l2.yaml wiring.
+config:
+  # ── CRE WorkflowRegistry metadata ──
+  - &creWorkflowName "lido-sync-automation-arbitrum"
+  - &creWorkflowTag "lido-sync-automation-arbitrum"
+  # ── Lane-specific SyncTrigger limits and fee encodings ──
+  - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Arbitrum FeeQuoter maxPerMsgGasLimit
+  # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
+  # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=1_000_000)
+  - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"
+  # feeDtoO = FeeCodec.encodeArbitrumL1toL2(maxSubmissionCost=0.001e18, maxGas=100_000, gasPriceBid=50_000_000)
+  - &feeDtoO "0x00000000000000000003920acbffd00000000186a00000000002faf080"
+  # getMaxFees() derived: native = maxFee(0.125e18) + DtoO feeAmount(0.001005e18) = 0.126005e18 (LINK payment not supported)
+  - &maxNativeFee 126005000000000000
+  # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
+  - &l2GovExecutorName "ArbitrumBridgeExecutor" # governanceExecutor.name → ABI selector
+  - &lineaMessageService null # not a Linea executor; shared LINEA_MESSAGE_SERVICE check is skipped here
+  # Arbitrum's executor has no OVM_L2_CROSS_DOMAIN_MESSENGER getter; null → the shared check is skipped.
+  - &ovmL2CrossDomainMessenger null
+  # NOTE: L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18 — see optimism.inputs.yaml note (deploy input, not a
+  # state-mate check: the trigger's balance drifts as it fronts per-sync fees).
+
+externals:
+  # ── Fixed third-party / external facts ──
+  # ⚠ Cross-chain address reuse: a hex below can be a DIFFERENT contract on another chain/role
+  #   (deterministic deploys) — e.g. l2PriceOracle / RETIRED_l2OraclePool / the L1 adapters recur across
+  #   lanes. Always resolve via THIS lane's *MigrationConstants.sol; full reuse map in docs/audit-scope.md.
+  - &l2ChainId 42161
+  - &l2GovernanceExecutor "0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29"
+  - &RETIRED_l2OraclePool "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
+  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated arbitrum.deployed.yaml.
+  #   Pinned to ArbitrumMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x72229141D4B016682d3618ECe47c046f30Da4AD1"
+  - &l2CustomSenderImpl "0x220F64A4793Bc8aca7330ceCc4ae4e2F3B5Bc664"
+  - &l2ProxyAdmin "0x5B42aEbFe95247f1d22e282831e2A513bF050217"
+  # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
+  #   network & Chainlink-operated. Pinned to ArbitrumMigrationConstants.CRE_FORWARDER (verify-constants-sync).
+  - &l2CreForwarder "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"
+  - &l2Weth "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+  - &l2Wsteth "0x5979D7b546E38E414F7E9822514be443A4800529"
+  - &l2LinkToken "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4"
+  - &l2CcipRouter "0x141fa059441E0ca23ce184B6A78bafD2A517DdE8"
+  - &l2PriceOracle "0x328de900860816d29D1367F6903a24D8ed40C997"

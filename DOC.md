@@ -47,9 +47,9 @@ governance/liquidity accounts are wired in.
 > `script/l1/L1MigrationConstants.sol`); the expected post-migration values that
 > state-mate asserts live in the single shared wiring/checks file `config/state/l2.yaml`
 > (one file for all four L2 lanes — the lanes are structurally identical), which resolves its anchor
-> values from two per-chain siblings passed explicitly per lane: `<chain>.deployed.yaml` (our deployed
-> addresses, written from the deploy broadcast) and `<chain>.inputs.yaml` (the single review surface
-> for deploy parameters: `config:` knobs + `externals:` third-party facts).
+> values from three explicitly composed files per lane: `l2.common.inputs.yaml` (intentionally
+> universal policy and identities), `<chain>.inputs.yaml` (lane-specific parameters/facts), and
+> `<chain>.deployed.yaml` (our deployed addresses, written from the deploy broadcast).
 
 ---
 
@@ -75,7 +75,7 @@ hostile.
 | **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = owner-only = the Automation Owner (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
 | **`CREReceiver`** (per L2)               | Receives signed CRE reports and authorizes them three ways (forwarder + report author + `(target, selector)` allow-list), then calls `SyncTrigger.triggerSync()`. Defense-in-depth between the off-chain network and the on-chain sync. | `src/cre/CREReceiver.sol`, `src/cre/interfaces/IReceiver.sol` |
 | **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network every 5 min, polls `SyncTrigger.shouldSyncAmount()` (due-ness + amount) and `canSync()` (executability), and emits a signed report only when a sync is both due and executable.                                                                           | `cre-workflows/sync-automation/*`                             |
-| **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (the shared wiring `config/state/l2.yaml` + each lane's `.deployed.yaml`/`.inputs.yaml` siblings). Not runtime contracts; they define and verify the target state.                                                                                                 | `script/**`                                                   |
+| **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (shared `config/state/l2.yaml` + `l2.common.inputs.yaml` + each lane's `.inputs.yaml`/`.deployed.yaml`). Not runtime contracts; they define and verify the target state.                                                                                                         | `script/**`                                                   |
 
 **Provenance — both are *derived*, not clean-room, and in two different senses.**
 Neither contract is written from a blank file, and "derived from external code"
@@ -1448,14 +1448,14 @@ The quantitative basis — the Glamsterdam gas-impact estimate, the per-sync cos
 the `gasLimit` headroom, the exact byte layouts, and each bridge's refund/failure
 behavior — is sourced in `docs/fees.md` (the governing reference,
 with the byte-for-byte pins — the encoded `feeOtoD`/`feeDtoO` blobs — in
-`config/state/l2-<net>.inputs.yaml`, cross-checked against `FeeCodec(constants)`
+`config/state/<net>.inputs.yaml`, cross-checked against `FeeCodec(constants)`
 by `just verify-constants-sync`) and not
 re-derived here. Changing any value is a governance action: the **L2 Governance
 Executor** re-encodes via `setFeeOtoD` / `setFeeDtoO`. The encoded blobs are pinned
 **byte-for-byte at deploy** — the in-broadcast assertion (and `verify-test`, §6.3) keccak-compares
 `SyncTrigger`'s stored blobs against the migration constants (`script/shared/L2UpgradeActions.s.sol`).
 The live state-mate run also pins `getFeeOtoD` / `getFeeDtoO` against the per-lane
-`config/state/l2-<net>.inputs.yaml` anchors. `SyncTrigger` itself treats both
+`config/state/<net>.inputs.yaml` anchors. `SyncTrigger` itself treats both
 blobs as **opaque bytes**: their meaning lives only at the consuming CCIP router
 (OtoD) and L1 bridge adapter (DtoO) — so its only on-chain validation is generic.
 `setFeeOtoD` pins the exact 21-byte CCIP shape (plus a gasLimit floor/ceiling), but

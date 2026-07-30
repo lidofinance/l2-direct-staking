@@ -264,9 +264,9 @@ Design notes, chosen to minimize diff against audited paths:
 | S1.3 | New entry point `runDeployAutomation()` — Deployer broadcast, **production** cfg: `deploySyncInfrastructure(cfg, _creForwarder(), _automationOwner(), _automationOwner(), false)` | `script/shared/L2UpgradeScriptBase.s.sol` |
 | S1.4 | **Done 2026-07-29**, shipped as `repointSyncRole(cfg, retired, next, admin, strictTarget)` + entry points `runRepointSyncRole()` / `runRepointSyncRoleUnlocked()` / `runPrintRepointSyncRoleCalldata()` and recipes `just repoint-sync-role <new> [<retired>]` / `repoint-sync-role-calldata`. Named for what it does (rotate `SYNC_ROLE`) rather than the planned `runRepointAutomation`, which read as if it moved the whole automation layer. Gates before the first write: `hasRole(SYNC_ROLE, retired) == true` (the §2.3 silent-no-op guard), `retired != next`, `hasRole(DEFAULT_ADMIN_ROLE, admin)`, `getRoleAdmin(SYNC_ROLE) == DEFAULT_ADMIN_ROLE`, and — new, not in the plan — `next.SENDER()` / `next.DEST_CHAIN_SELECTOR()` must match the lane (both immutable, so a wrong-lane pair can only be replaced; waive with `L2_REPOINT_ALLOW_ANY_TARGET=true`). Asserted after: both roles flipped, `DEFAULT_ADMIN_ROLE` unchanged, oracle-pool pointer unchanged, predecessors untouched. **Deviation from §4 S6 / §7.6:** grant and revoke are TWO transactions, not one — `forge script` broadcasts one per call. Grant-first is chosen so a failed second transaction leaves both triggers armed (redundant, delay-throttled) rather than neither (outage); `repoint-sync-role-calldata` emits both calls for an operator who wants them batched atomically. Retired holder resolves from `L2_RETIRED_SYNC_TRIGGER`, else `L2_SYNC_TRIGGER`. Rehearsed on anvil forks of all four lanes (deploy v2 → rotate → assert → re-run refused) plus 7 fork tests per lane in `PoolUpgradeTests`. | `script/shared/L2UpgradeScriptBase.s.sol`, `script/shared/L2UpgradeActions.s.sol`, `justfile`, `test/helpers/PoolUpgradeTests.sol` |
 | S1.5 | Additive `automationOwner` overloads for `_assertSyncInfrastructure` / `verifyCanaryStage2` / `finalizeGovernanceSeal`; production callers switch to them | `script/shared/L2UpgradeActions.s.sol` |
-| S1.6 | New anchor `&l2AutomationOwner`; new `&l2RetiredSyncTrigger` / `&l2RetiredCreReceiver` | `config/state/l2-{optimism,arbitrum,base,linea}.inputs.yaml` |
-| S1.7 | `syncTrigger.owner`, `creReceiver.owner`, `creReceiver.getExpectedAuthor` → `*l2AutomationOwner`; `oraclePool.owner` stays `*l2LiquidityOwner`; add `hasRole: [[*SYNC_ROLE, *l2RetiredSyncTrigger] → false]` alongside the existing `l2OldSyncAutomation` row | `config/state/l2.yaml:154,177,195,197` and `:92-95` |
-| S1.8 | Canary overlay: it currently redefines `*l2LiquidityOwner` → Deployer, which after S1.7 would assert the **pool** is Deployer-owned. Drop the two address overrides; keep (or re-scope) only `syncMinAmount` / `syncDelay` for the S8 live test. Mind the "override must differ from base" and "no new labels" rules. | `config/state/l2.inputs.test-stage.yaml` |
+| S1.6 | Shared `&l2AutomationOwner`; per-lane `&RETIRED_l2SyncTrigger` / `&RETIRED_l2CreReceiver` | `config/state/l2.common.inputs.yaml`; `config/state/{optimism,arbitrum,base,linea}.deployed.yaml` |
+| S1.7 | `syncTrigger.owner`, `creReceiver.owner`, `creReceiver.getExpectedAuthor` → `*l2AutomationOwner`; `oraclePool.owner` stays `*l2LiquidityOwner`; add `hasRole: [[*SYNC_ROLE, *RETIRED_l2SyncTrigger] → false]` alongside the existing `l2OldSyncAutomation` row | `config/state/l2.yaml` |
+| S1.8 | State-mate validates production parameters only. Canary min-amount/delay remain recipe/script inputs for the S8 live test and are checked by `verify-test`. | `justfile`, `script/shared/L2UpgradeScriptBase.s.sol` |
 | S1.9 | Extend `verify-constants-sync` + `verify-externals-coverage` to the three new anchors; add the new constants to the pinned-constants guard | `justfile`, `test/L2PinnedConstantsGuard.t.sol` |
 | S1.10 | New recipes: `deploy-automation` (**done**), `repoint-sync-role` + `repoint-sync-role-calldata` (**done 2026-07-29**, see S1.4); `deploy-cre-workflow` gains a **signed** path (drop `--unsigned`, owner = AO, keep the `getExpectedAuthor()` cross-check) — still open | `justfile`, `cre-workflows/project.yaml` |
 | S1.11 | Update fork/integration tests to the split owner (they assert LOL owns all three) | `test/helpers/*`, `test/CREReceiverTest.t.sol` |
@@ -293,7 +293,7 @@ just -E .env.<network> deploy-automation      # runDeployAutomation()
 Deploys receiver v2 (allow-list empty), then trigger v2 (`initialOwner` = AO, production
 delay/amounts/fees), seeds the allow-list with `(trigger v2, triggerSync())`, then transfers the
 receiver to AO — all in one broadcast, with `_assertSyncInfrastructure` as the in-broadcast guardrail.
-Regenerate `config/state/l2-<net>.deployed.yaml` keeping the **existing pool** anchor and replacing the
+Regenerate `config/state/<net>.deployed.yaml` keeping the **existing pool** anchor and replacing the
 two automation anchors.
 
 > **Addresses will no longer be lane-invariant.** The Deployer's nonce is 19 on Optimism/Base/Linea
@@ -351,7 +351,8 @@ everywhere.
 2. `just -E .env.<network> deploy-cre-workflow` on the new **signed** path: `CRE_WORKFLOW_OWNER` = AO,
    no `--unsigned`, keeping the abort-on-mismatch cross-check against the on-chain
    `getExpectedAuthor()`.
-3. Record `CRE_WORKFLOW_ID` in `.env.<network>`; run `just -E .env.<network> verify-cre-workflow`.
+3. Run `just record-cre-workflow-id <network> <workflow-id>` with the returned ID; then run
+   `just -E .env.<network> verify-cre-workflow`.
 
 **Gate:** `getWorkflowById` shows owner = AO, status `ACTIVE`, non-empty `binaryUrl`; registry owner ==
 `CREReceiver v2.getExpectedAuthor()` == `CREReceiver v2.owner()`.

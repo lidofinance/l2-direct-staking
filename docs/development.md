@@ -103,7 +103,7 @@ And one glue command that runs all phases on a dedicated nested fork:
 
 Purpose of each phase:
 - `migrate`: executes `OptimismL2UpgradeScript` against the target RPC and persists migration outputs.
-- `update-config`: regenerates the deployed-address sibling `config/state/l2-optimism.deployed.yaml` from the resolved addresses (the shared wiring `config/state/l2.yaml` and the `l2-optimism.inputs.yaml` sibling are static, hand-maintained).
+- `update-config`: regenerates the deployed-address sibling `config/state/optimism.deployed.yaml` from the resolved addresses (the shared wiring `config/state/l2.yaml` and the `optimism.inputs.yaml` sibling are static, hand-maintained).
 - `verify`: runs `state-mate` checks against an arbitrary RPC.
 
 Required env:
@@ -131,8 +131,8 @@ just test-optimism-upgrade-state
 
 Operational notes:
 - The glue command prefers `L2_STATE_MATE_UPSTREAM_RPC_URL`, then `LOCAL_L2_OPTIMISM_RPC_URL`, then `L2_OPTIMISM_RPC_URL`.
-- If `LOCAL_L2_OPTIMISM_RPC_URL` is set but no local fork is listening there, the nested Anvil fork will fail to start; either run `just rpc-start-l2-optimism` first or override `L2_STATE_MATE_UPSTREAM_RPC_URL`.
-- `test-optimism-upgrade-state-update-config` rewrites the tracked file `config/state/l2-optimism.deployed.yaml`, so expect a worktree diff after running it.
+- If `LOCAL_L2_OPTIMISM_RPC_URL` is set but no local fork is listening there, the nested Anvil fork will fail to start; either run `just rpc-start-optimism` first or override `L2_STATE_MATE_UPSTREAM_RPC_URL`.
+- `test-optimism-upgrade-state-update-config` rewrites the tracked file `config/state/optimism.deployed.yaml`, so expect a worktree diff after running it.
 
 ## Test layers (overview)
 
@@ -191,7 +191,9 @@ L2_RPC_URL=http://127.0.0.1:8651 just deploy-test
 # → export L2_ORACLE_POOL=…  L2_SYNC_TRIGGER=…  L2_CRE_RECEIVER=…  L2_TEST_DEPLOYER=…
 ```
 
-The three contracts are deployed **deployer-owned**, with the deployer wired as the `CREReceiver` forwarder + author and the **test** `minAmount`/`delay` from the `config/state/l2.inputs.test-stage.yaml` overlay, so the deployer can drive a real sync before any handoff.
+The three contracts are deployed **deployer-owned**, with the deployer wired as the `CREReceiver`
+forwarder + author and the canary `minAmount`/`delay` defaults (0.0002 WETH / 60 s), so the deployer
+can drive a real sync before any handoff. State-mate validates only production parameters.
 
 **3. Verify Stage 0→1** (read-only): `L2_RPC_URL=http://127.0.0.1:8651 just verify-test` — a clean exit means the canary post-condition reads passed (immutables, allow-list, deployer-as-forwarder/author, pool repointed not yet, seal not run).
 
@@ -233,21 +235,25 @@ forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
   --broadcast --non-interactive --unlocked --sender "$INITIAL_OWNER"
 ```
 
-**8. State-mate against the fork.** All four lanes share one wiring file, `config/state/l2.yaml`, parametrized per lane by its `--inputs`/`--deployed` siblings. The committed `l2-linea.deployed.yaml` holds the production-target addresses; for the fork, write the freshly-deployed addresses to a throwaway `.deployed.yaml` and override the committed sibling with `--deployed` (the static `l2-linea.inputs.yaml` must be passed explicitly, since sibling auto-discovery is basename-keyed for the shared file; the `abi/` dir is auto-discovered from the shared config's directory):
+**8. State-mate against the fork.** All four lanes share one wiring file, `config/state/l2.yaml`, composed with `l2.common.inputs.yaml`, one lane-specific `.inputs.yaml`, and one `.deployed.yaml`. The committed `linea.deployed.yaml` holds the production-target addresses; for the fork, write the freshly-deployed addresses to a throwaway `.deployed.yaml` and override the committed sibling with `--deployed` (both input files must be passed explicitly, since sibling auto-discovery is basename-keyed for the shared file; the `abi/` dir is auto-discovered from the shared config's directory):
 
 ```sh
 mkdir -p /tmp/linea-rehearsal
+WORKFLOW_ID="$(yq '.. | select(anchor == "creWorkflowId")' config/state/linea.deployed.yaml | tr -d '"')"
+RETIRED_TRIGGER="$(yq '.. | select(anchor == "RETIRED_l2SyncTrigger")' config/state/linea.deployed.yaml | tr -d '"')"
+RETIRED_RECEIVER="$(yq '.. | select(anchor == "RETIRED_l2CreReceiver")' config/state/linea.deployed.yaml | tr -d '"')"
 bash script/shared/write-deployed-yaml.sh /tmp/linea-rehearsal/linea.deployed.yaml \
-    0x328de900860816d29D1367F6903a24D8ed40C997 0xBf96561e4519182CFA4cebBf95494D9CA5a316f9 0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192 \
-    "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER"
+    "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER" \
+    "$WORKFLOW_ID" "$RETIRED_TRIGGER" "$RETIRED_RECEIVER"
 ROOT="$(git rev-parse --show-toplevel)"
-(cd lib/state-mate && L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 \
+(cd lib/state-mate && L1_RPC_URL=http://127.0.0.1:8545 L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 \
   corepack yarn start "$ROOT/config/state/l2.yaml" \
-    --inputs "$ROOT/config/state/l2-linea.inputs.yaml" \
-    --deployed /tmp/linea-rehearsal/linea.deployed.yaml --only l2)
+    --inputs "$ROOT/config/state/l2.common.inputs.yaml" \
+    --inputs "$ROOT/config/state/linea.inputs.yaml" \
+    --deployed /tmp/linea-rehearsal/linea.deployed.yaml)
 ```
 
-Expected: all L2 checks pass against the **production** profile (this is the post-`finalize` state — LOL-owned, governance-sealed, real CRE forwarder, production delay/amounts). `getFeeOtoD`/`getFeeDtoO`/`getForwarder` are asserted; only deployment-time/runtime values (`getLastExecution`, the governance action-set counters) emit `⚠ skipped`.
+Expected: the WorkflowRegistry and all L2 checks pass against the **production** profile (this is the post-`finalize` state — AO-owned, governance-sealed, real CRE forwarder, production delay/amounts). `getFeeOtoD`/`getFeeDtoO`/`getForwarder` are asserted; only deployment-time/runtime values (`getLastExecution`, the governance action-set counters) emit `⚠ skipped`.
 
 **9. L1 admin migration** on the L1 fork (no impersonated variant in `L1UpgradeScript`, so issue the three calls via `cast send --unlocked`):
 

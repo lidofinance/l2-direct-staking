@@ -110,11 +110,13 @@ but the *old* OraclePool on the three OP-stack L2s. Always resolve via the lane'
 | `KeystoneForwarder` (CRE) | n/a | not pinned⁵ | not pinned⁵ | not pinned⁵ | not pinned⁵ |
 
 `FeeCodec` / `TokenHelper` are internal libraries (embedded in consumers' bytecode — no standalone
-address); `WorkflowRegistry` is a Chainlink-operated singleton whose address is not pinned in the repo.
+address); `WorkflowRegistry` is a Chainlink-operated singleton pinned once as `creWorkflowRegistry` in
+`config/state/l2.common.inputs.yaml`.
 
 ⁴ New pool — `CustomSender.getOraclePool()` points here post-Stage-2. The pre-migration pool is
   orphaned (Arbitrum `0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace`; Base/OP/Linea
-  `0x6F357d53d6bE3238180316BA5F8f11467e164588`) and kept under state-mate as `oldOraclePool`.
+  `0x6F357d53d6bE3238180316BA5F8f11467e164588`) and kept under state-mate as
+  `retiredOraclePool` / `RETIRED_l2OraclePool`.
 ⁵ Pinned per network in `<Lane>MigrationConstants.CRE_FORWARDER` (from the Chainlink production
   forwarder directory) and cross-checked against the `l2CreForwarder` state-mate anchor by
   `verify-constants-sync` — see §B and [Where the addresses live](#where-the-addresses-live).

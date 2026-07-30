@@ -1,0 +1,43 @@
+---
+# Linea-only legacy Gelato de-role check. Run in addition to the combined shared l2.yaml check.
+# The retired CRE pair is verified by l2.yaml for every lane; this file exists only because Linea
+# also had a Gelato automation address that does not exist on the other networks.
+
+roles:
+  - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"
+
+# Fixed Linea facts consumed only by this legacy Gelato check.
+# Kept under misc: (not externals:) so this standalone wiring file needs no .inputs sibling.
+misc:
+  - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
+  - &RETIRED_l2GelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe"
+
+deployed:
+  l1: []
+  l2: []
+
+l1:
+  rpcUrl: L1_RPC_URL
+  contracts: {}
+
+l2:
+  rpcUrl: L2_STATE_MATE_RPC_URL
+  chainId: 59144
+  contracts:
+    customSender:
+      name: CustomSenderReferral
+      address: *l2CustomSender
+      checks:
+        hasRole:
+          - args: [*SYNC_ROLE, *RETIRED_l2GelatoSyncAutomation]
+            result: false
+        CCIP_ROUTER: null
+        DEFAULT_ADMIN_ROLE: null
+        LINK_TOKEN: null
+        MIN_PROCESS_MESSAGE_GAS: null
+        SYNC_ROLE: null
+        TOKEN: null
+        WNATIVE: null
+        getOraclePool: null
+        getReceiver: null
+        supportsInterface: null

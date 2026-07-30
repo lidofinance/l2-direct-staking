@@ -679,7 +679,15 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         // "syncTrigger forwarder" before the irreversible seal in {_sealAdminAndProxy}.
         address wrongReceiver = makeAddr("wrongReceiver");
         vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger forwarder"));
-        this.finalizeGovernanceSeal(cfg, address(newPool), address(syncTrigger), wrongReceiver, realForwarder);
+        this.finalizeGovernanceSeal(
+            cfg,
+            address(newPool),
+            address(syncTrigger),
+            wrongReceiver,
+            realForwarder,
+            lidoL2LiquidityOwner,
+            makeAddr("retiredSyncTrigger")
+        );
     }
 
     function test_syncTriggerNotTriggeredWhenBalanceBelowMinAfterDelay() public {
@@ -981,24 +989,54 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         handoffToLiquidityOwner(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
         vm.stopPrank();
 
+        // The production architecture separates liquidity ownership from automation ownership. Model the
+        // already-completed v2 redeploy by moving only the trigger/receiver pair to the Automation Owner;
+        // the OraclePool remains LOL-owned.
+        address automationOwner = makeAddr("automationOwner");
+        vm.startPrank(lidoL2LiquidityOwner);
+        syncTrigger.transferOwnership(automationOwner);
+        creReceiver.setExpectedAuthor(automationOwner);
+        creReceiver.transferOwnership(automationOwner);
+        vm.stopPrank();
+
         // The handoff recovers ALL the deployer-provided funds: the trigger is handed over empty.
         assertEq(address(syncTrigger).balance, 0, "handoff should drain the trigger's whole ETH float");
         assertEq(deployer.balance, deployerEthBefore + triggerFloatBefore, "trigger float swept to the deployer");
         assertEq(IERC20(L2_WETH).balanceOf(address(newPool)), 0, "pool WETH swept");
         assertEq(IERC20(L2_WSTETH).balanceOf(address(newPool)), 0, "pool wstETH swept");
 
-        verifyCanaryStage2(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        verifyCanaryStage2(
+            prodCfg,
+            address(newPool),
+            address(syncTrigger),
+            address(creReceiver),
+            realForwarder,
+            automationOwner
+        );
+
+        // Both superseded execution paths must be inert before Initial Owner gives up the role admin.
+        address retiredSyncTrigger = makeAddr("retiredSyncTrigger");
+        vm.prank(INITIAL_OWNER);
+        IAccessControl(L2_CUSTOM_SENDER).grantRole(SYNC_ROLE, retiredSyncTrigger);
 
         // Stage 2→3 (Initial Owner): the irreversible governance seal.
         vm.startPrank(INITIAL_OWNER);
-        finalizeGovernanceSeal(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        finalizeGovernanceSeal(
+            prodCfg,
+            address(newPool),
+            address(syncTrigger),
+            address(creReceiver),
+            realForwarder,
+            automationOwner,
+            retiredSyncTrigger
+        );
         vm.stopPrank();
 
         // Final production state — the same invariants the standard migration lands on.
         assertEq(newPool.owner(), lidoL2LiquidityOwner, "pool owner = LOL");
-        assertEq(Ownable(address(syncTrigger)).owner(), lidoL2LiquidityOwner, "trigger owner = LOL");
-        assertEq(Ownable(address(creReceiver)).owner(), lidoL2LiquidityOwner, "receiver owner = LOL");
-        assertEq(creReceiver.getExpectedAuthor(), lidoL2LiquidityOwner, "author restored to LOL");
+        assertEq(Ownable(address(syncTrigger)).owner(), automationOwner, "trigger owner = Automation Owner");
+        assertEq(Ownable(address(creReceiver)).owner(), automationOwner, "receiver owner = Automation Owner");
+        assertEq(creReceiver.getExpectedAuthor(), automationOwner, "author = Automation Owner");
         assertEq(creReceiver.getForwarder(), realForwarder, "forwarder restored to real");
         (uint128 minA, uint128 maxA) = syncTrigger.getAmounts();
         assertEq(minA, L2_SYNC_MIN_AMOUNT, "min restored to production");
@@ -1012,6 +1050,10 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
             IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "initial owner admin revoked"
         );
         assertEq(Ownable(L2_PROXY_ADMIN).owner(), LIDO_L2_GOVERNANCE_EXECUTOR, "L2 ProxyAdmin = governance executor");
+        assertFalse(
+            IAccessControl(L2_CUSTOM_SENDER).hasRole(SYNC_ROLE, retiredSyncTrigger),
+            "retired SyncTrigger de-roled"
+        );
         _verifyOldAutomationsRevoked();
     }
 
@@ -1103,7 +1145,15 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
 
         // `this.` so the external call is what expectRevert latches onto; the interlock reverts first.
         vm.expectRevert(abi.encodeWithSelector(L2UpgradePostConditionFailed.selector, "syncTrigger owner"));
-        this.finalizeGovernanceSeal(prodCfg, address(newPool), address(syncTrigger), address(creReceiver), realForwarder);
+        this.finalizeGovernanceSeal(
+            prodCfg,
+            address(newPool),
+            address(syncTrigger),
+            address(creReceiver),
+            realForwarder,
+            lidoL2LiquidityOwner,
+            makeAddr("retiredSyncTrigger")
+        );
 
         assertTrue(
             IAccessControl(L2_CUSTOM_SENDER).hasRole(DEFAULT_ADMIN_ROLE, INITIAL_OWNER), "admin untouched after revert"
@@ -1324,7 +1374,7 @@ abstract contract PoolUpgradeTests is UpgradeTestBase {
         address envTrigger = vm.envOr("L2_SYNC_TRIGGER", address(0));
         require(
             envTrigger != address(0),
-            "repoint tests: set L2_SYNC_TRIGGER (source .env.<network>; value lives in config/state/l2-<net>.deployed.yaml)"
+            "repoint tests: set L2_SYNC_TRIGGER (source .env.<network>; value lives in config/state/<net>.deployed.yaml)"
         );
         holder = SyncTrigger(payable(envTrigger));
         require(holder.SENDER() == L2_CUSTOM_SENDER, "repoint tests: L2_SYNC_TRIGGER is not bound to this lane's CustomSender");

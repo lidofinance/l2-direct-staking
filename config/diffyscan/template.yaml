@@ -2,8 +2,8 @@
 # diffyscan (lidofinance/diffyscan) config TEMPLATE — the network-invariant kernel. Do not run
 # diffyscan on this file; `just -E .env.<network> diffyscan-config` fills the placeholder tokens from the
 # lane's committed state and writes config/diffyscan/l2-<net>.generated.yaml (gitignored):
-#   addresses   ← config/state/l2-<net>.deployed.yaml   (the three Stage-1 deploy outputs)
-#   chain id    ← config/state/l2-<net>.inputs.yaml     (&l2ChainId anchor)
+#   addresses   ← config/state/<net>.deployed.yaml   (the three Stage-1 deploy outputs)
+#   chain id    ← config/state/<net>.inputs.yaml     (&l2ChainId anchor)
 #   repo commit ← the '# deploy-commit:' stamp in the deployed.yaml (written at deploy time)
 #   dep commits ← that commit's own submodule gitlinks (git rev-parse <commit>:lib/<dep>)
 # so the diff runs against WHAT WAS DEPLOYED, immune to later branch churn — nothing here

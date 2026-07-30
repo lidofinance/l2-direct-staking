@@ -27,6 +27,7 @@ contract L2UpgradeActions {
     error L2UpgradeWrongChain(uint256 actualChainId, uint256 expectedChainId);
     error L2UpgradePostConditionFailed(string what);
     error L2UpgradeFloatBelowFloor(uint256 initialFloat, uint256 floor);
+    error L2UpgradeRetiredSyncTriggerIsActive(address syncTrigger);
 
     // ── repointSyncRole entry gates (see {repointSyncRole}) ──
     error L2UpgradeSyncRoleHolderUnchanged(address holder);
@@ -264,8 +265,8 @@ contract L2UpgradeActions {
         emit L2SyncTriggerFunded(syncTrigger, cfg.syncTriggerInitialFloat);
     }
 
-    /// @dev `expectedOwner` is the owner the SyncTrigger/CREReceiver must currently hold — `cfg.liquidityOwner`
-    ///      in production / post-handoff, or the Lido Deployer during the canary test window.
+    /// @dev `expectedOwner` is the owner the SyncTrigger/CREReceiver must currently hold — the dedicated
+    ///      Automation Owner in production, or the Lido Deployer during the canary test window.
     function _assertSyncInfrastructure(
         L2UpgradeConfig memory cfg,
         address syncTrigger,
@@ -371,6 +372,28 @@ contract L2UpgradeActions {
 
         IAccessControl(customSender).grantRole(SYNC_ROLE, syncTrigger);
         emit L2SyncRoleGranted(customSender, syncTrigger);
+    }
+
+    /// @notice Restore production timing/amount parameters on an Automation-Owner-owned SyncTrigger after
+    ///         its live canary. Ownership and wiring are asserted so the wrong lane/address cannot be tuned.
+    function promoteAutomationToProduction(
+        L2UpgradeConfig memory cfg,
+        address syncTrigger,
+        address automationOwner
+    ) public {
+        _requireNonZeroL2(syncTrigger);
+        _requireNonZeroL2(automationOwner);
+        SyncTrigger st = SyncTrigger(payable(syncTrigger));
+        _requireL2PostCondition(st.SENDER() == cfg.customSender, "promote syncTrigger SENDER");
+        _requireL2PostCondition(Ownable(syncTrigger).owner() == automationOwner, "promote syncTrigger owner");
+
+        st.setDelay(cfg.minSyncDelay);
+        st.setAmounts(cfg.minSyncAmount, cfg.maxSyncAmount);
+
+        _requireL2PostCondition(st.getDelay() == cfg.minSyncDelay, "promote syncTrigger delay");
+        (uint128 minAmount, uint128 maxAmount) = st.getAmounts();
+        _requireL2PostCondition(minAmount == cfg.minSyncAmount, "promote syncTrigger minAmount");
+        _requireL2PostCondition(maxAmount == cfg.maxSyncAmount, "promote syncTrigger maxAmount");
     }
 
     function revokeSyncRole(address customSender, address oldAutomation) public {
@@ -508,11 +531,16 @@ contract L2UpgradeActions {
     function _assertMigrationSteps(
         L2UpgradeConfig memory cfg,
         address newPool,
-        address newSyncTrigger
+        address newSyncTrigger,
+        address retiredSyncTrigger
     ) private view {
         IAccessControl sender = IAccessControl(cfg.customSender);
         _requireL2PostCondition(ICustomSender(cfg.customSender).getOraclePool() == newPool, "oraclePool");
         _requireL2PostCondition(sender.hasRole(SYNC_ROLE, newSyncTrigger), "sync role grant");
+        _requireL2PostCondition(
+            !sender.hasRole(SYNC_ROLE, retiredSyncTrigger),
+            "retired syncTrigger sync revoke"
+        );
         _requireL2PostCondition(
             cfg.oldChainlinkAutomation == address(0) || !sender.hasRole(SYNC_ROLE, cfg.oldChainlinkAutomation),
             "old chainlink sync revoke"
@@ -532,10 +560,22 @@ contract L2UpgradeActions {
         _requireL2PostCondition(Ownable(cfg.proxyAdmin).owner() == cfg.governanceExecutor, "proxyAdmin owner");
     }
 
-    /// @dev The irreversible governance-seal tail invoked by the canary seal (finalizeGovernanceSeal):
-    ///      revoke the old automation(s) SYNC_ROLE, migrate CustomSender admin to the governance executor,
-    ///      hand the L2 ProxyAdmin over, then assert the end state.
-    function _sealAdminAndProxy(L2UpgradeConfig memory cfg, address newPool, address newSyncTrigger) private {
+    /// @dev The irreversible governance-seal tail invoked by {finalizeGovernanceSeal}: revoke both generations
+    ///      of superseded automation (`retiredSyncTrigger` and predecessor Chainlink/Gelato), migrate
+    ///      CustomSender admin to the governance executor, hand the L2 ProxyAdmin over, then assert the end state.
+    function _sealAdminAndProxy(
+        L2UpgradeConfig memory cfg,
+        address newPool,
+        address newSyncTrigger,
+        address retiredSyncTrigger
+    ) private {
+        _requireNonZeroL2(retiredSyncTrigger);
+        if (retiredSyncTrigger == newSyncTrigger) {
+            revert L2UpgradeRetiredSyncTriggerIsActive(retiredSyncTrigger);
+        }
+        if (IAccessControl(cfg.customSender).hasRole(SYNC_ROLE, retiredSyncTrigger)) {
+            revokeSyncRole(cfg.customSender, retiredSyncTrigger);
+        }
         if (cfg.oldChainlinkAutomation != address(0)) {
             revokeSyncRole(cfg.customSender, cfg.oldChainlinkAutomation);
         }
@@ -545,7 +585,7 @@ contract L2UpgradeActions {
         migrateSenderAdmin(cfg);
         transferProxyAdminOwnership(cfg);
 
-        _assertMigrationSteps(cfg, newPool, newSyncTrigger);
+        _assertMigrationSteps(cfg, newPool, newSyncTrigger, retiredSyncTrigger);
     }
 
     // ──────────────── Canary test flow (deployer-simulated CRE) ───────────
@@ -647,31 +687,34 @@ contract L2UpgradeActions {
         );
     }
 
-    /// @notice Irreversible governance seal, run after the LOL handoff: revoke the old automation(s),
+    /// @notice Irreversible governance seal, run after the Automation Owner cutover: revoke every retired automation,
     ///         migrate CustomSender admin to the governance executor, and transfer the L2 ProxyAdmin. The
     ///         opening {_assertSyncInfrastructure} interlock refuses to seal unless the infra is already
-    ///         LOL-owned and production-configured. The oracle-pool repoint + SYNC_ROLE grant happened in
-    ///         {activateForTesting} and are asserted here, not re-done. Actor: Initial Owner.
+    ///         Automation-Owner-owned and production-configured. The active trigger's SYNC_ROLE grant is
+    ///         asserted here, not re-done. Actor: Initial Owner.
     function finalizeGovernanceSeal(
         L2UpgradeConfig memory cfg,
         address newPool,
         address newSyncTrigger,
         address creReceiver,
-        address realForwarder
+        address realForwarder,
+        address automationOwner,
+        address retiredSyncTrigger
     ) public {
+        _requireNonZeroL2(automationOwner);
         // requireFloat = false: the handoff sweeps the trigger's whole ETH float back to the deployer, so
         // the trigger is expected empty here. The production float is a separate, permissionless funding
         // step (`just fund-trigger` / bare transfer) — an unfunded trigger is a liveness stall (canSync()
         // false, DON stops submitting), covered by monitoring, never a reason to block this IRREVERSIBLE seal.
         _assertSyncInfrastructure(
-            cfg, newSyncTrigger, creReceiver, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, false
+            cfg, newSyncTrigger, creReceiver, realForwarder, automationOwner, automationOwner, false
         );
         _requireL2PostCondition(ICustomSender(cfg.customSender).getOraclePool() == newPool, "finalize oraclePool");
         _requireL2PostCondition(
             IAccessControl(cfg.customSender).hasRole(SYNC_ROLE, newSyncTrigger), "finalize sync role"
         );
 
-        _sealAdminAndProxy(cfg, newPool, newSyncTrigger);
+        _sealAdminAndProxy(cfg, newPool, newSyncTrigger, retiredSyncTrigger);
     }
 
     /// @notice Read-only verification of the canary Stage-1 state: the three contracts are deployed and
@@ -708,8 +751,8 @@ contract L2UpgradeActions {
         );
     }
 
-    /// @notice Read-only verification of the post-handoff, pre-seal state (Stage 2): the three contracts are
-    ///         LOL-owned and production-configured (real forwarder + LOL author + production delay/amounts),
+    /// @notice Read-only verification of the post-cutover, pre-seal state (Stage 2): the pool remains LOL-owned
+    ///         while SyncTrigger + CREReceiver are Automation-Owner-owned and production-configured,
     ///         the pool is active and the SyncTrigger holds SYNC_ROLE, and the Initial Owner still holds
     ///         CustomSender admin (the irreversible seal has NOT run). The float is NOT asserted — the
     ///         handoff hands the trigger over drained; funding it is a separate permissionless step.
@@ -718,12 +761,14 @@ contract L2UpgradeActions {
         address oraclePool,
         address syncTrigger,
         address creReceiverAddr,
-        address realForwarder
+        address realForwarder,
+        address automationOwner
     ) public view {
         _requireNonZeroL2(oraclePool);
         _requireNonZeroL2(realForwarder);
+        _requireNonZeroL2(automationOwner);
         _assertSyncInfrastructure(
-            cfg, syncTrigger, creReceiverAddr, realForwarder, cfg.liquidityOwner, cfg.liquidityOwner, false
+            cfg, syncTrigger, creReceiverAddr, realForwarder, automationOwner, automationOwner, false
         );
         _requireL2PostCondition(Ownable(oraclePool).owner() == cfg.liquidityOwner, "oraclePool owner not LOL");
         _requireL2PostCondition(

@@ -89,7 +89,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     /// @dev Returns the known predecessor OraclePool for this network — the pool `rollback` repoints
     ///      CustomSender back to — or address(0) to opt out. Production networks override this to their
     ///      per-chain L2_OLD_ORACLE_POOL constant (the same value verify-constants-sync pins to the
-    ///      l2OldOraclePool state-mate anchor); `_oldOraclePool()` reads it directly, so the pool to restore
+    ///      RETIRED_l2OraclePool state-mate anchor); `_oldOraclePool()` reads it directly, so the pool to restore
     ///      is sourced ONLY from the constant, never env — a wrong value can no longer repoint the sender at
     ///      an arbitrary pool during the (Initial-Owner-only) rollback. Mirrors `_expectedGovernanceExecutor`.
     function _expectedOldOraclePool() internal pure virtual returns (address) {
@@ -118,6 +118,13 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         return vm.envOr("L2_LIQUIDITY_OWNER", _defaultLiquidityOwner());
     }
 
+    /// @dev Expected owner/author of the production SyncTrigger + CREReceiver pair. Required for the
+    ///      irreversible finalize interlock; a wrong value fails against live owner()/expectedAuthor reads
+    ///      before any role or ProxyAdmin write is broadcast.
+    function _envAutomationOwnerAddress() internal view returns (address) {
+        return vm.envAddress("L2_AUTOMATION_OWNER");
+    }
+
     /// @dev Automation Owner signing key, accepting either spelling (`_PK` is what `.env` carries), with
     ///      NO default — mirrors {_envInitialOwnerPrivateKey}. Only {runDeployAutomation} reads it.
     function _envAutomationOwnerPrivateKey() internal view returns (uint256) {
@@ -141,7 +148,7 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         }
     }
 
-    /// @dev Production cfg by default; the canary overlay when {_envDeployCanaryParams} is set.
+    /// @dev Production cfg by default; canary test parameters when {_envDeployCanaryParams} is set.
     function _deployAutomationCfg(address initialOwner, address governanceExecutor, address liquidityOwner)
         internal
         view
@@ -184,7 +191,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
     error L2UpgradeOldOraclePoolNotPinned();
 
     /// @dev Returns the predecessor OraclePool `rollback` restores — the per-network L2_OLD_ORACLE_POOL
-    ///      constant pinned via `_expectedOldOraclePool()` (cross-checked to the l2OldOraclePool .inputs.yaml
+    ///      constant pinned via `_expectedOldOraclePool()` (cross-checked to the RETIRED_l2OraclePool
+    ///      .inputs.yaml
     ///      anchor by verify-constants-sync). NEVER read from env, so a wrong value can't repoint the sender
     ///      at an arbitrary pool during the (Initial-Owner-only) rollback. Reverts if the network left it
     ///      unpinned. Same source-of-truth discipline as `_governanceExecutor`.
@@ -195,12 +203,10 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
 
     // ── Canary test flow (deployer-simulated CRE) ────────────────────
 
-    /// @dev Canary cfg = production cfg with the test min-amount + delay overrides applied (low values so a
-    ///      small WETH seed triggers a sync promptly). The override values are the `syncMinAmount` /
-    ///      `syncDelay` anchors in the shared state-mate overlay `config/state/l2.inputs.test-stage.yaml`,
-    ///      supplied via `L2_SYNC_MIN_AMOUNT_TEST` / `L2_SYNC_DELAY_TEST` by the canary recipes (deploy-test /
-    ///      verify-test). The inline literals here are only a fallback for a direct `forge` invocation with
-    ///      neither env set (kept byte-equal to the overlay: 0.0002e18 / 60s). Production values are restored at
+    /// @dev Canary cfg = production cfg with test min-amount + delay values applied (low values so a small
+    ///      WETH seed triggers a sync promptly). They are supplied through `L2_SYNC_MIN_AMOUNT_TEST` /
+    ///      `L2_SYNC_DELAY_TEST` by the canary recipes; the inline defaults are 0.0002e18 / 60s.
+    ///      State-mate validates only production parameters. Production values are restored at
     ///      {handoffToLiquidityOwner}.
     function _canaryTestCfg(address initialOwner, address governanceExecutor, address liquidityOwner)
         internal
@@ -356,8 +362,8 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
         vm.stopBroadcast();
     }
 
-    /// @notice Stage 2 verify (read-only): post-handoff, pre-seal — infra LOL-owned + production-configured,
-    ///         pool active, SYNC_ROLE held, Initial Owner still admin.
+    /// @notice Stage 2 verify (read-only): post-cutover, pre-seal — pool LOL-owned, automation pair owned
+    ///         by the Automation Owner, production-configured, SYNC_ROLE held, Initial Owner still admin.
     function runVerifyStage2() public view {
         assertL2ChainId(_expectedChainId());
         L2UpgradeConfig memory cfg =
@@ -367,12 +373,13 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
             vm.envAddress("L2_ORACLE_POOL"),
             vm.envAddress("L2_SYNC_TRIGGER"),
             vm.envAddress("L2_CRE_RECEIVER"),
-            _creForwarder()
+            _creForwarder(),
+            _envAutomationOwnerAddress()
         );
     }
 
-    /// @notice Stage 2→3 (Initial Owner): the irreversible governance seal — revoke old automation(s),
-    ///         migrate CustomSender admin + L2 ProxyAdmin to the governance executor.
+    /// @notice Stage 2→3 (Initial Owner): the irreversible governance seal — revoke the retired SyncTrigger
+    ///         and predecessor automation(s), then migrate CustomSender admin + L2 ProxyAdmin to governance.
     function runFinalize() public {
         uint256 key = _envInitialOwnerPrivateKey();
         _runFinalizeBody(vm.addr(key), key);
@@ -394,8 +401,35 @@ abstract contract L2UpgradeScriptBase is Script, L2UpgradeActions {
             vm.envAddress("L2_ORACLE_POOL"),
             vm.envAddress("L2_SYNC_TRIGGER"),
             vm.envAddress("L2_CRE_RECEIVER"),
-            _creForwarder()
+            _creForwarder(),
+            _envAutomationOwnerAddress(),
+            _envRetiredSyncRole()
         );
+        vm.stopBroadcast();
+    }
+
+    /// @notice Automation Owner: restore the production delay and amount bounds after the live v2 canary.
+    function runPromoteAutomation() public {
+        uint256 key = _envAutomationOwnerPrivateKey();
+        address automationOwner = _envAutomationOwnerAddress();
+        if (vm.addr(key) != automationOwner) {
+            revert L2UpgradeAutomationOwnerKeyMismatch(vm.addr(key), automationOwner);
+        }
+        _runPromoteAutomationBody(automationOwner, key);
+    }
+
+    /// @notice Anvil-only twin of {runPromoteAutomation}.
+    function runPromoteAutomationUnlocked() public {
+        _runPromoteAutomationBody(_envAutomationOwnerAddress(), 0);
+    }
+
+    function _runPromoteAutomationBody(address automationOwner, uint256 key) internal {
+        assertL2ChainId(_expectedChainId());
+        L2UpgradeConfig memory cfg =
+            _buildConfig(_envInitialOwnerAddress(), _governanceExecutor(), _envLiquidityOwnerAddress());
+        if (key != 0) vm.startBroadcast(key);
+        else vm.startBroadcast(automationOwner);
+        promoteAutomationToProduction(cfg, vm.envAddress("L2_SYNC_TRIGGER"), automationOwner);
         vm.stopBroadcast();
     }
 

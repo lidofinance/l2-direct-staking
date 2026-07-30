@@ -1,0 +1,28 @@
+---
+# Values shared by intent across every L2 lane. State-mate composes this file with exactly one
+# config/state/<network>.inputs.yaml lane delta; duplicate anchors across the two files are fatal.
+config:
+  # ── CRE + automation policy shared by all lanes ──
+  - &creDonFamily "zone-a"
+  - &minProcessMessageGas 75000          # CustomSender.MIN_PROCESS_MESSAGE_GAS
+  - &syncMinAmount 5000000000000000000   # 5e18   SyncTrigger.getAmounts()[0]
+  - &syncMaxAmount 100000000000000000000 # 100e18 SyncTrigger.getAmounts()[1]
+  - &syncDelay 43200                     # 12h    SyncTrigger.getDelay()
+
+externals:
+  # ── Cross-lane identities and Ethereum-mainnet destination facts ──
+  - &ethMainnetCcipChainSelector 5009297550715157269
+  - &l1LidoCustomReceiverBytes32 "0x0000000000000000000000006f357d53d6be3238180316ba5f8f11467e164588"
+  - &initialOwner "0xb5c336a5c60D3482b29d83C742C65AE8351b91a8"
+  - &lidoDaoAgent "0x3e40D73EB977Dc6a537aF587D48316feE66E9C8c"
+  - &l2LiquidityOwner "0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6"
+  # Lido Deployer EOA — the REAL mainnet deployer, identical on all four lanes (only the ADDRESS is
+  # committed; the key is supplied via L2_LIDO_DEPLOYER_PRIVATE_KEY env). The wiring check
+  # hasRole(DEFAULT_ADMIN_ROLE, *l2LidoDeployer)==false is therefore a genuine deployer-renounce
+  # assertion on mainnet. The L2 CustomSender uses NON-enumerable AccessControl, so this explicit
+  # (role,address) row is the deployer coverage. Pinned to L1MigrationConstants.LIDO_DEPLOYER by
+  # verify-constants-sync. Dev-fork deploys use Anvil acct #0, but the inherited mainnet proxy grants
+  # neither EOA admin, so the check remains valid without a fork override.
+  - &l2LidoDeployer "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
+  - &l2AutomationOwner "0xBdF111fec2e818Ad9c76fbBaE46144746AD55773"
+  - &creWorkflowRegistry "0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5"

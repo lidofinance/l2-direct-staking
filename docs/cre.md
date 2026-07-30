@@ -134,7 +134,9 @@ CREReceiver is deployed per L2 network as part of the canary deploy (`deploy-tes
 2. Rewrite `config.deploy.<network>.json` with the deployed addresses — `just -E .env.<network> update-cre-config`.
 3. Register the workflow **owned by the Automation Owner**: `just -E .env.<network> deploy-cre-workflow`. It selects `--target=production-<network>`, derives owner + key from the canonical variables, aborts unless the owner equals the on-chain `CREReceiver.getExpectedAuthor()`, and the AO **signs the `WorkflowRegistry` transaction itself**. For a multi-sig owner instead, set `CRE_DEPLOY_UNSIGNED=true` and execute the emitted calldata from the Safe.
 4. Repeat for each network (Optimism, Arbitrum, Base, Linea) — each gets its own workflow name.
-5. Monitor at `cre.chain.link/workflows`; verify the registered owner with `just -E .env.<network> verify-cre-workflow`.
+5. Persist the returned content-derived ID with
+   `just record-cre-workflow-id <network> <workflow-id>`, then verify the registered identity,
+   owner, and `ACTIVE` status with `just -E .env.<network> verify-cre-workflow`.
 
 > ⚠ The narrative below (and in [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)) still describes the
 > **LOL Safe** as workflow owner — superseded by [DOC.md §4.2](../DOC.md#42-diagram-b--ownership--access-control)

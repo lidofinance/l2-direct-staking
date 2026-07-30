@@ -59,8 +59,8 @@ just -E .env.<network> test-<network>-upgrade-state-verify
 # PASS: exit 0, tail shows `✔ Total: … checks passed`
 
 # LP-G1 — pool wiring read-backs
-POOL=$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' config/state/l2-<network>.deployed.yaml)
-CS=$(yq '.externals[] | select(anchor == "l2CustomSender")' config/state/l2-<network>.inputs.yaml)
+POOL=$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' config/state/<network>.deployed.yaml)
+CS=$(yq '.externals[] | select(anchor == "l2CustomSender")' config/state/<network>.inputs.yaml)
 cast call $CS "getOraclePool()(address)" --rpc-url $L2_RPC_URL   # == $POOL
 cast call $POOL "owner()(address)" --rpc-url $L2_RPC_URL         # == LOL Safe (§1.4)
 cast call $POOL "SENDER()(address)" --rpc-url $L2_RPC_URL        # == $CS
@@ -197,8 +197,8 @@ Resolve live addresses from config — do not hard-code from memory:
 
 | Resource | Path |
 | --- | --- |
-| New pool, SyncTrigger, CREReceiver | `config/state/l2-<network>.deployed.yaml` → `l2OraclePool`, etc. |
-| LOL Safe, tokens, oracle | `config/state/l2-<network>.inputs.yaml` |
+| New pool, SyncTrigger, CREReceiver | `config/state/<network>.deployed.yaml` → `l2OraclePool`, etc. |
+| LOL Safe, tokens, oracle | Effective inputs: `config/state/l2.common.inputs.yaml` + `<network>.inputs.yaml` |
 | Pinned constants | `script/<network>/<Network>MigrationConstants.sol` |
 
 | Network      | LOL multisig (pool owner)                    |
@@ -276,8 +276,8 @@ On-chain read-backs:
 
 ```sh
 # Entries are YAML-anchored scalars — select on yq's anchor operator, not a field
-POOL=$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' config/state/l2-<network>.deployed.yaml)
-CS=$(yq '.externals[] | select(anchor == "l2CustomSender")' config/state/l2-<network>.inputs.yaml)
+POOL=$(yq '.deployed.l2[] | select(anchor == "l2OraclePool")' config/state/<network>.deployed.yaml)
+CS=$(yq '.externals[] | select(anchor == "l2CustomSender")' config/state/<network>.inputs.yaml)
 LOL=<LOL Safe address from §1.4>
 
 cast call $CS "getOraclePool()(address)" --rpc-url $L2_RPC_URL    # == $POOL
@@ -295,7 +295,7 @@ not a duty — A.6.B D-quadrant, permission branch). Permissionless and separate
 wstETH liquidity.
 
 ```sh
-TRIGGER=$(yq '.deployed.l2[] | select(anchor == "l2SyncTrigger")' config/state/l2-<network>.deployed.yaml)
+TRIGGER=$(yq '.deployed.l2[] | select(anchor == "l2SyncTrigger")' config/state/<network>.deployed.yaml)
 cast balance $TRIGGER --rpc-url $L2_RPC_URL
 cast call $TRIGGER "getMaxFees()(uint256)" --rpc-url $L2_RPC_URL
 ```
@@ -330,7 +330,7 @@ existing reserve and the signer needs no wstETH at all.
 Safe transaction (one per network):
 
 ```
-To:   wstETH token (from config/state/l2-<network>.inputs.yaml → l2Wsteth)
+To:   wstETH token (from config/state/<network>.inputs.yaml → l2Wsteth)
 Fn:   transfer(address to, uint256 amount)
 Args: to   = <new OraclePool address>
       amount = <seed amount in wei>

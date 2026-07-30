@@ -20,7 +20,8 @@
 | Linea | 31547706 |
 
 Reads are `cast balance` (native ETH) and `ERC20.balanceOf` against the `l2Weth` / `l2Wsteth`
-externals in `config/state/l2-<net>.inputs.yaml`. stETH is not bridged to L2 — only wstETH exists there.
+effective externals in `config/state/l2.common.inputs.yaml` plus `config/state/<net>.inputs.yaml`.
+stETH is not bridged to L2 — only wstETH exists there.
 
 ## 2. Lido Deployer EOA — `0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c`
 

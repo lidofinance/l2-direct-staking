@@ -1,0 +1,48 @@
+---
+# Optimism-specific deploy parameters and external facts. State-mate composes this lane delta with
+# config/state/l2.common.inputs.yaml ahead of the shared config/state/l2.yaml wiring.
+config:
+  # ── CRE WorkflowRegistry metadata ──
+  - &creWorkflowName "lido-sync-automation-optimism"
+  - &creWorkflowTag "lido-sync-automation-optimism"
+  # ── Lane-specific SyncTrigger limits and fee encodings ──
+  - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Optimism EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit
+  # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
+  # feeOtoD = FeeCodec.encodeCCIP(maxFee=0.125e18, payInLink=false, gasLimit=1_000_000)
+  - &feeOtoD "0x000000000000000001bc16d674ec800000000f4240"
+  # feeDtoO = FeeCodec.encodeOptimismL1toL2(originL2Gas=100_000)  — OP-stack feeAmount is always 0
+  - &feeDtoO "0x0000000000000000000000000000000000000186a0"
+  # getMaxFees() derived from the blobs: native = maxFee + DtoO(0) = 0.125e18 (LINK payment not supported)
+  - &maxNativeFee 125000000000000000
+  # ── Shared-wiring parametrization (consumed by config/state/l2.yaml) ──
+  - &l2GovExecutorName "OptimismBridgeExecutor" # governanceExecutor.name → ABI selector (OP-stack)
+  - &lineaMessageService null # not a Linea executor; shared LINEA_MESSAGE_SERVICE check is skipped here
+  # NOTE: L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18 is a deploy input but is intentionally NOT a
+  # state-mate check — the trigger's ETH balance drifts down as it fronts per-sync fees, so no
+  # stable equality holds post-deploy. It is verified at deploy time (L2UpgradeActions float-floor
+  # post-condition) and by the SyncTrigger provenance fork test. Shown here for operator review only.
+
+externals:
+  # ── Fixed third-party / external facts ──
+  # ⚠ Cross-chain address reuse: a hex below can be a DIFFERENT contract on another chain/role
+  #   (deterministic deploys) — e.g. l2PriceOracle / RETIRED_l2OraclePool / the L1 adapters recur across
+  #   lanes. Always resolve via THIS lane's *MigrationConstants.sol; full reuse map in docs/audit-scope.md.
+  - &l2ChainId 10
+  - &l2GovernanceExecutor "0xEfa0dB536d2c8089685630fafe88CF7805966FC3"
+  - &ovmL2CrossDomainMessenger "0x4200000000000000000000000000000000000007"
+  - &RETIRED_l2OraclePool "0x6F357d53d6bE3238180316BA5F8f11467e164588"
+  - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
+  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
+  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated optimism.deployed.yaml.
+  #   Pinned to OptimismMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
+  - &l2CustomSenderImpl "0x65498495DdC07c52E12EEe3c44D3a1166eed8703"
+  - &l2ProxyAdmin "0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192"
+  # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
+  #   network & Chainlink-operated. Pinned to OptimismMigrationConstants.CRE_FORWARDER (verify-constants-sync).
+  - &l2CreForwarder "0xF8344CFd5c43616a4366C34E3EEE75af79a74482"
+  - &l2Weth "0x4200000000000000000000000000000000000006"
+  - &l2Wsteth "0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb"
+  - &l2LinkToken "0x350a791Bfc2C21F9Ed5d10980Dad2e2638ffa7f6"
+  - &l2CcipRouter "0x3206695CaE29952f4b0c22a169725a865bc8Ce0f"
+  - &l2PriceOracle "0x301cBCDA894c932E9EDa3Cf8878f78304e69E367"

@@ -139,10 +139,10 @@ already-EOA-owned workflow can only be moved to a Safe by running the "redeploy 
 
 | # | Duty — role *SHALL* | Gate / Evidence |
 |---|---|---|
-| R1 | Lido ops provision a *new* owner (for EOA→Safe: the LOL Safe via `--unsigned`); `cre workflow deploy` a fresh workflow → new `metadata.workflowOwner`; capture `CRE_WORKFLOW_ID` | — |
-| R2 | *(gate before R3)* `verify-cre-workflow` → status `ACTIVE`, owner = new author | `VerifyCREWorkflow` 3-assert read. Do **not** re-pin to a not-yet-live author |
+| R1 | Lido ops provision a *new* owner (for EOA→Safe: the LOL Safe via `--unsigned`); `cre workflow deploy` a fresh workflow → new `metadata.workflowOwner`; persist it with `just record-cre-workflow-id <network> <workflow-id>` | — |
+| R2 | *(gate before R3)* `verify-cre-workflow` → identity present, status `ACTIVE`, owner = new author | state-mate `config/state/l2.yaml`. Do **not** re-pin to a not-yet-live author |
 | R3 | LOL multisig `setExpectedAuthor(newOwner)` on **all 4** L2 `CREReceiver`s | Monitoring §1: `getExpectedAuthor` = new on all 4 + `ExpectedAuthorUpdated` ×4 |
-| R4 | Lido ops re-baseline `.env`, the pinned-author constant, and the `config/state/l2-<net>.inputs.yaml` siblings in lock-step | state-mate §1/§4 green against the new author |
+| R4 | Lido ops re-baseline the shared `l2AutomationOwner` anchor in `config/state/l2.common.inputs.yaml` | state-mate §1/§4 green against the new author on every lane |
 
 R3 needs **only the LOL multisig** — not a DAO / Aragon / GovExec motion. That is the payoff of the
 `expectedAuthor` indirection: recovery never touches value-path governance. Adopting the Safe owner from the

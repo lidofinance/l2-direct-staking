@@ -1,7 +1,7 @@
 {
-  "receiverAddress": "0xYOUR_CRE_RECEIVER_ADDRESS",
+  "receiverAddress": "0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A",
   "chainSelectorName": "ethereum-mainnet-linea-1",
   "writeGasLimit": "750000",
-  "targetAddress": "0xYOUR_SYNC_TRIGGER_ADDRESS",
+  "targetAddress": "0x871a5cddE9813627Ff37A2895A0c9B117A664622",
   "schedule": "0 */5 * * * *"
 }

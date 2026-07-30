@@ -233,7 +233,15 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
 
         // Stage 2→3 (Initial Owner): irreversible governance seal.
         vm.startPrank(INITIAL_OWNER);
-        finalizeGovernanceSeal(cfg, address(newPool), newSyncTrigger, address(newCREReceiver), realForwarder);
+        finalizeGovernanceSeal(
+            cfg,
+            address(newPool),
+            newSyncTrigger,
+            address(newCREReceiver),
+            realForwarder,
+            lidoL2LiquidityOwner,
+            makeAddr("retiredSyncTrigger")
+        );
         vm.stopPrank();
     }
 
@@ -265,7 +273,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
 
     /// @dev Bind-only acceptance seam: BIND to the REAL deployed Stage-1 canary via env
     ///      (L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER — yq'd from
-    ///      config/state/l2-<net>.deployed.yaml by the just recipes, or sourced from .env.<network>).
+    ///      config/state/<net>.deployed.yaml by the just recipes, or sourced from .env.<network>).
     ///      The integration suites always start from the deployed canary's real bytecode + state;
     ///      a missing address is a HARD FAILURE, not a fresh-deploy fallback. If the live chain is
     ///      still pre-activate (the Initial Owner's `activate` broadcast has not landed), that stage
@@ -283,7 +291,7 @@ abstract contract UpgradeTestBase is Test, L1UpgradeActions, L2UpgradeActions, C
         address envReceiver = vm.envOr("L2_CRE_RECEIVER", address(0));
         require(
             envPool != address(0) && envTrigger != address(0) && envReceiver != address(0),
-            "canary-bound tests: set L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER (source .env.<network>; values live in config/state/l2-<net>.deployed.yaml)"
+            "canary-bound tests: set L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER (source .env.<network>; values live in config/state/<net>.deployed.yaml)"
         );
 
         // Bind to the real on-chain canary.

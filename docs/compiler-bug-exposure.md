@@ -421,5 +421,5 @@ them by the identical argument. Their call graphs were **not** analysed (moot wh
 `via_ir = false`), and no other property of theirs is claimed here.
 
 The pre-existing `CustomSender` proxy and implementation are **external facts**
-(`config/state/l2-<net>.inputs.yaml` → `externals:`), compiled and deployed upstream by
+(`config/state/<net>.inputs.yaml` → `externals:`), compiled and deployed upstream by
 `chainlink-csr`. They are outside this review's scope, and G4 does not cover them.

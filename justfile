@@ -258,14 +258,12 @@ preflight-check:
     # DestChainConfig / DynamicConfig are fully static structs: each field is one 32-byte word,
     # in declaration order. Print the Nth (1-based) word of raw ABI return data as decimal.
     abi_word_dec() { local raw="${1#0x}" n="$2" w; w="${raw:$(((n-1)*64)):64}"; [[ ${#w} -eq 64 ]] && cast --to-dec "0x$w"; }
-    # Source both values from the lane's inputs.yaml (the single source verify-constants-sync
-    # already guards) rather than hardcoding copies here. `$2=="&anchor"` matches the anchor
-    # exactly (no substring/positional surprises) and takes the value field.
-    sm_inputs="config/state/l2-${L2_NETWORK}.inputs.yaml"
+    # Source the lane-specific cap and shared destination selector from their state-mate inputs.
+    sm_inputs="config/state/${L2_NETWORK}.inputs.yaml"
     EXPECTED=$(awk '$2=="&maxGasLimit"{print $3; exit}' "$sm_inputs" 2>/dev/null)
     # Every L2->L1 OtoD message targets Ethereum mainnet, so getOnRamp takes the mainnet CCIP
     # selector (same for all four lanes); fall back to the literal if the anchor read fails.
-    DEST_SEL=$(awk '$2=="&ethMainnetCcipChainSelector"{print $3; exit}' "$sm_inputs" 2>/dev/null)
+    DEST_SEL=$(just _l2-input-anchor "$L2_NETWORK" ethMainnetCcipChainSelector 2>/dev/null || true)
     : "${DEST_SEL:=5009297550715157269}"
     if [[ -z "${EXPECTED:-}" || ! "$EXPECTED" =~ ^[0-9]+$ ]]; then
       warn "could not read &maxGasLimit from $sm_inputs; skipping live-cap check"
@@ -511,8 +509,8 @@ preflight-check-l1:
 # single source of truth; this recipe only reports drift.
 #
 # Compared targets per network:
-#   - config/state/l2-{net}.inputs.yaml + l2-{net}.deployed.yaml siblings of the shared
-#     wiring config/state/l2.yaml   (state-mate validators)
+#   - config/state/l2.common.inputs.yaml + {net}.inputs.yaml + {net}.deployed.yaml
+#     inputs/outputs of the shared wiring config/state/l2.yaml (state-mate validators)
 #   - justfile preflight-check / preflight-check-l1 case blocks
 #
 # Exits non-zero on any drift. Run after editing any duplicate, or in CI.
@@ -553,7 +551,7 @@ verify-constants-sync:
 
     # Same as expect_eq, but for anchors that live ONLY in a <stem>.deployed.yaml sibling. Those siblings
     # are deploy-time artifacts (no longer committed — see "fix: update state-mate config"): the per-lane
-    # l2-<net>.deployed.yaml is written by `just deploy-test`, the l1/extras ones are produced at
+    # <net>.deployed.yaml is written by `just deploy-test`; deferred siblings may be produced at
     # verification time. On a pre-deploy / audit checkout the file is legitimately absent, so SKIP rather
     # than report false drift. When the file IS present the check runs exactly like expect_eq — a genuine
     # rename/missing-anchor still FAILs.
@@ -576,11 +574,16 @@ verify-constants-sync:
         | sed -E 's/.*=[[:space:]]*([0-9_]+).*/\1/' | tr -d '_' | head -n1
     }
     yml_anchor() {
-      # Every anchor checked here is DEFINED in the .deployed/.inputs siblings (the
-      # feat/separate-deployed split). The wiring <net>.yaml only *references* them and cannot be
+      # Every anchor checked here is DEFINED in the .deployed/.inputs files (the
+      # feat/separate-deployed split). The shared wiring l2.yaml only *references* them and cannot be
       # parsed standalone (dangling aliases → yq error), so scan the siblings when present; fall back
       # to the file itself only when it is self-contained (no siblings). `..` recurses every section.
       local base="${1%.yaml}" files=()
+      case "$base" in
+        config/state/optimism|config/state/arbitrum|config/state/base|config/state/linea)
+          files+=("config/state/l2.common.inputs.yaml")
+          ;;
+      esac
       [[ -f "$base.deployed.yaml" ]] && files+=("$base.deployed.yaml")
       [[ -f "$base.inputs.yaml" ]] && files+=("$base.inputs.yaml")
       [[ "${#files[@]}" -eq 0 ]] && files=("$1")
@@ -601,7 +604,7 @@ verify-constants-sync:
     }
 
     L1_SOL=script/l1/L1MigrationConstants.sol
-    L1_YAML=config/state/l1.yaml
+    L1_YAML=config/state/ethereum.yaml
     sol_l1_recv=$(sol_addr "$L1_SOL" L1_LIDO_CUSTOM_RECEIVER)
     sol_l1_recv_impl=$(sol_addr "$L1_SOL" L1_LIDO_CUSTOM_RECEIVER_IMPL)
     sol_initial_owner=$(sol_addr "$L1_SOL" INITIAL_OWNER)
@@ -612,14 +615,15 @@ verify-constants-sync:
     sol_l1_wsteth=$(sol_addr "$L1_SOL" L1_WSTETH)
     sol_l1_router=$(sol_addr "$L1_SOL" L1_CCIP_ROUTER)
     sol_eth_selector=$(sol_uint "$L1_SOL" ETH_CCIP_CHAIN_SELECTOR)
+    cre_don_family=$(sed -nE 's/.*CRE_CLI_DON_FAMILY:-([^}]*)}.*/\1/p' script/shared/cre-env.sh)
 
     echo "===================================================================="
     echo "VERIFY CONSTANTS SYNC"
     echo "  Source of truth: script/l1/L1MigrationConstants.sol"
     echo "                   script/{net}/{Net}MigrationConstants.sol"
     echo "  Compared targets:"
-    echo "    - config/state/l2.yaml shared wiring (+ config/state/l2-{net}.deployed.yaml / l2-{net}.inputs.yaml siblings)"
-    echo "    - config/state/l2-{net}.inputs.yaml fee blobs vs FeeCodec(constants)"
+    echo "    - config/state/l2.yaml shared wiring (+ l2.common.inputs.yaml / {net}.{inputs,deployed}.yaml)"
+    echo "    - config/state/{net}.inputs.yaml fee blobs vs FeeCodec(constants)"
     echo "    - justfile preflight-check / preflight-check-l1 case blocks"
     echo "===================================================================="
 
@@ -634,7 +638,7 @@ verify-constants-sync:
       # The wiring is now shared (config/state/l2.yaml); the per-lane anchor VALUES live
       # in these siblings. yml_anchor strips `.yaml` and scans <stem>.inputs.yaml/<stem>.deployed.yaml,
       # so this stem still resolves the anchors even though the per-lane wiring file is gone.
-      sm="config/state/l2-${net}.yaml"
+      sm="config/state/${net}.yaml"
       # The l2CustomSender/Impl/ProxyAdmin anchors are pre-existing externals pinned in <stem>.inputs.yaml.
 
       sol_l2_sender=$(sol_addr   "$sol" L2_CUSTOM_SENDER)
@@ -653,14 +657,15 @@ verify-constants-sync:
       sol_l2_liq=$(sol_addr      "$sol" LIQUIDITY_OWNER)
       sol_chain_id=$(sol_uint    "$sol" "${upper}_CHAIN_ID")
       sol_l2_selector=$(sol_uint "$sol" "${upper}_CCIP_CHAIN_SELECTOR")
+      cre_workflow_name=$(yq ".[\"production-${net}\"].user-workflow.workflow-name" cre-workflows/sync-automation/workflow.yaml)
 
       echo
-      echo "[$net] state-mate siblings: ${sm%.yaml}.{inputs,deployed}.yaml (shared wiring: config/state/l2.yaml)"
+      echo "[$net] state-mate inputs: l2.common.inputs.yaml + ${sm%.yaml}.inputs.yaml; deployed: ${sm%.yaml}.deployed.yaml"
       expect_eq "l2ChainId → ${upper}_CHAIN_ID"                                  "$sol_chain_id"      "$(yml_anchor "$sm" l2ChainId)"
       expect_eq "l2CustomSender → L2_CUSTOM_SENDER"                             "$sol_l2_sender"     "$(yml_anchor "$sm" l2CustomSender)"
       expect_eq "l2CustomSenderImpl → L2_CUSTOM_SENDER_IMPL"                    "$sol_l2_sender_impl" "$(yml_anchor "$sm" l2CustomSenderImpl)"
       expect_eq "l2ProxyAdmin → L2_PROXY_ADMIN"                                 "$sol_l2_proxy"      "$(yml_anchor "$sm" l2ProxyAdmin)"
-      expect_eq "l2OldOraclePool → L2_OLD_ORACLE_POOL"                           "$sol_l2_pool"       "$(yml_anchor "$sm" l2OldOraclePool)"
+      expect_eq "RETIRED_l2OraclePool → L2_OLD_ORACLE_POOL"                     "$sol_l2_pool"       "$(yml_anchor "$sm" RETIRED_l2OraclePool)"
       expect_eq "l2GovernanceExecutor → LIDO_L2_GOVERNANCE_EXECUTOR"             "$sol_l2_gov"        "$(yml_anchor "$sm" l2GovernanceExecutor)"
       expect_eq "l2CreForwarder → CRE_FORWARDER"                                 "$sol_l2_fwd"        "$(yml_anchor "$sm" l2CreForwarder)"
       expect_eq "l2LiquidityOwner → LIQUIDITY_OWNER"                             "$sol_l2_liq"        "$(yml_anchor "$sm" l2LiquidityOwner)"
@@ -674,37 +679,14 @@ verify-constants-sync:
       expect_eq "l2LidoDeployer → LIDO_DEPLOYER (L1 shared)"                     "$sol_deployer"      "$(yml_anchor "$sm" l2LidoDeployer)"
       expect_eq "ethMainnetCcipChainSelector → ETH_CCIP_CHAIN_SELECTOR (L1 shared)" "$sol_eth_selector" "$(yml_anchor "$sm" ethMainnetCcipChainSelector)"
       expect_eq "l1LidoCustomReceiverBytes32 → L1_LIDO_CUSTOM_RECEIVER (L1 shared)" "$sol_l1_recv"   "$(bytes32_to_addr "$(yml_anchor "$sm" l1LidoCustomReceiverBytes32)")"
+      expect_eq "creWorkflowName → workflow.yaml production-${net}"               "$cre_workflow_name" "$(yml_anchor "$sm" creWorkflowName)"
+      expect_eq "creWorkflowTag → registered workflow tag"                        "$cre_workflow_name" "$(yml_anchor "$sm" creWorkflowTag)"
+      expect_eq "creDonFamily → CRE_CLI_DON_FAMILY default"                       "$cre_don_family"    "$(yml_anchor "$sm" creDonFamily)"
       if [[ "$net" == "linea" ]]; then
         sol_gelato=$(sol_addr "$sol" L2_OLD_GELATO_AUTOMATION)
-        expect_eq "l2OldGelatoSyncAutomation → L2_OLD_GELATO_AUTOMATION"          "$sol_gelato" "$(yml_anchor "config/state/l2-linea-extras.yaml" l2OldGelatoSyncAutomation)"
-        # The extras config also reads SYNC_ROLE off the upstream CustomSender. Its address is pinned in
-        # the COMMITTED l2-linea-extras.deployed.yaml (separate from the per-lane l2-linea.inputs.yaml
-        # externals anchor checked above), so verify that committed copy here too.
-        expect_eq "l2CustomSender (linea-extras) → L2_CUSTOM_SENDER"             "$sol_l2_sender" "$(yml_anchor "config/state/l2-linea-extras.yaml" l2CustomSender)"
+        expect_eq "RETIRED_l2GelatoSyncAutomation → L2_OLD_GELATO_AUTOMATION"    "$sol_gelato" "$(yml_anchor "config/state/l2-linea-gelato.yaml" RETIRED_l2GelatoSyncAutomation)"
+        expect_eq "l2CustomSender (Linea Gelato config) → L2_CUSTOM_SENDER"      "$sol_l2_sender" "$(yml_anchor "config/state/l2-linea-gelato.yaml" l2CustomSender)"
         expect_eq "preflight-check LINEA_GELATO → L2_OLD_GELATO_AUTOMATION"       "$sol_gelato" "$(just_field linea LINEA_GELATO)"
-      fi
-      if [[ "$net" == "optimism" ]]; then
-        # The retired-v1-pair extras config (l2-optimism-extras.*) carries its OWN committed copies of
-        # these four anchors — a separate state-mate run cannot share siblings with the main one. Pin
-        # each copy to the same Solidity constant the l2-optimism.inputs.yaml twin is pinned to above,
-        # so the two cannot drift apart (a drifted l2LiquidityOwner would silently turn the retired
-        # pair's owner assertions into checks against the wrong multisig). The two l2Retired* anchors
-        # have no constant by design — their identity is proven on-chain by the extras config itself;
-        # see the allowlist reason in verify-externals-coverage.
-        ox="config/state/l2-optimism-extras.yaml"
-        expect_eq "l2CustomSender (optimism-extras) → L2_CUSTOM_SENDER"          "$sol_l2_sender" "$(yml_anchor "$ox" l2CustomSender)"
-        expect_eq "l2LiquidityOwner (optimism-extras) → LIQUIDITY_OWNER"         "$sol_l2_liq"    "$(yml_anchor "$ox" l2LiquidityOwner)"
-        expect_eq "l2CreForwarder (optimism-extras) → CRE_FORWARDER"             "$sol_l2_fwd"    "$(yml_anchor "$ox" l2CreForwarder)"
-        expect_eq "l2Weth (optimism-extras) → L2_WETH"                           "$sol_l2_weth"   "$(yml_anchor "$ox" l2Weth)"
-        expect_eq "ethMainnetCcipChainSelector (optimism-extras) → ETH_CCIP_CHAIN_SELECTOR" \
-          "$sol_eth_selector" "$(yml_anchor "$ox" ethMainnetCcipChainSelector)"
-        # The retired addresses are frozen history, so pin the committed .deployed copies to the
-        # .env.optimism L2_RETIRED_* values the §S6 revoke will actually target — one source, two
-        # consumers (state-mate's oracle and the operator's revoke input) that must not disagree.
-        expect_eq "l2RetiredSyncTrigger → .env.optimism L2_RETIRED_SYNC_TRIGGER" \
-          "$(grep -E '^L2_RETIRED_SYNC_TRIGGER=' .env.optimism | cut -d= -f2)" "$(yml_anchor "$ox" l2RetiredSyncTrigger)"
-        expect_eq "l2RetiredCreReceiver → .env.optimism L2_RETIRED_CRE_RECEIVER" \
-          "$(grep -E '^L2_RETIRED_CRE_RECEIVER=' .env.optimism | cut -d= -f2)" "$(yml_anchor "$ox" l2RetiredCreReceiver)"
       fi
 
       # Fee blobs + derived maxFees are NOT plain constants — they are FeeCodec-encoded from the
@@ -747,7 +729,7 @@ verify-constants-sync:
     echo
     echo "[shared L1 yaml: $L1_YAML — L1 receiver, ProxyAdmin, immutables]"
     # Receiver / impl / ProxyAdmin are PRE-EXISTING upstream contracts the L1 Stage-2 step only
-    # re-owns (it deploys nothing on L1), so they are fixed externals in l1.inputs.yaml — checked
+    # re-owns (it deploys nothing on L1), so they are fixed externals in ethereum.inputs.yaml — checked
     # unconditionally (the receiver + ProxyAdmin are additionally cross-checked via the justfile
     # hardcodes below).
     expect_eq "l1LidoCustomReceiver → L1_LIDO_CUSTOM_RECEIVER"          "$sol_l1_recv"       "$(yml_anchor "$L1_YAML" l1LidoCustomReceiver)"
@@ -759,7 +741,7 @@ verify-constants-sync:
     expect_eq "l1Wsteth → L1_WSTETH"                                             "$sol_l1_wsteth"     "$(yml_anchor "$L1_YAML" l1Wsteth)"
     expect_eq "l1CcipRouter → L1_CCIP_ROUTER"                                    "$sol_l1_router"     "$(yml_anchor "$L1_YAML" l1CcipRouter)"
     # ethMainnetCcipChainSelector is verified per-L2 above (line: "ethMainnetCcipChainSelector → ...").
-    # It is intentionally ABSENT from l1.inputs.yaml: no L1 check references it, and an
+    # It is intentionally ABSENT from ethereum.inputs.yaml: no L1 check references it, and an
     # unreferenced anchor is a fatal error under the .inputs full-delegation invariant.
 
     # L2 wstETH addresses surface on the L1 adapter's L2_TOKEN immutable (Optimism + Base only).
@@ -903,9 +885,9 @@ verify-externals-coverage:
     #   ovmL2CrossDomainMessenger — OP-stack standard predeploy; pinned on-chain via BridgeExecutor
     #   lineaMessageService — Linea message-service predeploy; pinned on-chain via LineaBridgeExecutor
     #                         (Linea analogue of ovmL2CrossDomainMessenger; null on the other lanes)
-    #   l2RetiredSyncTrigger / l2RetiredCreReceiver — the SUPERSEDED Stage-1 deploy outputs (same class
+    #   RETIRED_l2SyncTrigger / RETIRED_l2CreReceiver — the SUPERSEDED Stage-1 deploy outputs (same class
     #                     as l2SyncTrigger/l2CreReceiver above, one generation back). No constant pins
-    #                     them because their identity is proven ON-CHAIN instead: l2-optimism-extras.yaml
+    #                     them because their identity is proven ON-CHAIN in shared l2.yaml, which
     #                     asserts the retired trigger's immutable SENDER / DEST_CHAIN_SELECTOR / WNATIVE
     #                     and its getForwarder → the retired receiver, so a mistyped anchor fails loudly
     #                     rather than making the de-role assertion pass vacuously.
@@ -917,7 +899,9 @@ verify-externals-coverage:
     #                     CREReceiver.getExpectedAuthor(), and `deploy-cre-workflow` re-proves the last
     #                     equality before it can register a workflow. Promote it to a constant (and drop
     #                     this entry) if the AO ever becomes a fixed, long-lived address.
-    allow=" l2OraclePool l2SyncTrigger l2CreReceiver l2RetiredSyncTrigger l2RetiredCreReceiver l2AutomationOwner lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
+    #   creWorkflowRegistry — Chainlink's shared Ethereum registry; independently checked on-chain
+    #   creWorkflowId — content-derived workflow deployment output (zero is the fail-closed predeploy stub)
+    allow=" l2OraclePool l2SyncTrigger l2CreReceiver RETIRED_l2SyncTrigger RETIRED_l2CreReceiver l2AutomationOwner creWorkflowRegistry creWorkflowId lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
     # Anchor names cross-checked by a `yml_anchor` row in verify-constants-sync. The justfile is
     # invariant across the loop below, so scan it ONCE here (space-padded for the `case` match)
     # rather than re-grepping it per anchor per net.
@@ -928,25 +912,23 @@ verify-externals-coverage:
     # verify-constants-sync row — so the L2 anchor must fall through to the allowlist below, not silently
     # pass on the unrelated L1 row (which would also make `lidoDaoAgent`'s allow entry dead code, and let
     # an L1 rename flip the L2 verdict). An L2 anchor counts as covered ONLY when a row reads it from the
-    # per-lane state-mate file ("$sm", which yml_anchor expands to l2-<net>.inputs/.deployed) or from a
-    # literal config/state/l2-*.yaml path.
-    covered=" $(grep -oE 'yml_anchor "(\$sm|config/state/l2-[^"]+)" [A-Za-z0-9]+' justfile \
+    # per-lane state-mate file ("$sm", which yml_anchor expands to <net>.inputs/.deployed) or from a
+    # literal config/state/*.yaml path.
+    covered=" $(grep -oE 'yml_anchor "(\$sm|config/state/[^"]+)" [A-Za-z0-9_]+' justfile \
                   | awk '{print $NF}' | sort -u | tr '\n' ' ')"
     echo "===================================================================="
     echo "VERIFY EXTERNALS COVERAGE  (every L2 external/deployed anchor pinned to a source-of-truth)"
     echo "===================================================================="
-    # The two lane-scoped extras configs are swept too, so their siblings get the same coverage bar as
-    # the four main lanes: `linea-extras` = the Linea-only Gelato-de-role config (its anchors
-    # l2OldGelatoSyncAutomation / l2CustomSender are constants-checked in verify-constants-sync);
-    # `optimism-extras` = the retired-v1-pair de-role config (l2CustomSender constants-checked, the two
-    # l2Retired* anchors allowlisted above with their on-chain identity proof, and the remaining
-    # externals re-checked against the same constants as their l2-optimism.inputs.yaml twins).
-    for net in optimism arbitrum base linea linea-extras optimism-extras; do
-      inputs="config/state/l2-${net}.inputs.yaml"
-      deployed="config/state/l2-${net}.deployed.yaml"
+    # Gelato's RETIRED_l2GelatoSyncAutomation / l2CustomSender live under misc: in
+    # l2-linea-gelato.yaml (not externals:), so they are not swept here — they are pinned by the
+    # explicit yml_anchor rows above.
+    for net in l2.common optimism arbitrum base linea; do
+      inputs="config/state/${net}.inputs.yaml"
+      [[ -f "$inputs" ]] || inputs="config/state/${net}.yaml"
+      deployed="config/state/${net}.deployed.yaml"
       anchors="$( { awk '/^externals:/{f=1;next} /^[a-z]/{f=0} f&&/- &/{print}' "$inputs"; \
                     grep -hE '^[[:space:]]*- &' "$deployed" 2>/dev/null; } \
-                  | grep -oE '&[A-Za-z0-9]+' | tr -d '&' | sort -u )"
+                  | grep -oE '&[A-Za-z0-9_]+' | tr -d '&' | sort -u )"
       for a in $anchors; do
         case "$covered" in *" $a "*) ok=$(( ok + 1 )); continue;; esac
         case "$allow"   in *" $a "*) ok=$(( ok + 1 )); continue;; esac
@@ -954,124 +936,74 @@ verify-externals-coverage:
         fail=$(( fail + 1 ))
       done
     done
-    # ── Test-stage overlay (--overrides) rules mirror ──────────────────────────────────────────────
-    # Every anchor in the shared canary overlay must, per lane, (a) already exist in that base .inputs,
-    # (b) keep its section, and (c) hold a value that DIFFERS. state-mate enforces these at runtime when
-    # `--overrides` is passed; this is the no-RPC, pre-commit mirror — a no-op / new-label / section slip
-    # here would otherwise surface only at the canary state-mate run.
-    overlay="config/state/l2.inputs.test-stage.yaml"
-    echo "===================================================================="
-    echo "VERIFY TEST-STAGE OVERLAY  ($overlay: exists + same-section + differs, per lane)"
-    echo "===================================================================="
-    ov_fail=0
-    if ! command -v yq >/dev/null 2>&1; then
-      echo "  FAIL yq is required to validate the test-stage overlay but was not found"; fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
-    elif [[ ! -f "$overlay" ]]; then
-      echo "  FAIL overlay file $overlay not found"; fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
-    else
-      # Mirror state-mate's assertOnlyOwnedSections: the overlay may only hold config:/externals:.
-      # Without this, a renamed/typo'd or extra section would make the per-section loops below iterate
-      # NOTHING for that section and silently pass — a false-pass of the very class this lint exists to
-      # catch (and which state-mate rejects at runtime). NB: the value compare below is textual; the
-      # canonical/normalized comparison is state-mate's at runtime, this mirror is a pre-commit best-effort.
-      bad_sections="$(yq -r 'keys | .[]' "$overlay" 2>/dev/null | grep -vxE 'config|externals' || true)"
-      if [[ -n "$bad_sections" ]]; then
-        echo "  FAIL $overlay has section(s) other than config:/externals:: $(echo $bad_sections | tr '\n' ' ')"
-        fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
-      fi
-      # Count anchor DEFINITIONS by grep (independent of section parsing, same pattern as above), so a
-      # renamed/absent section leaves this total intact while the section-keyed loop below comes up short.
-      overlay_anchor_count="$(grep -cE '^[[:space:]]*- &' "$overlay" 2>/dev/null)" # grep -c prints 0 (and exits 1) on no match — keep the bare count, don't `|| echo 0` (that yields "0\n0")
-      checked=0
-      for net in optimism arbitrum base linea; do
-        base="config/state/l2-${net}.inputs.yaml"
-        for sec in config externals; do
-          for a in $(yq -r ".${sec}[] | anchor" "$overlay" 2>/dev/null); do
-            checked=$(( checked + 1 )) # every (anchor × lane) must be evaluated; a short count = a skipped section
-            ov_val="$(yq -r ".${sec}[] | select(anchor == \"$a\")" "$overlay" 2>/dev/null | head -n1)"
-            base_val="$(yq -r ".${sec}[] | select(anchor == \"$a\")" "$base" 2>/dev/null | head -n1)"
-            if [[ -z "$base_val" ]]; then
-              if [[ -n "$(yq -r ".. | select(anchor == \"$a\")" "$base" 2>/dev/null | head -n1)" ]]; then
-                echo "  SECTION  [$net] &$a is not under '$sec:' in $base (the overlay must keep the base section)"
-              else
-                echo "  MISSING  [$net] &$a not defined in $base (overrides cannot introduce new labels)"
-              fi
-              fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 )); continue
-            fi
-            if [[ "$base_val" == "$ov_val" ]]; then
-              echo "  NO-OP    [$net] &$a = $ov_val equals the base value (a no-op override is rejected)"
-              fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 )); continue
-            fi
-            ok=$(( ok + 1 ))
-          done
-        done
-      done
-      # Integrity of the mirror itself: every overlay anchor must have been evaluated against all 4 lanes.
-      # A short count means a section yielded no anchors (empty/renamed/absent, or a yq glitch) — without
-      # this guard ov_fail would stay 0 and the block would false-pass.
-      if [[ "${overlay_anchor_count:-0}" -lt 1 ]]; then
-        echo "  FAIL $overlay defines no anchors to validate"
-        fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
-      elif [[ "$checked" -ne $(( overlay_anchor_count * 4 )) ]]; then
-        echo "  FAIL overlay mirror evaluated $checked of $(( overlay_anchor_count * 4 )) (anchor×lane) checks — a section was skipped (empty/renamed?)"
-        fail=$(( fail + 1 )); ov_fail=$(( ov_fail + 1 ))
-      fi
-      [[ $ov_fail -eq 0 ]] && echo "OK every overlay anchor exists, keeps its section, and differs across all 4 lanes."
-    fi
     echo "===================================================================="
     if [[ $fail -eq 0 ]]; then
-      echo "OK every L2 external/deployed anchor is constants-checked or allowlisted, and the test-stage overlay is consistent ($ok checks)."
+      echo "OK every L2 external/deployed anchor is constants-checked or allowlisted ($ok checks)."
     else
-      echo "FAIL $fail problem(s): an uncovered anchor (same-provenance false-pass risk) and/or a test-stage overlay rule violation — see rows above."
+      echo "FAIL $fail problem(s): an uncovered anchor (same-provenance false-pass risk) — see rows above."
       exit 1
     fi
     echo "===================================================================="
 
-# Read-only verification that a CRE workflow is registered on the Chainlink WorkflowRegistry
-# (Ethereum mainnet) and owned by the LOL multisig (Safe). Run after `cre workflow deploy` (executed
-# from the Safe) for each network. Callable by anyone (no private key needed).
+# Read-only combined state-mate verification for a lane. It checks both the Ethereum WorkflowRegistry
+# record (identity, Automation Owner, ACTIVE) and all L2 contracts from the shared config/state/l2.yaml.
+# The workflow ID is deployed state in config/state/<network>.deployed.yaml — never an env value.
+# Callable by anyone (no private key needed).
 #
 # Usage: just -E .env.<network> verify-cre-workflow
 #
-# Required env: CRE_WORKFLOW_ID (0x + 64 hex chars, non-zero) plus an Ethereum-mainnet RPC resolved by
-#   cre-env.sh (L1_RPC_URL → RPC_ETHEREUM_REMOTE → RPC_ETHEREUM). The expected owner is read from the
-#   live on-chain CREReceiver.getExpectedAuthor() when L2_RPC_URL + L2_CRE_RECEIVER are available
-#   (authoritative — anchors to what the deploy pinned); otherwise falls back to L2_AUTOMATION_OWNER.
+# Required env: L2_NETWORK, L2_RPC_URL, plus an Ethereum-mainnet RPC resolved by cre-env.sh
+#   (L1_RPC_URL → RPC_ETHEREUM_REMOTE → RPC_ETHEREUM).
 verify-cre-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{justfile_directory()}}/script/shared/cre-env.sh"
-    cre_env_load_secrets   # the L2_AUTOMATION_OWNER fallback below lives in the root .env (see the recipe)
+    cre_env_load_secrets
     L1_RPC_URL="$(resolve_l1_rpc)"
-    : "${CRE_WORKFLOW_ID:?CRE_WORKFLOW_ID is required; populate it in .env.<network> from `cre workflow deploy` output}"
-    [[ "$CRE_WORKFLOW_ID" =~ ^0x[0-9a-fA-F]{64}$ ]] \
-      || { echo "Bad CRE_WORKFLOW_ID: $CRE_WORKFLOW_ID (expected 0x + 64 hex chars)" >&2; exit 1; }
-    [[ "$CRE_WORKFLOW_ID" != "0x$(printf '0%.0s' {1..64})" ]] \
-      || { echo "Refusing zero CRE_WORKFLOW_ID" >&2; exit 1; }
+    : "${L2_RPC_URL:?L2_RPC_URL is required; load .env.<network>}"
+    : "${L2_NETWORK:?L2_NETWORK is required; load .env.<network>}"
+    case "$L2_NETWORK" in optimism|arbitrum|base|linea) ;; *) echo "Unknown L2_NETWORK: $L2_NETWORK" >&2; exit 2 ;; esac
+    ROOT_DIR="{{justfile_directory()}}"
+    STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
+    DEPLOYED="$ROOT_DIR/config/state/$L2_NETWORK.deployed.yaml"
+    INPUTS="$ROOT_DIR/config/state/$L2_NETWORK.inputs.yaml"
+    COMMON_INPUTS="$ROOT_DIR/config/state/l2.common.inputs.yaml"
+    [[ -f "$DEPLOYED" ]] || { echo "Missing deployed state: $DEPLOYED" >&2; exit 1; }
+    [[ -f "$INPUTS" ]] || { echo "Missing inputs state: $INPUTS" >&2; exit 1; }
+    [[ -f "$COMMON_INPUTS" ]] || { echo "Missing common inputs state: $COMMON_INPUTS" >&2; exit 1; }
+    command -v node >/dev/null 2>&1 || { echo "Missing required command: node" >&2; exit 1; }
+    if command -v corepack >/dev/null 2>&1; then YARN=(corepack yarn); else YARN=(yarn); fi
+    (
+      cd "$STATE_MATE_DIR"
+      L1_RPC_URL="$L1_RPC_URL" L2_STATE_MATE_RPC_URL="$L2_RPC_URL" \
+        "${YARN[@]}" start "$ROOT_DIR/config/state/l2.yaml" \
+        --inputs "$COMMON_INPUTS" --inputs "$INPUTS" --deployed "$DEPLOYED"
+    )
 
-    # Anchor the expected owner to the authoritative on-chain pin when we can reach L2; this is
-    # immune to a drifted L2_LIQUIDITY_OWNER env value. NOTE: this confirms the *registry owner*
-    # matches the pin — the report-author gate (DON-embedded metadata.workflowOwner) is only proven
-    # by observing a live CREReceiver.CallExecuted (see Monitoring §4 / RUNBOOK).
-    if [[ -n "${L2_RPC_URL:-}" && -n "${L2_CRE_RECEIVER:-}" ]]; then
-      command -v cast >/dev/null 2>&1 || { echo "Missing 'cast' (foundry)" >&2; exit 1; }
-      export CRE_EXPECTED_AUTHOR="$(cast call "$L2_CRE_RECEIVER" 'getExpectedAuthor()(address)' --rpc-url "$L2_RPC_URL" | tr -d '\r\n')"
-      echo "Expected owner (on-chain CREReceiver.expectedAuthor): $CRE_EXPECTED_AUTHOR"
-    else
-      # No L2 reachable: fall back to the declared Automation Owner, fed to the script through the same
-      # CRE_EXPECTED_AUTHOR variable so the Solidity side keeps one input (its own last-resort fallback
-      # is L2_LIQUIDITY_OWNER, kept for manual runs).
-      if [[ -n "${L2_AUTOMATION_OWNER:-}" ]]; then
-        export CRE_EXPECTED_AUTHOR="$L2_AUTOMATION_OWNER"
-        echo "Expected owner (env L2_AUTOMATION_OWNER fallback): $CRE_EXPECTED_AUTHOR"
-      else
-        : "${L2_LIQUIDITY_OWNER:?Set L2_RPC_URL + L2_CRE_RECEIVER (preferred, on-chain), or L2_AUTOMATION_OWNER}"
-        echo "Expected owner (env L2_LIQUIDITY_OWNER fallback): $L2_LIQUIDITY_OWNER"
-      fi
-    fi
-
-    forge script script/l1/VerifyCREWorkflow.s.sol:VerifyCREWorkflow \
-      --sig 'run(bytes32)' "$CRE_WORKFLOW_ID" --rpc-url "$L1_RPC_URL"
+# Persist the content-derived CRE workflow ID as state-mate deployed state.
+# Replaces only deployed.l1 in config/state/<network>.deployed.yaml, preserving deployed.l2.
+record-cre-workflow-id network workflow_id:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    NETWORK="{{network}}"
+    WORKFLOW_ID="{{workflow_id}}"
+    case "$NETWORK" in optimism|arbitrum|base|linea) ;; *) echo "Unknown network: $NETWORK" >&2; exit 2 ;; esac
+    [[ "$WORKFLOW_ID" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
+      echo "Bad workflow ID: $WORKFLOW_ID (expected 0x + 64 hex chars)" >&2
+      exit 1
+    }
+    [[ "$WORKFLOW_ID" != "0x$(printf '0%.0s' {1..64})" ]] || { echo "Refusing zero workflow ID" >&2; exit 1; }
+    command -v yq >/dev/null 2>&1 || { echo "Missing required command: yq" >&2; exit 1; }
+    OUT="{{justfile_directory()}}/config/state/$NETWORK.deployed.yaml"
+    [[ -f "$OUT" ]] || { echo "Missing deployed state: $OUT" >&2; exit 1; }
+    TMP="$(mktemp "${TMPDIR:-/tmp}/$NETWORK.deployed.XXXXXX.yaml")"
+    trap 'rm -f "$TMP"' EXIT
+    WF="$WORKFLOW_ID" yq \
+      '(.deployed.l1) = [strenv(WF)] | .deployed.l1[0] anchor = "creWorkflowId"' \
+      "$OUT" > "$TMP"
+    mv "$TMP" "$OUT"
+    trap - EXIT
+    echo "Recorded $NETWORK CRE workflow ID in $OUT"
 
 # Rewrite the CRE workflow config for the current network with the deployed SyncTrigger
 # + CREReceiver addresses. Run after the canary deploy (`deploy-test`) before `deploy-cre-workflow`.
@@ -1135,8 +1067,8 @@ update-cre-config:
 # WETH seed triggers a sync promptly; production values are restored at `handoff`.
 #
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY.
-# Optional env: L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST (default to the syncMinAmount / syncDelay
-#   anchors in the shared overlay config/state/l2.inputs.test-stage.yaml; an explicit env value wins), L2_LIQUIDITY_OWNER.
+# Optional env: L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST (defaults: 0.0002 WETH / 60 seconds;
+#   an explicit env value wins), L2_LIQUIDITY_OWNER.
 #
 # Usage: just -E .env.<network> deploy-test
 deploy-test:
@@ -1145,15 +1077,11 @@ deploy-test:
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
     : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK or export it before running}"
     : "${L2_LIDO_DEPLOYER_PRIVATE_KEY:?required for runDeployTest(); export it before running}"
-    for c in jq yq cast; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
-    # Default the canary knobs from the shared state-mate overlay (an explicit env wins). The overlay
-    # holds the canary values; production lives in l2-<net>.inputs.yaml and is restored at handoff.
-    sm_overlay="config/state/l2.inputs.test-stage.yaml"
-    : "${L2_SYNC_MIN_AMOUNT_TEST:=$(yq '.. | select(anchor == "syncMinAmount")' "$sm_overlay" | tr -d '"' | head -n1)}"
-    : "${L2_SYNC_DELAY_TEST:=$(yq '.. | select(anchor == "syncDelay")' "$sm_overlay" | tr -d '"' | head -n1)}"
-    [[ -n "$L2_SYNC_MIN_AMOUNT_TEST" && -n "$L2_SYNC_DELAY_TEST" ]] || { echo "Failed to read syncMinAmount / syncDelay from $sm_overlay" >&2; exit 1; }
+    for c in jq cast; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
+    : "${L2_SYNC_MIN_AMOUNT_TEST:=200000000000000}"
+    : "${L2_SYNC_DELAY_TEST:=60}"
     export L2_SYNC_MIN_AMOUNT_TEST L2_SYNC_DELAY_TEST
-    echo "Canary test min-amount: ${L2_SYNC_MIN_AMOUNT_TEST} wei; delay: ${L2_SYNC_DELAY_TEST} s (from $sm_overlay; production values restored at handoff)"
+    echo "Canary test min-amount: ${L2_SYNC_MIN_AMOUNT_TEST} wei; delay: ${L2_SYNC_DELAY_TEST} s (production values restored at handoff)"
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runDeployTest()' --rpc-url "$L2_RPC_URL" --broadcast
@@ -1178,7 +1106,7 @@ deploy-test:
       # (the canary IS the production deploy path). This file holds ONLY the three Stage-1 outputs from the
       # broadcast JSON above — the pre-existing CustomSender proxy/impl + ProxyAdmin are externals in
       # l2-$L2_NETWORK.inputs.yaml, so this is always regenerable with no pre-existing seed.
-      deployed_file="config/state/l2-$L2_NETWORK.deployed.yaml"
+      deployed_file="config/state/$L2_NETWORK.deployed.yaml"
       bash script/shared/write-deployed-yaml.sh "$deployed_file" "$pool" "$trigger" "$receiver"
       echo "  → wrote $deployed_file — review the diff and commit it alongside the migration."
     else
@@ -1205,8 +1133,8 @@ deploy-test:
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL (the EXISTING pool, carried into
 #   the regenerated .deployed.yaml), L2_AUTOMATION_OWNER, and L2_AUTOMATION_OWNER_PRIVATE_KEY (or
 #   L2_AUTOMATION_OWNER_PK — either spelling is accepted, here and in the forge script).
-# Optional env: L2_LIQUIDITY_OWNER; L2_DEPLOY_CANARY_PARAMS=true (canary min-amount/delay from
-#   config/state/l2.inputs.test-stage.yaml, overridable via L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST).
+# Optional env: L2_LIQUIDITY_OWNER; L2_DEPLOY_CANARY_PARAMS=true (defaults to 0.0002 WETH / 60 seconds,
+#   overridable via L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST).
 #
 # Usage: just -E .env.<network> deploy-automation
 #        L2_DEPLOY_CANARY_PARAMS=true just -E .env.<network> deploy-automation
@@ -1237,15 +1165,11 @@ deploy-automation:
       exit 1
     fi
     echo "Deploying the automation pair on $L2_NETWORK owned by $declared (gas balance: $(cast from-wei "$bal") ETH)"
-    sm_overlay="config/state/l2.inputs.test-stage.yaml"
     if [[ "${L2_DEPLOY_CANARY_PARAMS:-false}" == "true" ]]; then
-      command -v yq >/dev/null 2>&1 || { echo "Missing required command: yq (needed for canary params)" >&2; exit 1; }
-      : "${L2_SYNC_MIN_AMOUNT_TEST:=$(yq '.. | select(anchor == "syncMinAmount")' "$sm_overlay" | tr -d '"' | head -n1)}"
-      : "${L2_SYNC_DELAY_TEST:=$(yq '.. | select(anchor == "syncDelay")' "$sm_overlay" | tr -d '"' | head -n1)}"
-      [[ -n "$L2_SYNC_MIN_AMOUNT_TEST" && -n "$L2_SYNC_DELAY_TEST" ]] \
-        || { echo "Failed to read syncMinAmount / syncDelay from $sm_overlay" >&2; exit 1; }
+      : "${L2_SYNC_MIN_AMOUNT_TEST:=200000000000000}"
+      : "${L2_SYNC_DELAY_TEST:=60}"
       export L2_SYNC_MIN_AMOUNT_TEST L2_SYNC_DELAY_TEST L2_DEPLOY_CANARY_PARAMS=true
-      echo "Canary config: min-amount ${L2_SYNC_MIN_AMOUNT_TEST} wei; delay ${L2_SYNC_DELAY_TEST} s (from $sm_overlay)"
+      echo "Canary config: min-amount ${L2_SYNC_MIN_AMOUNT_TEST} wei; delay ${L2_SYNC_DELAY_TEST} s"
     else
       export L2_DEPLOY_CANARY_PARAMS=false
       echo "Production config (12 h delay, 5 WETH min); pool untouched; float NOT funded; SYNC_ROLE NOT granted."
@@ -1273,7 +1197,7 @@ deploy-automation:
       # Regenerate the state-mate `.deployed.yaml` sibling: the EXISTING pool anchor is carried through
       # unchanged (it was not redeployed) and only the two automation anchors move. Sourcing the pool from
       # env rather than a broadcast is what makes this correct — this broadcast contains no pool deploy.
-      deployed_file="config/state/l2-$L2_NETWORK.deployed.yaml"
+      deployed_file="config/state/$L2_NETWORK.deployed.yaml"
       DEPLOYED_YAML_GENERATOR="just deploy-automation" \
         bash script/shared/write-deployed-yaml.sh "$deployed_file" "$L2_ORACLE_POOL" "$trigger" "$receiver"
       echo "  → wrote $deployed_file — review the diff and commit it alongside the redeploy."
@@ -1299,8 +1223,8 @@ deploy-automation:
 # (docs/automation-owner-redeploy.md §S6). Run it once PER LANE, on all four.
 #
 # Addresses are read from committed state-mate YAML (no CLI args):
-#   v2 (grant target)  ← config/state/l2-<net>.deployed.yaml          (&l2SyncTrigger)
-#   v1 (revoke target) ← config/state/l2-<net>-extras.deployed.yaml (&l2RetiredSyncTrigger)
+#   v2 (grant target)  ← config/state/<net>.deployed.yaml          (&l2SyncTrigger)
+#   v1 (revoke target) ← config/state/<net>.deployed.yaml (&RETIRED_l2SyncTrigger)
 #
 # Actor: the CustomSender's role admin — DEFAULT_ADMIN_ROLE, since SYNC_ROLE has no dedicated manager
 # (getRoleAdmin(SYNC_ROLE) == 0x00, asserted). Note CustomSender has NO owner(): "the owner of the
@@ -1349,7 +1273,7 @@ repoint-sync-role:
     retired="$(just _repoint-retired-sync-trigger)"
     if [[ "$next" == "$retired" ]]; then
       echo "SyncTrigger v2 and v1 resolve to the SAME address ($next)." >&2
-      echo "config/state/l2-$L2_NETWORK.deployed.yaml may not yet carry the v2 pair — run deploy-automation first." >&2
+      echo "config/state/$L2_NETWORK.deployed.yaml may not yet carry the v2 pair — run deploy-automation first." >&2
       exit 1
     fi
 
@@ -1380,7 +1304,7 @@ repoint-sync-role:
     echo
     echo "Next: 'just audit-ownership' must show hasRole(SYNC_ROLE, $next) = true AND"
     echo "hasRole(SYNC_ROLE, $retired) = false on this lane. Update L2_SYNC_TRIGGER in"
-    echo ".env.$L2_NETWORK and the l2SyncTrigger anchor in config/state/l2-$L2_NETWORK.deployed.yaml."
+    echo ".env.$L2_NETWORK and the l2SyncTrigger anchor in config/state/$L2_NETWORK.deployed.yaml."
 
 # Read-only companion to `repoint-sync-role`: run every entry gate against live state and print the two
 # CustomSender calls, for a role admin that does not broadcast from this repo (the Initial Owner is an
@@ -1403,7 +1327,7 @@ repoint-sync-role-calldata:
     retired="$(just _repoint-retired-sync-trigger)"
     if [[ "$next" == "$retired" ]]; then
       echo "SyncTrigger v2 and v1 resolve to the SAME address ($next)." >&2
-      echo "config/state/l2-$L2_NETWORK.deployed.yaml may not yet carry the v2 pair — run deploy-automation first." >&2
+      echo "config/state/$L2_NETWORK.deployed.yaml may not yet carry the v2 pair — run deploy-automation first." >&2
       exit 1
     fi
     admin="${L2_SENDER_ADMIN:-${INITIAL_OWNER:-${L2_INITIAL_OWNER:-$(just _repoint-anchor "$L2_NETWORK" initialOwner)}}}"
@@ -1433,24 +1357,44 @@ _repoint-next-sync-trigger:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network>}"
-    just _repoint-deployed-anchor "config/state/l2-$L2_NETWORK.deployed.yaml" l2SyncTrigger
+    just _repoint-deployed-anchor "config/state/$L2_NETWORK.deployed.yaml" l2SyncTrigger
 
-# SyncTrigger v1 — the retired pair (revoke target) from the lane's extras .deployed sibling.
+# SyncTrigger v1 — the retired pair (revoke target) from the lane's primary .deployed sibling.
 [no-exit-message]
 _repoint-retired-sync-trigger:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network>}"
-    just _repoint-deployed-anchor "config/state/l2-$L2_NETWORK-extras.deployed.yaml" l2RetiredSyncTrigger
+    just _repoint-deployed-anchor "config/state/$L2_NETWORK.deployed.yaml" RETIRED_l2SyncTrigger
 
-# Read one `externals:` anchor out of a lane's state-mate inputs file. Empty (not an error) when yq is
-# absent, so the callers can degrade to the forge script's own on-chain gates.
+# Resolve one scalar anchor from the effective L2 inputs (common + lane delta). Exactly one definition
+# is required, so operational readers enforce the same no-shadowing rule as state-mate.
+[no-exit-message]
+_l2-input-anchor net anchor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{net}}" in optimism|arbitrum|base|linea) ;; *) echo "unknown L2 network: {{net}}" >&2; exit 2 ;; esac
+    common="config/state/l2.common.inputs.yaml"
+    lane="config/state/{{net}}.inputs.yaml"
+    [[ -f "$common" ]] || { echo "missing $common" >&2; exit 1; }
+    [[ -f "$lane" ]] || { echo "missing $lane" >&2; exit 1; }
+    values=()
+    while IFS= read -r value; do values+=("$value"); done \
+      < <(yq '.. | select(anchor == "{{anchor}}")' "$common" "$lane" 2>/dev/null | tr -d '"')
+    if [[ "${#values[@]}" -ne 1 ]]; then
+      echo "anchor &{{anchor}} must be defined exactly once across $common and $lane (found ${#values[@]})" >&2
+      exit 1
+    fi
+    printf '%s\n' "${values[0]}"
+
+# Repoint compatibility wrapper: empty (not an error) when yq is absent, so callers can degrade to
+# the forge script's own on-chain gates.
 [no-exit-message]
 _repoint-anchor net anchor:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v yq >/dev/null 2>&1 || exit 0
-    yq '.externals[] | select(anchor == "{{anchor}}")' "config/state/l2-{{net}}.inputs.yaml" | tr -d '"'
+    just _l2-input-anchor "{{net}}" "{{anchor}}"
 
 # Read-only gates for `repoint-sync-role`, run BEFORE the broadcast so a mistake costs no gas. Duplicates
 # the forge script's on-chain gates on purpose (same rationale as deploy-automation's key cross-check): a
@@ -1505,7 +1449,7 @@ _repoint-sync-role-preflight next retired admin:
 #
 # Re-runnable and decoupled from `deploy-test`: it reads the deployed addresses from env and recovers
 # each contract's ACTUAL constructor args from chain via forge's --guess-constructor-args. The canary
-# deploys with deployer-owned infra + the overlay test values, so re-deriving args from constants
+# deploys with deployer-owned infra + test values, so re-deriving args from production constants
 # would NOT match the deployed bytecode — let forge read what was actually deployed. Compiler settings
 # (solc 0.8.34 / evm osaka / default optimizer) come from foundry.toml automatically, so the standard
 # JSON matches the deployed bytecode by construction — do not set a different FOUNDRY_PROFILE.
@@ -1559,8 +1503,8 @@ verify-sources:
 
 # Generate the lane's diffyscan config (third-party source verification) from committed state — no
 # hand-maintained per-network configs, so nothing can drift. Fills config/diffyscan/template.yaml from:
-#   addresses   ← config/state/l2-<net>.deployed.yaml (the anchors deploy-test wrote)
-#   chain id    ← config/state/l2-<net>.inputs.yaml (&l2ChainId)
+#   addresses   ← config/state/<net>.deployed.yaml (the anchors deploy-test wrote)
+#   chain id    ← config/state/<net>.inputs.yaml (&l2ChainId)
 #   repo commit ← the deployed.yaml's '# deploy-commit:' stamp (so the diff targets what was DEPLOYED,
 #                 not the branch head; a '-dirty' stamp is refused — redeploy from a clean tree or
 #                 backfill the true commit from the forge broadcast's "commit" field)
@@ -1576,8 +1520,8 @@ diffyscan-config:
     : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
     for c in yq git; do command -v "$c" >/dev/null 2>&1 || { echo "Missing required command: $c" >&2; exit 1; }; done
 
-    deployed="config/state/l2-$L2_NETWORK.deployed.yaml"
-    inputs="config/state/l2-$L2_NETWORK.inputs.yaml"
+    deployed="config/state/$L2_NETWORK.deployed.yaml"
+    inputs="config/state/$L2_NETWORK.inputs.yaml"
     template="config/diffyscan/template.yaml"
     out="config/diffyscan/l2-$L2_NETWORK.generated.yaml"
     [[ -f "$deployed" ]] || { echo "FAIL: $deployed absent — run 'just deploy-test' for this lane first" >&2; exit 1; }
@@ -1673,7 +1617,7 @@ diffyscan: diffyscan-config
 #
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER,
 #   L2_TEST_DEPLOYER. Optional: L2_SYNC_MIN_AMOUNT_TEST / L2_SYNC_DELAY_TEST
-#   (default to the syncMinAmount / syncDelay anchors in the shared overlay config/state/l2.inputs.test-stage.yaml).
+#   (defaults: 0.0002 WETH / 60 seconds).
 #
 # Usage: just -E .env.<network> verify-test
 verify-test:
@@ -1686,14 +1630,9 @@ verify-test:
     : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
     : "${L2_TEST_DEPLOYER:?L2_TEST_DEPLOYER is required; populate it from deploy-test output}"
 
-    # Match deploy-test: default the canary knobs from the shared state-mate overlay.
-    sm_overlay="config/state/l2.inputs.test-stage.yaml"
-    if command -v yq >/dev/null 2>&1; then
-      : "${L2_SYNC_MIN_AMOUNT_TEST:=$(yq '.. | select(anchor == "syncMinAmount")' "$sm_overlay" | tr -d '"' | head -n1)}"
-      : "${L2_SYNC_DELAY_TEST:=$(yq '.. | select(anchor == "syncDelay")' "$sm_overlay" | tr -d '"' | head -n1)}"
-      [[ -n "$L2_SYNC_MIN_AMOUNT_TEST" && -n "$L2_SYNC_DELAY_TEST" ]] || { echo "Failed to read syncMinAmount / syncDelay from $sm_overlay" >&2; exit 1; }
-      export L2_SYNC_MIN_AMOUNT_TEST L2_SYNC_DELAY_TEST
-    fi
+    : "${L2_SYNC_MIN_AMOUNT_TEST:=200000000000000}"
+    : "${L2_SYNC_DELAY_TEST:=60}"
+    export L2_SYNC_MIN_AMOUNT_TEST L2_SYNC_DELAY_TEST
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runVerifyTest()' --rpc-url "$L2_RPC_URL"
@@ -1749,8 +1688,8 @@ fund-trigger:
 #
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_LIDO_DEPLOYER_PRIVATE_KEY, L2_ORACLE_POOL,
 #   L2_SYNC_TRIGGER.
-# Optional env: L2_TEST_WETH_SEED (wei, default 5e14 = 0.0005 WETH; must be >= the canary minAmount —
-#   L2_SYNC_MIN_AMOUNT_TEST / the syncMinAmount anchor in the shared overlay config/state/l2.inputs.test-stage.yaml);
+# Optional env: L2_TEST_WETH_SEED (wei, default 5e14 = 0.0005 WETH; must be >=
+#   L2_SYNC_MIN_AMOUNT_TEST, whose default is 0.0002 WETH);
 #   L2_TEST_TRIGGER_FLOAT (wei, default 1.3e17 = 0.13 ETH; must be >= SyncTrigger.getMaxFees()).
 #
 # Usage: just -E .env.<network> seed-test-weth
@@ -1793,10 +1732,8 @@ simulate-sync:
     : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
     : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
 
-    if command -v yq >/dev/null 2>&1; then
-      delay=$(yq '.. | select(anchor == "syncDelay")' "config/state/l2.inputs.test-stage.yaml" 2>/dev/null | tr -d '"' | head -n1)
-      [[ -n "$delay" ]] && echo "Reminder: a sync only fires once the canary delay (${delay}s, syncDelay in the test-stage overlay) has elapsed since the last execution." >&2 || true
-    fi
+    delay="${L2_SYNC_DELAY_TEST:-60}"
+    echo "Reminder: a sync only fires once the canary delay (${delay}s) has elapsed since the last execution." >&2
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runSimulateSync()' --rpc-url "$L2_RPC_URL" --broadcast
@@ -1804,8 +1741,8 @@ simulate-sync:
 # Stage 1 (Deployer): full canary test loop — preflight-check → seed-test-weth → simulate-sync — for
 # optimism, arbitrum and linea in sequence. Each network re-invokes `just` with NETWORK=<net> so the
 # per-network dotenv (.env + .env.<net>) is loaded fresh (see `set dotenv-filename` at the top).
-# Stops at the first failing step. NB simulate-sync fires only if the canary delay (syncDelay in the
-# test-stage overlay) has elapsed since that network's last execution.
+# Stops at the first failing step. NB simulate-sync fires only if the canary delay
+# (L2_SYNC_DELAY_TEST, default 60 seconds) has elapsed since that network's last execution.
 #
 # Usage: just test-sync-all
 test-sync-all:
@@ -1867,7 +1804,7 @@ handoff:
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER.
 #   Optional: L2_LIQUIDITY_OWNER.
 #
-# Usage: just -E .env.<network> verify-stage2
+# Usage: NETWORK=<network> just verify-stage2
 verify-stage2:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1876,18 +1813,41 @@ verify-stage2:
     : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
     : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
     : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+    command -v yq >/dev/null 2>&1 || { echo "Missing required command: yq" >&2; exit 1; }
+    : "${L2_AUTOMATION_OWNER:=$(just _l2-input-anchor "$L2_NETWORK" l2AutomationOwner)}"
+    : "${L2_AUTOMATION_OWNER:?missing l2AutomationOwner anchor in effective L2 inputs}"
+    export L2_AUTOMATION_OWNER
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runVerifyStage2()' --rpc-url "$L2_RPC_URL"
 
-# Stage 2→3 (Initial Owner): the IRREVERSIBLE governance seal — revoke old automation(s), migrate
-# CustomSender admin + L2 ProxyAdmin to the governance executor. Refuses to run unless the infra is already
-# LOL-owned + production-configured (the `handoff` must have completed). Run `migrate-l1` once after all 4.
+# Automation Owner: after the live v2 canary, restore the production 12h delay and 5/100 WETH bounds.
+# The forge action checks the signing key, trigger owner, and lane-bound SENDER before writing.
+#
+# Usage: NETWORK=<network> just promote-automation
+promote-automation:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${L2_NETWORK:?L2_NETWORK is required}"
+    : "${L2_RPC_URL:?L2_RPC_URL is required}"
+    : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required}"
+    : "${L2_AUTOMATION_OWNER:?L2_AUTOMATION_OWNER is required}"
+    [[ -n "${L2_AUTOMATION_OWNER_PRIVATE_KEY:-${L2_AUTOMATION_OWNER_PK:-}}" ]] \
+      || { echo "L2_AUTOMATION_OWNER_PRIVATE_KEY (or L2_AUTOMATION_OWNER_PK) is required" >&2; exit 1; }
+    SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
+    forge script "$SCRIPT" --sig 'runPromoteAutomation()' --rpc-url "$L2_RPC_URL" --broadcast
+
+# Stage 2→3 (Initial Owner): the IRREVERSIBLE governance seal — revoke the retired SyncTrigger plus
+# predecessor Chainlink/Gelato automation(s), migrate CustomSender admin + L2 ProxyAdmin to the governance
+# executor. Refuses to run unless the pool is LOL-owned and the production SyncTrigger + CREReceiver are
+# owned/authored by the Automation Owner. Run `migrate-l1` once after all 4 lanes are sealed.
 #
 # Required env (.env.<network>): L2_NETWORK, L2_RPC_URL, INITIAL_OWNER_PRIVATE_KEY,
-#   L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER. Optional: L2_LIQUIDITY_OWNER.
+#   L2_ORACLE_POOL, L2_SYNC_TRIGGER, L2_CRE_RECEIVER. Automation Owner and retired-trigger addresses are
+#   resolved from config/state/<network>.{inputs,deployed}.yaml and exported to the forge script.
+# Optional: L2_LIQUIDITY_OWNER.
 #
-# Usage: just -E .env.<network> finalize
+# Usage: NETWORK=<network> just finalize
 finalize:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1897,6 +1857,12 @@ finalize:
     : "${L2_ORACLE_POOL:?L2_ORACLE_POOL is required; populate it from deploy-test output}"
     : "${L2_SYNC_TRIGGER:?L2_SYNC_TRIGGER is required; populate it from deploy-test output}"
     : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it from deploy-test output}"
+    command -v yq >/dev/null 2>&1 || { echo "Missing required command: yq" >&2; exit 1; }
+    : "${L2_AUTOMATION_OWNER:=$(just _l2-input-anchor "$L2_NETWORK" l2AutomationOwner)}"
+    : "${L2_RETIRED_SYNC_TRIGGER:=$(yq '.. | select(anchor == "RETIRED_l2SyncTrigger")' "config/state/$L2_NETWORK.deployed.yaml" | tr -d '"' | head -n1)}"
+    : "${L2_AUTOMATION_OWNER:?missing l2AutomationOwner anchor in effective L2 inputs}"
+    : "${L2_RETIRED_SYNC_TRIGGER:?missing RETIRED_l2SyncTrigger anchor in config/state/$L2_NETWORK.deployed.yaml}"
+    export L2_AUTOMATION_OWNER L2_RETIRED_SYNC_TRIGGER
 
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runFinalize()' --rpc-url "$L2_RPC_URL" --broadcast
@@ -1974,7 +1940,8 @@ deploy-cre-workflow:
       echo
       echo "===================================================================="
     fi
-    echo "Then record CRE_WORKFLOW_ID= in .env.$L2_NETWORK and run 'just -E .env.$L2_NETWORK verify-cre-workflow'."
+    echo "Then run 'just record-cre-workflow-id $L2_NETWORK <workflow-id>' with the returned ID,"
+    echo "followed by 'just -E .env.$L2_NETWORK verify-cre-workflow'."
     echo "===================================================================="
 
 # L1 admin migration (runs ONCE — shared across all networks). Grants DEFAULT_ADMIN
@@ -2055,9 +2022,10 @@ measure-fee-gas:
 # quote is gasLimit-dominated; see docs/fees.md "Evidence & reproduction").
 #
 # This is the live Router quote, NOT the configured ceiling that `runPrintFeeParams()` prints.
-# Nothing is hardcoded: every per-lane constant is resolved from config/state/l2-<net>.inputs.yaml
-# (the operator review surface, kept in lockstep with the Solidity constants by
-# `just verify-constants-sync`) and echoed up front so the quote is auditable —
+# Nothing is hardcoded: lane-specific constants are resolved from config/state/<net>.inputs.yaml,
+# while universal constants come from config/state/l2.common.inputs.yaml. Both are operator review
+# surfaces kept in lockstep with the Solidity constants by `just verify-constants-sync`, and every
+# resolved value is echoed up front so the quote is auditable —
 #   router   ← &l2CcipRouter      selector ← &ethMainnetCcipChainSelector    weth ← &l2Weth
 #   receiver ← &l1LidoCustomReceiverBytes32  (already abi.encode(address))
 #   gasLimit, maxFee ← decoded from &feeOtoD (encodeCCIP layout: maxFee[16] payInLink[1] gasLimit[4])
@@ -2077,12 +2045,11 @@ quote-ccip-fees:
     ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
     command -v yq >/dev/null 2>&1 || { echo "yq (mikefarah) is required" >&2; exit 1; }
     SIG="getFee(uint64,(bytes,bytes,(address,uint256)[],address,bytes))(uint256)"
-    # All six per-lane anchors pulled in ONE yq pass per file (vs one process per anchor). The
+    # Four lane anchors are pulled in one yq pass; the two shared anchors use the effective-input
+    # resolver, which also rejects accidental common/lane duplicates. The
     # .inputs.yaml entries are anchored list items addressed by recursive descent (`.[]` misses
     # them); the `[..][0]` form pins output order to query order so the positional read is safe.
     ANCHORS='[.. | select(anchor=="l2CcipRouter")][0],
-      [.. | select(anchor=="ethMainnetCcipChainSelector")][0],
-      [.. | select(anchor=="l1LidoCustomReceiverBytes32")][0],
       [.. | select(anchor=="l2Weth")][0],
       [.. | select(anchor=="feeOtoD")][0],
       [.. | select(anchor=="feeDtoO")][0]'
@@ -2096,15 +2063,17 @@ quote-ccip-fees:
       NAMES+=("${u:0:1}${net:1}"); RPC_ENVS+=("RPC_$u"); L2_ENVS+=("L2_${u}_RPC_URL")
     done
 
-    # ── Resolve every per-lane constant from config/state/l2-<net>.inputs.yaml (one yq pass each) ──
+    # ── Resolve lane constants in one yq pass, then shared constants through the effective-input helper ──
     declare -a ROUTER SELECTOR RECEIVER WETH GASLIM MAXFEE DATALEN
-    echo "Resolved from config/state/l2-<net>.inputs.yaml:"
+    echo "Resolved from config/state/<net>.inputs.yaml:"
     for i in "${!NETS[@]}"; do
-      f="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
+      f="${ROOT_DIR}/config/state/${NETS[$i]}.inputs.yaml"
       [[ -f "$f" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $f" >&2; exit 1; }
-      { IFS= read -r ROUTER[$i]; IFS= read -r SELECTOR[$i]; IFS= read -r RECEIVER[$i]
-        IFS= read -r WETH[$i];   IFS= read -r otod;        IFS= read -r dtoo
+      { IFS= read -r ROUTER[$i]; IFS= read -r WETH[$i]
+        IFS= read -r otod;        IFS= read -r dtoo
       } < <(yq "$ANCHORS" "$f")
+      SELECTOR[$i]="$(just _l2-input-anchor "${NETS[$i]}" ethMainnetCcipChainSelector)"
+      RECEIVER[$i]="$(just _l2-input-anchor "${NETS[$i]}" l1LidoCustomReceiverBytes32)"
       otod="${otod#0x}"; dtoo="${dtoo#0x}"
       [[ ${#otod} -eq 42 ]] || { echo "  ${NAMES[$i]}: malformed feeOtoD (got ${#otod} hex chars, want 42): 0x$otod" >&2; exit 1; }
       # maxFee is a uint128 (32 hex chars). Parse with `cast to-dec`, NOT bash `$(( 16#… ))`, which is
@@ -2171,10 +2140,8 @@ quote-ccip-fee-by-amount:
     command -v yq >/dev/null 2>&1 || { echo "yq (mikefarah) is required" >&2; exit 1; }
     SIG="getFee(uint64,(bytes,bytes,(address,uint256)[],address,bytes))(uint256)"
     AMTS_WETH=( 0.001 0.01 0.1 1 10 100 1000 10000 100000 )   # geometric sweep of the bridged amount
-    # Same anchors / yq pass as quote-ccip-fees (feeDtoO kept only for the DATALEN computation).
+    # Same lane anchors / effective shared lookups as quote-ccip-fees.
     ANCHORS='[.. | select(anchor=="l2CcipRouter")][0],
-      [.. | select(anchor=="ethMainnetCcipChainSelector")][0],
-      [.. | select(anchor=="l1LidoCustomReceiverBytes32")][0],
       [.. | select(anchor=="l2Weth")][0],
       [.. | select(anchor=="feeOtoD")][0],
       [.. | select(anchor=="feeDtoO")][0]'
@@ -2186,15 +2153,17 @@ quote-ccip-fee-by-amount:
       NAMES+=("${u:0:1}${net:1}"); RPC_ENVS+=("RPC_$u"); L2_ENVS+=("L2_${u}_RPC_URL")
     done
 
-    # ── Resolve every per-lane constant from config/state/l2-<net>.inputs.yaml (one yq pass each) ──
+    # ── Resolve lane constants in one yq pass, then shared constants through the effective-input helper ──
     declare -a ROUTER SELECTOR RECEIVER WETH GASLIM MAXFEE DATALEN
-    echo "Resolved from config/state/l2-<net>.inputs.yaml:"
+    echo "Resolved from config/state/<net>.inputs.yaml:"
     for i in "${!NETS[@]}"; do
-      f="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
+      f="${ROOT_DIR}/config/state/${NETS[$i]}.inputs.yaml"
       [[ -f "$f" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $f" >&2; exit 1; }
-      { IFS= read -r ROUTER[$i]; IFS= read -r SELECTOR[$i]; IFS= read -r RECEIVER[$i]
-        IFS= read -r WETH[$i];   IFS= read -r otod;        IFS= read -r dtoo
+      { IFS= read -r ROUTER[$i]; IFS= read -r WETH[$i]
+        IFS= read -r otod;        IFS= read -r dtoo
       } < <(yq "$ANCHORS" "$f")
+      SELECTOR[$i]="$(just _l2-input-anchor "${NETS[$i]}" ethMainnetCcipChainSelector)"
+      RECEIVER[$i]="$(just _l2-input-anchor "${NETS[$i]}" l1LidoCustomReceiverBytes32)"
       otod="${otod#0x}"; dtoo="${dtoo#0x}"
       [[ ${#otod} -eq 42 ]] || { echo "  ${NAMES[$i]}: malformed feeOtoD (got ${#otod} hex chars, want 42): 0x$otod" >&2; exit 1; }
       MAXFEE[$i]="$(cast to-dec "0x${otod:0:32}")"   # encodeCCIP bytes 0..15  = maxFee (uint128)
@@ -2322,7 +2291,7 @@ quote-ccip-fee-by-amount:
 # are exactly what this recipe adds; the two are complementary layers, not substitutes.
 #
 # Honest degradation (no false "OK"): a reverted/empty read prints WARN/SKIP, never OK. Deployed
-# addresses (SyncTrigger/CREReceiver/OraclePool) come from config/state/l2-<net>.deployed.yaml when
+# addresses (SyncTrigger/CREReceiver/OraclePool) come from config/state/<net>.deployed.yaml when
 # present, else those rows SKIP with a "run after deploy-test" note — but CustomSender + the new pool
 # are still derived LIVE (oldPool.SENDER() → getOraclePool()) and cross-checked against the file, so a
 # stale/contaminated .deployed.yaml is caught, not trusted.
@@ -2409,15 +2378,15 @@ postflight-monitor:
     hdr "──────────── L1 (Ethereum mainnet) ────────────"
     # Live monitor: explicit mainnet binding first, local fork proxy last (see cre-env.sh).
     L1_RPC="${L1_RPC_URL:-${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-}}}"
-    OP_IN="${ROOT_DIR}/config/state/l2-optimism.inputs.yaml"
-    L1_IN="${ROOT_DIR}/config/state/l1.inputs.yaml"
+    L1_IN="${ROOT_DIR}/config/state/ethereum.inputs.yaml"
     if [[ -z "$L1_RPC" ]]; then
       SKIP "L1 pass — set L1_RPC_URL in .env.<network> (or RPC_ETHEREUM_REMOTE)"
     elif ! cast chain-id --rpc-url "$L1_RPC" >/dev/null 2>&1; then
       SKIP "L1 pass — RPC not reachable: $L1_RPC"
     else
-      # L1 receiver decoded from the bytes32 anchor in the L2 inputs (always committed); DAO agent + wstETH from L1 inputs (one yq pass).
-      L1_RECV="$(cast parse-bytes32-address "$(yq1 "$OP_IN" l1LidoCustomReceiverBytes32)" 2>/dev/null || true)"
+      # L1 receiver decoded from the bytes32 anchor in the common L2 inputs; DAO agent + wstETH
+      # come from the independently verified L1 inputs (one yq pass).
+      L1_RECV="$(cast parse-bytes32-address "$(just _l2-input-anchor optimism l1LidoCustomReceiverBytes32)" 2>/dev/null || true)"
       { IFS= read -r DAO; IFS= read -r INIT_OWNER; IFS= read -r L1_WSTETH; } < <(yq \
         '[.. | select(anchor=="lidoDaoAgent")][0], [.. | select(anchor=="initialOwner")][0], [.. | select(anchor=="l1Wsteth")][0]' \
         "$L1_IN" 2>/dev/null)
@@ -2463,21 +2432,23 @@ postflight-monitor:
       u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"; name="${u:0:1}${net:1}"
       rpc_env="RPC_$u"; l2_env="L2_${u}_RPC_URL"
       echo; hdr "──────────── ${name} ────────────"
-      INF="${ROOT_DIR}/config/state/l2-${net}.inputs.yaml"; DEP="${ROOT_DIR}/config/state/l2-${net}.deployed.yaml"
+      INF="${ROOT_DIR}/config/state/${net}.inputs.yaml"; DEP="${ROOT_DIR}/config/state/${net}.deployed.yaml"
       [[ -f "$INF" ]] || { SKIP "${name} — inputs file not found: $INF"; continue; }
       url="${!rpc_env:-}"; [[ -n "$url" ]] || url="${!l2_env:-}"
       if [[ -z "$url" ]]; then SKIP "${name} — set ${rpc_env} (or legacy ${l2_env})"; continue; fi
       if ! cast chain-id --rpc-url "$url" >/dev/null 2>&1; then SKIP "${name} — ${rpc_env} not reachable: ${url}"; continue; fi
       FB="$(blocks_back "$url" || true)"   # one block-window probe per lane, reused by the §4 + §3 event scans
 
-      # Resolve every per-lane input anchor in ONE yq pass (matches the quote-ccip-fees pattern; the
-      # `[..][0]` form pins output order to query order, and a missing anchor yields a stable `null` line).
+      # Resolve lane-local anchors in one yq pass, then shared anchors through the effective-input
+      # resolver (which checks that common and lane files do not both define the same label).
       { IFS= read -r ROUTER; IFS= read -r WETH; IFS= read -r OLDPOOL; IFS= read -r CREFWD
-        IFS= read -r LOL; IFS= read -r SEL; IFS= read -r SYNCMIN; IFS= read -r INP_SENDER
+        IFS= read -r INP_SENDER
       } < <(yq '[.. | select(anchor=="l2CcipRouter")][0], [.. | select(anchor=="l2Weth")][0],
-        [.. | select(anchor=="l2OldOraclePool")][0], [.. | select(anchor=="l2CreForwarder")][0],
-        [.. | select(anchor=="l2LiquidityOwner")][0], [.. | select(anchor=="ethMainnetCcipChainSelector")][0],
-        [.. | select(anchor=="syncMinAmount")][0], [.. | select(anchor=="l2CustomSender")][0]' "$INF" 2>/dev/null)
+        [.. | select(anchor=="RETIRED_l2OraclePool")][0], [.. | select(anchor=="l2CreForwarder")][0],
+        [.. | select(anchor=="l2CustomSender")][0]' "$INF" 2>/dev/null)
+      LOL="$(just _l2-input-anchor "$net" l2LiquidityOwner)"
+      SEL="$(just _l2-input-anchor "$net" ethMainnetCcipChainSelector)"
+      SYNCMIN="$(just _l2-input-anchor "$net" syncMinAmount)"
       # Deployed addresses (only SyncTrigger is not on-chain-discoverable). Absent file ⇒ SKIP those rows.
       DEP_TRIG="" ; DEP_RECV="" ; DEP_POOL=""
       if [[ -f "$DEP" ]]; then
@@ -2515,7 +2486,7 @@ postflight-monitor:
 
       # ── SyncTrigger-centric rows (need the deployed trigger address) ──
       if ! is_addr "$DEP_TRIG"; then
-        SKIP "§1/§3/§5 SyncTrigger+CREReceiver rows — config/state/l2-${net}.deployed.yaml absent (run after deploy-test)"
+        SKIP "§1/§3/§5 SyncTrigger+CREReceiver rows — config/state/${net}.deployed.yaml absent (run after deploy-test)"
       else
         TRIG="$DEP_TRIG"
         if is_addr "$SENDER"; then
@@ -2633,8 +2604,8 @@ postflight-monitor:
 #   needs only native ETH for the dust stake + gas; wstETH is required only when opting into the
 #   seed step, see SMOKE_SEED_WSTETH below).
 # New pool + sender: env L2_ORACLE_POOL + L2_CUSTOM_SENDER (printed by deploy-test) win; when unset the
-#   new pool falls back to l2OraclePool in config/state/l2-<net>.deployed.yaml and the CustomSender to the
-#   l2CustomSender external in config/state/l2-<net>.inputs.yaml. Tokens, chain-id and the old pool also
+#   new pool falls back to l2OraclePool in config/state/<net>.deployed.yaml and the CustomSender to the
+#   l2CustomSender external in config/state/<net>.inputs.yaml. Tokens, chain-id and the old pool also
 #   come from .inputs.yaml (no new hardcodes here, so verify-constants-sync is unaffected).
 # Tunables (all wei): SMOKE_STAKE_AMOUNT (default 1e15 = 0.001), SMOKE_SEED_WSTETH (default 0),
 #   SMOKE_MIN_OUT (default 0), SMOKE_GAS_BUFFER (default 1e15), SMOKE_STAKE_TOKEN=native|weth (default native).
@@ -2659,8 +2630,8 @@ smoke-stake:
     L2_RPC_URL="${!_rpc_var:-${L2_RPC_URL:-}}"
     : "${L2_RPC_URL:?Set ${_rpc_var} (or legacy L2_RPC_URL) for $L2_NETWORK}"
 
-    sm_inputs="${ROOT_DIR}/config/state/l2-${L2_NETWORK}.inputs.yaml"
-    sm_deployed="${ROOT_DIR}/config/state/l2-${L2_NETWORK}.deployed.yaml"
+    sm_inputs="${ROOT_DIR}/config/state/${L2_NETWORK}.inputs.yaml"
+    sm_deployed="${ROOT_DIR}/config/state/${L2_NETWORK}.deployed.yaml"
     [[ -f "$sm_inputs" ]] || { echo "inputs file not found: $sm_inputs" >&2; exit 1; }
 
     die() { echo "SMOKE FAIL: $*" >&2; exit 1; }
@@ -2679,7 +2650,7 @@ smoke-stake:
     EXPECTED_CHAIN_ID="$(yq1 "$sm_inputs" l2ChainId)"
     WETH="$(yq1 "$sm_inputs" l2Weth)"
     WSTETH="$(yq1 "$sm_inputs" l2Wsteth)"
-    OLD_POOL="$(yq1 "$sm_inputs" l2OldOraclePool)"
+    OLD_POOL="$(yq1 "$sm_inputs" RETIRED_l2OraclePool)"
     # CustomSender is a pre-existing external in .inputs; env (printed by deploy-test) wins.
     SENDER="${L2_CUSTOM_SENDER:-$(yq1 "$sm_inputs" l2CustomSender)}"
     # New pool: env (printed by deploy-test) wins; else the freshly-generated .deployed.yaml anchor.
@@ -2908,7 +2879,7 @@ smoke-stake:
 # instead calls onReport(bytes32,address,bytes) with NO ERC-165 gate → our receiver would never be
 # invoked and sync would silently never fire. Known-good EXTCODEHASH (all 4 lanes, verified 2026-06-19):
 #   0x2b21870eb5ea9013a781ed3db7d5fab742b612b2ac8de0990ac9d95b22f795fc
-# Forwarder addresses come from config/state/l2-<net>.inputs.yaml (l2CreForwarder anchor); the optional
+# Forwarder addresses come from config/state/<net>.inputs.yaml (l2CreForwarder anchor); the optional
 # receiver cross-check reads l2CreReceiver from .deployed.yaml. Needs RPC_<NET> (or legacy
 # L2_<NET>_RPC_URL). Read-only.
 # Verify each lane's pinned CRE forwarder is the ERC-165-gating 2-arg-onReport Router build (read-only, 4 lanes).
@@ -2972,10 +2943,10 @@ verify-cre-forwarder:
 
     # ── Resolve each lane's pinned forwarder (.inputs.yaml) and deployed receiver (.deployed.yaml, if
     #    present) — addressed by anchor via recursive descent, never hardcoded. ──
-    echo "Resolved from config/state/l2-<net>.{inputs,deployed}.yaml:"
+    echo "Resolved from config/state/<net>.{inputs,deployed}.yaml:"
     for i in "${!NETS[@]}"; do
-      inf="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
-      dep="${ROOT_DIR}/config/state/l2-${NETS[$i]}.deployed.yaml"
+      inf="${ROOT_DIR}/config/state/${NETS[$i]}.inputs.yaml"
+      dep="${ROOT_DIR}/config/state/${NETS[$i]}.deployed.yaml"
       [[ -f "$inf" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $inf" >&2; exit 1; }
       FWD[$i]="$(yq '[.. | select(anchor=="l2CreForwarder")][0]' "$inf" | tr -d '"')"
       RECV[$i]=""
@@ -3097,7 +3068,7 @@ verify-cre-forwarder:
 # owner IS a code-less EOA — the deployer). A handoff on a lane where the Safe was never deployed
 # permanently bricks admin + sweep there (the RUNBOOK §Sunset "drain before renounce" failure mode;
 # the classic multichain-Safe loss class). Run once before the FIRST handoff; idempotent, re-run freely.
-# The LOL address comes from config/state/l2-<net>.inputs.yaml (l2LiquidityOwner anchor; the recipe
+# The LOL address comes from the effective common + lane inputs (l2LiquidityOwner anchor; the recipe
 # also asserts all four lanes resolve to ONE address — constants↔yaml drift is verify-constants-sync's
 # job). RPC per lane: RPC_<NET>, falling back to RPC_<NET>_REMOTE, then legacy L2_<NET>_RPC_URL
 # (each candidate is probed — the local proxies are often down). Read-only, no keys.
@@ -3133,14 +3104,14 @@ verify-lol-safe:
       NAMES+=("${u:0:1}${net:1}")
     done
 
-    # ── Resolve each lane's l2LiquidityOwner anchor; the unification claim starts in config —
-    #    all four lanes MUST resolve to one address. ──
-    echo "Resolved from config/state/l2-<net>.inputs.yaml (l2LiquidityOwner):"
+    # ── Resolve each lane's effective l2LiquidityOwner anchor. The helper reads common + lane inputs
+    #    and rejects shadowing, so the unified-address claim is structural as well as value-checked. ──
+    echo "Resolved from l2.common.inputs.yaml + config/state/<net>.inputs.yaml (l2LiquidityOwner):"
     for i in "${!NETS[@]}"; do
-      inf="${ROOT_DIR}/config/state/l2-${NETS[$i]}.inputs.yaml"
+      inf="${ROOT_DIR}/config/state/${NETS[$i]}.inputs.yaml"
       [[ -f "$inf" ]] || { echo "  ${NAMES[$i]}: inputs file not found: $inf" >&2; exit 1; }
-      LOLS[$i]="$(yq '[.. | select(anchor=="l2LiquidityOwner")][0]' "$inf" | tr -d '"')"
-      [[ "${LOLS[$i]}" =~ ^0x[0-9a-fA-F]{40}$ ]] || { echo "  ${NAMES[$i]}: l2LiquidityOwner anchor missing/malformed in $inf" >&2; exit 1; }
+      LOLS[$i]="$(just _l2-input-anchor "${NETS[$i]}" l2LiquidityOwner)"
+      [[ "${LOLS[$i]}" =~ ^0x[0-9a-fA-F]{40}$ ]] || { echo "  ${NAMES[$i]}: effective l2LiquidityOwner anchor missing/malformed" >&2; exit 1; }
       printf '  %-9s %s\n' "${NAMES[$i]}" "${LOLS[$i]}"
     done
     LOL="${LOLS[0]}"
@@ -3354,7 +3325,7 @@ _optimism-state-update-config rpc_url='':
     RPC_URL="{{rpc_url}}"
     DEFAULT_RPC_URL="${L2_STATE_MATE_RPC_URL:-${L2_RPC_URL:-${LOCAL_L2_OPTIMISM_RPC_URL:-${L2_OPTIMISM_RPC_URL:-}}}}"
     STATE_MATE_OUTPUT_FILE="${L2_STATE_MATE_OUTPUT_FILE:-${TMPDIR:-/tmp}/optimism-l2-state-mate.env}"
-    STATE_MATE_DEPLOYED="$ROOT_DIR/config/state/l2-optimism.deployed.yaml"
+    STATE_MATE_DEPLOYED="$ROOT_DIR/config/state/optimism.deployed.yaml"
     STATE_MATE_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/optimism-l2-state-config.XXXXXX")"
     L2_CUSTOM_SENDER="${L2_STATE_MATE_CUSTOM_SENDER:-0x328de900860816d29D1367F6903a24D8ed40C997}" # only to derive the new OraclePool live
     INITIAL_OWNER_DEFAULT="${L2_STATE_MATE_INITIAL_OWNER:-0xb5c336a5c60D3482b29d83C742C65AE8351b91a8}"
@@ -3458,20 +3429,22 @@ _optimism-state-update-config rpc_url='':
     fi
 
     # The .deployed.yaml holds only the three freshly-deployed contracts; the pre-existing CustomSender
-    # proxy/impl + ProxyAdmin are externals in l2-optimism.inputs.yaml (no slot read needed here).
+    # proxy/impl + ProxyAdmin are externals in optimism.inputs.yaml (no slot read needed here).
     bash "$ROOT_DIR/script/shared/write-deployed-yaml.sh" "$STATE_MATE_DEPLOYED" \
       "$ORACLE_POOL_ADDRESS" "$SYNC_TRIGGER_ADDRESS" "$CRE_RECEIVER_ADDRESS"
     echo "Regenerated state-mate .deployed sibling: ${STATE_MATE_DEPLOYED} (rpc: ${RPC_URL})"
 
 [private]
-_state-verify network rpc_url='' overrides='':
+_state-verify network rpc_url='':
     #!/usr/bin/env bash
     set -euo pipefail
 
     NETWORK="{{network}}"
     ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    source "$ROOT_DIR/script/shared/cre-env.sh"
+    cre_env_load_secrets
+    L1_STATE_MATE_RPC_URL="$(resolve_l1_rpc)"
     RPC_URL="{{rpc_url}}"
-    OVERRIDES="{{overrides}}"   # non-empty (e.g. "canary") ⇒ apply the shared pre-handoff test-stage overlay
 
     # Map network name to default RPC env var.
     # Priority: positional [rpc_url] > L2_RPC_URL (from .env.<net>) > legacy fallbacks.
@@ -3485,20 +3458,15 @@ _state-verify network rpc_url='' overrides='':
 
     STATE_MATE_OUTPUT_FILE="${L2_STATE_MATE_OUTPUT_FILE:-${TMPDIR:-/tmp}/${NETWORK}-l2-state-mate.env}"
     STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
-    # All four mainnet L2 lanes share ONE wiring file (config/state/l2.yaml) and pass their per-lane
-    # siblings explicitly (auto-discovery is basename-keyed, so a bare l2.yaml would look for
-    # l2.inputs.yaml/l2.deployed.yaml). Absolute paths, since the runner cd's into lib/state-mate.
+    # All four mainnet L2 lanes share one wiring file plus one common input file; each run adds its
+    # lane input delta and deployed sibling explicitly. Absolute paths, since the runner cd's into
+    # lib/state-mate.
     STATE_MATE_CONFIG="$ROOT_DIR/config/state/l2.yaml"
     STATE_MATE_SIBLING_ARGS=(
-      --inputs   "$ROOT_DIR/config/state/l2-$NETWORK.inputs.yaml"
-      --deployed "$ROOT_DIR/config/state/l2-$NETWORK.deployed.yaml"
+      --inputs   "$ROOT_DIR/config/state/l2.common.inputs.yaml"
+      --inputs   "$ROOT_DIR/config/state/$NETWORK.inputs.yaml"
+      --deployed "$ROOT_DIR/config/state/$NETWORK.deployed.yaml"
     )
-    # CANARY (pre-handoff) profile: redefine the 4 deploy-test anchors via the shared overlay. An empty
-    # `overrides` arg (the default) keeps the PRODUCTION values from l2-<net>.inputs.yaml — the post-handoff state.
-    if [[ -n "$OVERRIDES" ]]; then
-      STATE_MATE_SIBLING_ARGS+=(--overrides "$ROOT_DIR/config/state/l2.inputs.test-stage.yaml")
-      echo "Canary profile: applying --overrides config/state/l2.inputs.test-stage.yaml"
-    fi
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${NETWORK}-l2-state-verify.XXXXXX")"
     STATE_MATE_LOG="$WORK_DIR/state-mate.log"
 
@@ -3548,15 +3516,17 @@ _state-verify network rpc_url='' overrides='':
     fi
 
     RPC_URL="$(resolve_rpc_url)"
-    echo "Running state-mate checks for $NETWORK against ${RPC_URL}"
+    echo "Running combined L1 + L2 state-mate checks for $NETWORK"
     # Echo the exact invocation (cwd + argv) so an operator can replay/audit the run by hand.
     echo "+ cd $STATE_MATE_DIR"
-    echo "+ L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $STATE_MATE_CONFIG ${STATE_MATE_SIBLING_ARGS[*]+${STATE_MATE_SIBLING_ARGS[*]}} --only l2"
+    echo "+ L1_RPC_URL=<ethereum-rpc> L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $STATE_MATE_CONFIG ${STATE_MATE_SIBLING_ARGS[*]+${STATE_MATE_SIBLING_ARGS[*]}}"
 
     set +e
     (
       cd "$STATE_MATE_DIR"
-      env -u NO_COLOR L2_STATE_MATE_RPC_URL="$RPC_URL" FORCE_COLOR=3 CLICOLOR_FORCE=1 "${YARN_CMD[@]}" start "$STATE_MATE_CONFIG" "${STATE_MATE_SIBLING_ARGS[@]+"${STATE_MATE_SIBLING_ARGS[@]}"}" --only "l2"
+      env -u NO_COLOR L1_RPC_URL="$L1_STATE_MATE_RPC_URL" L2_STATE_MATE_RPC_URL="$RPC_URL" \
+        FORCE_COLOR=3 CLICOLOR_FORCE=1 "${YARN_CMD[@]}" start "$STATE_MATE_CONFIG" \
+        "${STATE_MATE_SIBLING_ARGS[@]+"${STATE_MATE_SIBLING_ARGS[@]}"}"
     ) 2>&1 | tee "$STATE_MATE_LOG"
     STATE_MATE_EXIT="${PIPESTATUS[0]}"
     set -e
@@ -3575,40 +3545,34 @@ _state-verify network rpc_url='' overrides='':
       echo "state-mate checks FAILED for $NETWORK (continuing with the remaining runs)" >&2
     fi
 
-    # Per-lane extras — separate config runs IN ADDITION to the shared l2.yaml, for assertions that
-    # apply to ONE lane and so cannot be aliased in the four-lane wiring. Each auto-discovers its own
-    # l2-<name>-extras.{inputs,deployed}.yaml siblings.
-    #   linea    — the legacy Gelato keeper de-role (Linea's pre-migration system ran a second keeper).
-    #   optimism — the RETIRED v1 automation pair is unplugged (SYNC_ROLE revoked + allow-list cleared),
-    #              after the 2026-07-29 Automation-Owner redeploy. EXPECTED RED until §S6 + §6-D1 run.
-    EXTRAS_EXIT=0
-    EXTRAS_CONFIG=""
-    case "$NETWORK" in
-      linea)    EXTRAS_CONFIG="config/state/l2-linea-extras.yaml";    EXTRAS_WHAT="Gelato de-role" ;;
-      optimism) EXTRAS_CONFIG="config/state/l2-optimism-extras.yaml"; EXTRAS_WHAT="retired v1 pair unplugged" ;;
-    esac
-    if [[ -n "$EXTRAS_CONFIG" ]]; then
-      echo "Running $NETWORK-only state-mate extras ($EXTRAS_WHAT) against ${RPC_URL}"
+    # Linea alone had an additional Gelato automation. The retired CRE pair is now part of the shared
+    # l2.yaml run for every lane; only this genuinely Linea-specific assertion remains separate.
+    GELATO_EXIT=0
+    GELATO_CONFIG=""
+    [[ "$NETWORK" == "linea" ]] && GELATO_CONFIG="config/state/l2-linea-gelato.yaml"
+    if [[ -n "$GELATO_CONFIG" ]]; then
+      echo "Running Linea Gelato de-role check against ${RPC_URL}"
       echo "+ cd $STATE_MATE_DIR"
-      echo "+ L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $ROOT_DIR/$EXTRAS_CONFIG --only l2"
+      echo "+ L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $ROOT_DIR/$GELATO_CONFIG --only l2"
       set +e
       (
         cd "$STATE_MATE_DIR"
-        env -u NO_COLOR L2_STATE_MATE_RPC_URL="$RPC_URL" FORCE_COLOR=3 CLICOLOR_FORCE=1 "${YARN_CMD[@]}" start "$ROOT_DIR/$EXTRAS_CONFIG" --only "l2"
+        env -u NO_COLOR L2_STATE_MATE_RPC_URL="$RPC_URL" FORCE_COLOR=3 CLICOLOR_FORCE=1 \
+          "${YARN_CMD[@]}" start "$ROOT_DIR/$GELATO_CONFIG" --only "l2"
       ) 2>&1 | tee -a "$STATE_MATE_LOG"
-      EXTRAS_EXIT="${PIPESTATUS[0]}"
+      GELATO_EXIT="${PIPESTATUS[0]}"
       set -e
-      if [[ "$EXTRAS_EXIT" -eq 0 ]]; then
-        echo "$NETWORK extras state verification passed"
+      if [[ "$GELATO_EXIT" -eq 0 ]]; then
+        echo "Linea Gelato state verification passed"
       else
-        echo "$NETWORK extras state-mate checks FAILED" >&2
+        echo "Linea Gelato state-mate check FAILED" >&2
       fi
     fi
 
     # Single non-zero exit for the whole recipe, naming every run that failed.
     FAILED_RUNS=()
-    [[ "$STATE_MATE_EXIT" -eq 0 ]] || FAILED_RUNS+=("wiring (config/state/l2.yaml)")
-    [[ "$EXTRAS_EXIT" -eq 0 ]] || FAILED_RUNS+=("$NETWORK extras ($EXTRAS_CONFIG)")
+    [[ "$STATE_MATE_EXIT" -eq 0 ]] || FAILED_RUNS+=("combined L1+L2 wiring (config/state/l2.yaml)")
+    [[ "$GELATO_EXIT" -eq 0 ]] || FAILED_RUNS+=("Linea Gelato ($GELATO_CONFIG)")
     if (( ${#FAILED_RUNS[@]} > 0 )); then
       die "state-mate checks failed for $NETWORK: ${FAILED_RUNS[*]}"
     fi
@@ -3628,7 +3592,7 @@ verify-l1-state-mate l1_rpc_url='':
     [[ -n "$RPC_URL" ]] || { echo "Missing RPC URL: pass [l1_rpc_url] or set L1_RPC_URL" >&2; exit 1; }
 
     STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
-    STATE_MATE_CONFIG="$ROOT_DIR/config/state/l1.yaml"
+    STATE_MATE_CONFIG="$ROOT_DIR/config/state/ethereum.yaml"
 
     command -v node >/dev/null 2>&1 || { echo "Missing required command: node" >&2; exit 1; }
     if command -v corepack >/dev/null 2>&1; then
@@ -3701,7 +3665,7 @@ _acceptance-test:
                    "ArbitrumPoolUpgradeTest|ArbitrumCREIntegrationTest" \
                    "BasePoolUpgradeTest|BaseCREIntegrationTest" \
                    "LineaPoolUpgradeTest|LineaCREIntegrationTest")
-    # CustomSender proxy/impl + ProxyAdmin are pre-existing externals (in each l2-<net>.inputs.yaml) and
+    # CustomSender proxy/impl + ProxyAdmin are pre-existing externals (in each <net>.inputs.yaml) and
     # exist in forked state, so the fork .deployed.yaml no longer carries them — no NET_SENDERS/IMPLS/PROXIES.
     NET_LOLS=(     0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6)
     NET_COUNT=${#NET_NAMES[@]}
@@ -3933,35 +3897,39 @@ _acceptance-test:
       liq_owner="${NET_LOLS[$i]}"
 
       sm_config="$ROOT_DIR/config/state/l2.yaml"
-      sm_inputs="$ROOT_DIR/config/state/l2-$name.inputs.yaml"
+      sm_inputs="$ROOT_DIR/config/state/$name.inputs.yaml"
+      sm_common_inputs="$ROOT_DIR/config/state/l2.common.inputs.yaml"
       # Fork redeploys of the three fresh contracts land at addresses that differ from the committed
       # (mainnet-expected) ones, so write the fork's ACTUAL pool/trigger/receiver to a throwaway
-      # .deployed.yaml and override via --deployed. The static <net>.inputs.yaml (governance actors,
-      # tokens, fee blobs, AND the pre-existing CustomSender proxy/impl + ProxyAdmin) needs no override —
-      # the fork inherits those from forked state and reuses the canonical NET_GOVS/NET_LOLS — but it
-      # MUST be passed explicitly since the shared l2.yaml's basename-keyed auto-discovery would
-      # otherwise look for l2.inputs.yaml. The `l2LidoDeployer` anchor is the REAL mainnet deployer
+      # .deployed.yaml and override via --deployed. The common inputs plus static <net>.inputs.yaml
+      # need no fork override: the fork inherits those facts and reuses the canonical actors. Both
+      # input files MUST be passed explicitly because l2.yaml's basename cannot select a lane.
+      # The `l2LidoDeployer` anchor is the REAL mainnet deployer
       # even here: the fork signs with the anvil dev key, but the check is
       # hasRole(DEFAULT_ADMIN_ROLE, deployer)==false on the INHERITED CustomSender proxy, which holds
       # for both EOAs — so no fork-specific override is needed.
       fork_deployed="$WORK_DIR/$name.deployed.yaml"
+      workflow_id="$(yq '.. | select(anchor == "creWorkflowId")' "$ROOT_DIR/config/state/$name.deployed.yaml" | tr -d '"' | head -n1)"
+      retired_trigger="$(yq '.. | select(anchor == "RETIRED_l2SyncTrigger")' "$ROOT_DIR/config/state/$name.deployed.yaml" | tr -d '"' | head -n1)"
+      retired_receiver="$(yq '.. | select(anchor == "RETIRED_l2CreReceiver")' "$ROOT_DIR/config/state/$name.deployed.yaml" | tr -d '"' | head -n1)"
       substep "$name: writing fork .deployed.yaml"
       bash "$ROOT_DIR/script/shared/write-deployed-yaml.sh" "$fork_deployed" \
-        "${DEPLOYED_POOLS[$i]}" "${DEPLOYED_TRIGGERS[$i]}" "${DEPLOYED_RECEIVERS[$i]}"
+        "${DEPLOYED_POOLS[$i]}" "${DEPLOYED_TRIGGERS[$i]}" "${DEPLOYED_RECEIVERS[$i]}" \
+        "$workflow_id" "$retired_trigger" "$retired_receiver"
 
       substep "$name: running state-mate checks"
       (
         cd "$STATE_MATE_DIR"
-        L2_STATE_MATE_RPC_URL="$fork_url" yarn start "$sm_config" --inputs "$sm_inputs" --deployed "$fork_deployed" --only "l2" 2>&1 | tail -8
+        L1_RPC_URL="$L1_FORK_URL" L2_STATE_MATE_RPC_URL="$fork_url" \
+          yarn start "$sm_config" --inputs "$sm_common_inputs" --inputs "$sm_inputs" --deployed "$fork_deployed" 2>&1 | tail -8
       ) || die "$name state-mate failed"
-      # Linea-only Gelato de-role — separate config; its static siblings (deterministic CustomSender +
-      # the Gelato addr) match the fork, so no per-fork override is needed.
+      # Linea-only Gelato de-role — separate config; its static inputs match the fork.
       if [[ "$name" == "linea" ]]; then
-        substep "$name: running Linea-only state-mate extras (Gelato de-role)"
+        substep "$name: running Linea Gelato de-role state-mate check"
         (
           cd "$STATE_MATE_DIR"
-          L2_STATE_MATE_RPC_URL="$fork_url" yarn start "$ROOT_DIR/config/state/l2-linea-extras.yaml" --only "l2" 2>&1 | tail -8
-        ) || die "$name extras state-mate failed"
+          L2_STATE_MATE_RPC_URL="$fork_url" yarn start "$ROOT_DIR/config/state/l2-linea-gelato.yaml" --only "l2" 2>&1 | tail -8
+        ) || die "$name Gelato state-mate failed"
       fi
     done
     echo "All L2 state-mate checks passed"
@@ -3969,7 +3937,7 @@ _acceptance-test:
     substep "L1: running state-mate checks against fork"
     (
       cd "$STATE_MATE_DIR"
-      L1_RPC_URL="$L1_FORK_URL" yarn start "$ROOT_DIR/config/state/l1.yaml" --only "l1" 2>&1 | tail -12
+      L1_RPC_URL="$L1_FORK_URL" yarn start "$ROOT_DIR/config/state/ethereum.yaml" --only "l1" 2>&1 | tail -12
     ) || die "L1 state-mate failed"
     echo "L1 state-mate checks passed"
 
@@ -4032,13 +4000,13 @@ test-optimism-acceptance:
 test-optimism-upgrade-state-migrate rpc_url='':
     @just _optimism-state-migrate "{{rpc_url}}"
 
-# Regenerate config/state/l2-optimism.deployed.yaml after migration
+# Regenerate config/state/optimism.deployed.yaml after migration
 test-optimism-upgrade-state-update-config rpc_url='':
     @just _optimism-state-update-config "{{rpc_url}}"
 
-# Verify post-migration state-mate checks (PRODUCTION / post-handoff profile). Reads L2_RPC_URL from
+# Verify production state-mate checks. Reads L2_RPC_URL from
 # .env.<network> (or legacy fallbacks: L2_STATE_MATE_RPC_URL / LOCAL_L2_<NET>_RPC_URL / L2_<NET>_RPC_URL).
-# For the pre-handoff CANARY state, run the `-canary` variant below (adds --overrides l2.inputs.test-stage.yaml).
+# These checks intentionally fail while the current on-chain deployment has not reached production state.
 # Usage: just -E .env.<network> test-<network>-upgrade-state-verify
 test-optimism-upgrade-state-verify:
     @just _state-verify optimism ""
@@ -4052,23 +4020,8 @@ test-base-upgrade-state-verify:
 test-linea-upgrade-state-verify:
     @just _state-verify linea ""
 
-# Canary (pre-handoff) state-mate checks — the production wiring + the shared test-stage overlay, which
-# redefines the 4 deploy-test anchors (deployer-owned infra + forwarder/author, 0.0002e18 / 60s).
-# Usage: just -E .env.<network> test-<network>-upgrade-state-verify-canary
-test-optimism-upgrade-state-verify-canary:
-    @just _state-verify optimism "" canary
-
-test-arbitrum-upgrade-state-verify-canary:
-    @just _state-verify arbitrum "" canary
-
-test-base-upgrade-state-verify-canary:
-    @just _state-verify base "" canary
-
-test-linea-upgrade-state-verify-canary:
-    @just _state-verify linea "" canary
-
 # Behavioral canary acceptance on a FORK against the real on-chain deployed addresses. Binds to the
-# canary when config/state/l2-<network>.deployed.yaml carries all three addresses AND the on-chain infra
+# canary when config/state/<network>.deployed.yaml carries all three addresses AND the on-chain infra
 # is deployer-owned (verifyCanaryStage1) — skipping the deploy — else deploys fresh on the fork. Reads
 # the same delay/min-amount/float off-chain, so it's non-destructive + keyless: the CI sibling of the
 # on-chain `simulate-sync` real-broadcast path. The RPC should be a mainnet upstream (the test forks it
@@ -4102,9 +4055,9 @@ _canary-acceptance network rpc_url='':
     esac
 
     # Bind to the on-chain canary IF the generated sibling carries all three addresses; else fresh-deploy.
-    # (l2-<net>.deployed.yaml is generated by deploy-test and is absent in a fresh clone/CI,
+    # (<net>.deployed.yaml is generated by deploy-test and is absent in a fresh clone/CI,
     # which is exactly when the fresh-deploy fallback is wanted.)
-    dep="$ROOT_DIR/config/state/l2-$NET.deployed.yaml"
+    dep="$ROOT_DIR/config/state/$NET.deployed.yaml"
     re='^0x[0-9a-fA-F]{40}$'
     if command -v yq >/dev/null 2>&1 && [[ -f "$dep" ]]; then
       pool="$(yq '.. | select(anchor == "l2OraclePool")'  "$dep" 2>/dev/null | tr -d '"' | head -n1)"
@@ -4211,13 +4164,14 @@ _balances-l2 label address rpc_url weth wsteth:
 # NB: stETH (rebasing) does not exist on L2s; only wstETH is bridged
 
 # Addresses/tokens read from the state-mate config/state/ siblings: deployed addrs from
-# <net>.deployed.yaml (.deployed.l1/.l2 anchors), tokens from <net>.inputs.yaml (.externals anchors).
+# <net>.deployed.yaml, lane-specific tokens from <net>.inputs.yaml, and universal actors from
+# l2.common.inputs.yaml.
 # The Lido Deployer EOA is chain-agnostic (same address on L1 + all four L2s), so its L1 row reads the
-# *l2LidoDeployer anchor off an L2 inputs sibling rather than adding a second copy to l1.inputs.yaml.
+# *l2LidoDeployer anchor from the common L2 inputs rather than adding a second copy to ethereum.inputs.yaml.
 balances-l1:
     #!/usr/bin/env bash
     set -euo pipefail
-    inp="config/state/l1.inputs.yaml"
+    inp="config/state/ethereum.inputs.yaml"
     rpc="${L1_RPC_URL:-${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-}}}"
     [[ -n "$rpc" ]] || { echo "Missing L1 RPC: set L1_RPC_URL or RPC_ETHEREUM_REMOTE" >&2; exit 1; }
     weth="$(yq '.externals[] | select(anchor == "l1Weth")' "$inp")"
@@ -4232,14 +4186,14 @@ balances-l1:
       printf '%s\n' "$out"
       any=1
     }
-    _balances_print LidoDeployer "$(yq '.externals[] | select(anchor == "l2LidoDeployer")' config/state/l2-optimism.inputs.yaml)"
+    _balances_print LidoDeployer "$(just _l2-input-anchor optimism l2LidoDeployer)"
     _balances_print LidoCustomReceiver "$(yq '.externals[] | select(anchor == "l1LidoCustomReceiver")' "$inp")"
 
 # Print LidoDeployer + Automation Owner + SyncTrigger + CustomSender + OraclePool balances for one L2
-# lane. New OraclePool and SyncTrigger come from config/state/l2-<net>.deployed.yaml; LidoDeployer,
-# Automation Owner, CustomSender and the WETH/wstETH token addrs from l2-<net>.inputs.yaml (read once
-# and reused for every sub-call). The Automation Owner anchor is lane-invariant; when a lane's inputs
-# file has not pinned it yet, fall back to config/state/l2-optimism.inputs.yaml, then L2_AUTOMATION_OWNER.
+# lane. New OraclePool and SyncTrigger come from config/state/<net>.deployed.yaml; LidoDeployer,
+# CustomSender and the WETH/wstETH token addrs come from <net>.inputs.yaml; LidoDeployer and
+# Automation Owner come from l2.common.inputs.yaml. The values are read once and reused for every
+# sub-call; L2_AUTOMATION_OWNER remains an operational fallback if the common owner cannot be read.
 # The SyncTrigger row's ETH is the operational number: the trigger fronts CCIP fees from its own balance
 # (see docs/fees.md), so this is the remaining fee float. Its WETH/wstETH rows should read 0 — the trigger
 # never custodies tokens, so a non-zero one is stranded dust, not float.
@@ -4247,14 +4201,11 @@ balances-l1:
 _balances-net net label rpc_url:
     #!/usr/bin/env bash
     set -euo pipefail
-    dep="config/state/l2-{{net}}.deployed.yaml"
-    inp="config/state/l2-{{net}}.inputs.yaml"
+    dep="config/state/{{net}}.deployed.yaml"
+    inp="config/state/{{net}}.inputs.yaml"
     weth="$(yq '.externals[] | select(anchor == "l2Weth")' "$inp")"
     wsteth="$(yq '.externals[] | select(anchor == "l2Wsteth")' "$inp")"
-    automation_owner="$(yq '.externals[] | select(anchor == "l2AutomationOwner")' "$inp" 2>/dev/null || true)"
-    if [[ -z "$automation_owner" || "$automation_owner" == "null" ]]; then
-      automation_owner="$(yq '.externals[] | select(anchor == "l2AutomationOwner")' config/state/l2-optimism.inputs.yaml 2>/dev/null || true)"
-    fi
+    automation_owner="$(just _l2-input-anchor "{{net}}" l2AutomationOwner 2>/dev/null || true)"
     if [[ -z "$automation_owner" || "$automation_owner" == "null" ]]; then
       automation_owner="${L2_AUTOMATION_OWNER:-}"
     fi
@@ -4268,7 +4219,7 @@ _balances-net net label rpc_url:
       printf '%s\n' "$out"
       any=1
     }
-    _balances_print LidoDeployer "$(yq '.externals[] | select(anchor == "l2LidoDeployer")' "$inp")"
+    _balances_print LidoDeployer "$(just _l2-input-anchor "{{net}}" l2LidoDeployer)"
     if [[ -n "$automation_owner" ]]; then
       _balances_print "Automation Owner" "$automation_owner"
     fi
@@ -4290,16 +4241,205 @@ balances-base:
 balances-linea:
     @just _balances-net linea Linea "${L2_LINEA_RPC_URL:-${RPC_LINEA_REMOTE:-$RPC_LINEA}}"
 
+# Print the complete balance snapshot as an ASCII matrix: networks are columns, accounts are rows, and
+# each cell lists every token at or above the universal 0.00001 threshold on a separate line. Amounts
+# are rounded to the threshold precision (five decimal places). A cell with no qualifying balance (or
+# no such account on that network) is "-", while "TOKEN ?" preserves an RPC/read failure. The threshold
+# can be overridden for ad-hoc checks via BALANCES_MIN_WEI.
+#
+# The SyncTrigger row's ETH is the operational number: the trigger fronts CCIP fees from its own balance
+# (see docs/fees.md), so this is the remaining fee float. Its WETH/wstETH cells should read "-" — the
+# trigger never custodies tokens, so a non-zero one is stranded dust, not float.
+#
+# The five networks are read concurrently (independent endpoints), and each one's block height is in the
+# footer so a snapshot can be pinned and reproduced.
 balances:
-    @just balances-l1
-    @echo ""
-    @just balances-optimism
-    @echo ""
-    @just balances-arbitrum
-    @echo ""
-    @just balances-base
-    @echo ""
-    @just balances-linea
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export LC_ALL=C   # numeric report: never let a locale render decimal commas
+
+    MIN_WEI="${BALANCES_MIN_WEI:-10000000000000}"
+    # One source-of-truth column list; display names and RPC env-var names are derived from it (no
+    # parallel arrays to keep in lockstep), matching quote-ccip-fees' convention. Ethereum carries only
+    # the two L1-relevant accounts; every other row resolves per lane and is "-" in that column.
+    NETS=( ethereum optimism arbitrum base linea )
+    ENTITIES=( LidoDeployer LidoCustomReceiver "Automation Owner" SyncTrigger CustomSender OraclePool )
+    ASSETS=( ETH WETH wstETH )
+    declare -a NAMES
+    for net in "${NETS[@]}"; do
+      u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
+      NAMES+=("${u:0:1}${net:1}")
+    done
+
+    # Display precision follows the threshold (1e13 wei -> 5 places), derived once for the whole run.
+    PLACES=18
+    t="$MIN_WEI"
+    while (( t > 0 && t % 10 == 0 && PLACES > 0 )); do t=$(( t / 10 )); PLACES=$(( PLACES - 1 )); done
+
+    # RPC precedence exactly as documented for balances-<net> above: L2_<NET>_RPC_URL (fork-test
+    # convention) > RPC_<NET>_REMOTE (upstream) > RPC_<NET> (local fork proxy — often down, hence last).
+    # Ethereum spells its override L1_RPC_URL; the rest of the chain is the same shape.
+    rpc_for() {
+      local net="$1" u override v
+      u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
+      if [[ "$net" == ethereum ]]; then override="L1_RPC_URL"; else override="L2_${u}_RPC_URL"; fi
+      for v in "$override" "RPC_${u}_REMOTE" "RPC_${u}"; do
+        if [[ -n "${!v:-}" ]]; then printf '%s' "${!v}"; return; fi
+      done
+    }
+
+    # Wei held by one address in one asset, or "" when unreadable: no RPC, no token address for this
+    # network, or a failed call. cast annotates some outputs (" [1e18]"), so keep the leading integer.
+    read_wei() {
+      local addr="$1" rpc="$2" asset="$3" token="$4" out=""
+      if [[ -n "$rpc" ]]; then
+        if [[ "$asset" == ETH ]]; then
+          out="$(cast balance "$addr" --rpc-url "$rpc" 2>/dev/null || true)"
+        elif [[ -n "$token" ]]; then
+          out="$(cast call "$token" 'balanceOf(address)(uint256)' "$addr" --rpc-url "$rpc" 2>/dev/null || true)"
+        fi
+      fi
+      printf '%s' "${out%% *}"
+    }
+
+    # Above-threshold amount rounded to PLACES; "" when below (the token is then omitted from its cell);
+    # "?" when the read failed. Compare by digit count, then lexically: bash arithmetic is signed 64-bit
+    # and would wrap a balance >= 2^63 wei (~9.22 ETH) to negative, hiding a real holding as dust.
+    format_balance() {
+      local wei="$1"
+      [[ "$wei" =~ ^[0-9]+$ ]] || { printf '?'; return; }
+      if (( ${#wei} < ${#MIN_WEI} )) || { (( ${#wei} == ${#MIN_WEI} )) && [[ "$wei" < "$MIN_WEI" ]]; }; then
+        return 0
+      fi
+      printf '%.*f' "$PLACES" "$(cast from-wei "$wei")"
+    }
+
+    # One "net<TAB>entity<TAB>asset<TAB>value" row per asset. An unresolved address is "not applicable"
+    # rather than a read failure: leave the values empty so the cell renders "-", and skip the RPC
+    # round-trips entirely.
+    record_address() {
+      local net="$1" entity="$2" addr="$3" rpc="$4" weth="$5" wsteth="$6"
+      local asset token value
+      [[ "$addr" != null ]] || addr=""
+      for asset in "${ASSETS[@]}"; do
+        [[ "$asset" == wstETH ]] && token="$wsteth" || token="$weth"
+        value=""
+        [[ -z "$addr" ]] || value="$(format_balance "$(read_wei "$addr" "$rpc" "$asset" "$token")")"
+        printf '%s\t%s\t%s\t%s\n' "$net" "$entity" "$asset" "$value"
+      done
+    }
+
+    # Addresses/tokens read from the state-mate config/state/ siblings: deployed addrs from
+    # <net>.deployed.yaml, lane tokens/externals from <net>.inputs.yaml, and universal actors through
+    # the effective-input helper. Anchors from each physical file are collected in a single yq pass
+    # where practical. The anchored list items need recursive descent (`.[]` misses them), and the
+    # `[..][0]` form pins output order to query order so the positional read is safe; a missing anchor
+    # yields "null", which record_address treats as "not applicable".
+    collect_ethereum() {
+      local rpc="$1" weth wsteth receiver deployer
+      { IFS= read -r weth; IFS= read -r wsteth; IFS= read -r receiver; } < <(yq '
+        [.. | select(anchor=="l1Weth")][0],
+        [.. | select(anchor=="l1Wsteth")][0],
+        [.. | select(anchor=="l1LidoCustomReceiver")][0]' config/state/ethereum.inputs.yaml)
+      # The Lido Deployer EOA is chain-agnostic (same address on L1 + all four L2s), so its L1 row reads
+      # *l2LidoDeployer from the common L2 inputs rather than duplicating it in ethereum.inputs.yaml.
+      deployer="$(just _l2-input-anchor optimism l2LidoDeployer)"
+      record_address ethereum LidoDeployer       "$deployer" "$rpc" "$weth" "$wsteth"
+      record_address ethereum LidoCustomReceiver "$receiver" "$rpc" "$weth" "$wsteth"
+    }
+
+    collect_lane() {
+      local net="$1" rpc="$2" weth wsteth deployer sender owner trigger pool
+      { IFS= read -r weth; IFS= read -r wsteth; IFS= read -r sender
+      } < <(yq '
+        [.. | select(anchor=="l2Weth")][0],
+        [.. | select(anchor=="l2Wsteth")][0],
+        [.. | select(anchor=="l2CustomSender")][0]' "config/state/${net}.inputs.yaml")
+      deployer="$(just _l2-input-anchor "$net" l2LidoDeployer)"
+      owner="$(just _l2-input-anchor "$net" l2AutomationOwner)"
+      { IFS= read -r trigger; IFS= read -r pool; } < <(yq '
+        [.. | select(anchor=="l2SyncTrigger")][0],
+        [.. | select(anchor=="l2OraclePool")][0]' "config/state/${net}.deployed.yaml")
+      [[ -n "$owner" && "$owner" != null ]] || owner="${L2_AUTOMATION_OWNER:-}"
+      record_address "$net" LidoDeployer       "$deployer" "$rpc" "$weth" "$wsteth"
+      record_address "$net" "Automation Owner" "$owner"    "$rpc" "$weth" "$wsteth"
+      record_address "$net" SyncTrigger        "$trigger"  "$rpc" "$weth" "$wsteth"
+      record_address "$net" CustomSender       "$sender"   "$rpc" "$weth" "$wsteth"
+      record_address "$net" OraclePool         "$pool"     "$rpc" "$weth" "$wsteth"
+    }
+
+    # ── Collect: one background job per network. The endpoints are independent and each network is a
+    # ── chain of ~16 serial reads, so wall clock is the slowest network rather than the sum of all five.
+    outdir="$(mktemp -d)"
+    trap 'rm -rf "$outdir"' EXIT
+    for net in "${NETS[@]}"; do
+      rpc="$(rpc_for "$net")"
+      {
+        cast block-number --rpc-url "$rpc" >"$outdir/$net.block" 2>/dev/null || true
+        if [[ "$net" == ethereum ]]; then collect_ethereum "$rpc"; else collect_lane "$net" "$rpc"; fi
+      } >"$outdir/$net.rows" &
+    done
+    wait
+    for net in "${NETS[@]}"; do
+      [[ -s "$outdir/$net.rows" ]] || { echo "balances: could not collect $net (see errors above)" >&2; exit 1; }
+    done
+
+    # ── Render: one awk pass keys the collected rows by (network, account, asset), so the input order
+    # ── does not matter, then pads the matrix. A cell is stacked over as many physical lines as it has
+    # ── qualifying assets, and the column rule is built once from the measured widths.
+    cat "$outdir"/*.rows | awk -F '\t' \
+      -v netlist="$(IFS=$'\t'; printf '%s' "${NETS[*]}")" \
+      -v namelist="$(IFS=$'\t'; printf '%s' "${NAMES[*]}")" \
+      -v entlist="$(IFS=$'\t'; printf '%s' "${ENTITIES[*]}")" \
+      -v astlist="$(IFS=$'\t'; printf '%s' "${ASSETS[*]}")" '
+      function put(r, c, k, s) {          # k-th physical line of cell (r, c)
+        cell[r, c, k] = s
+        if (k > lines[r]) lines[r] = k
+        if (length(s) > width[c]) width[c] = length(s)
+      }
+      function emit(r,   k, c) {
+        for (k = 1; k <= lines[r]; k++) {
+          printf "|"
+          for (c = 1; c <= ncol; c++) printf " %-*s |", width[c], cell[r, c, k]
+          printf "\n"
+        }
+      }
+      BEGIN {
+        nnet = split(netlist, net, FS); split(namelist, name, FS)
+        nent = split(entlist, ent, FS); nast = split(astlist, ast, FS)
+        ncol = nnet + 1
+      }
+      { value[$1 FS $2 FS $3] = $4 }
+      END {
+        put(1, 1, 1, "Account")
+        for (c = 1; c <= nnet; c++) put(1, c + 1, 1, name[c])
+        for (r = 1; r <= nent; r++) {
+          put(r + 1, 1, 1, ent[r])
+          for (c = 1; c <= nnet; c++) {
+            k = 0
+            for (a = 1; a <= nast; a++) {
+              v = value[net[c] FS ent[r] FS ast[a]]
+              if (v != "") put(r + 1, c + 1, ++k, ast[a] " " v)
+            }
+            if (k == 0) put(r + 1, c + 1, 1, "-")
+          }
+        }
+        rule = "+"
+        for (c = 1; c <= ncol; c++) rule = rule sprintf("%*s+", width[c] + 2, "")
+        gsub(/ /, "-", rule)
+        print rule
+        for (r = 1; r <= nent + 1; r++) { emit(r); print rule }
+      }
+    '
+    echo
+    blocks=""
+    for i in "${!NETS[@]}"; do
+      block="$(cat "$outdir/${NETS[$i]}.block" 2>/dev/null || true)"
+      blocks="${blocks}${blocks:+, }${NAMES[$i]} ${block:-?}"
+    done
+    echo "Blocks: $blocks"
+    echo "Threshold: all balances >= $(format_balance "$MIN_WEI")."
+    echo 'Legend: - = no balance at/above threshold or not applicable; TOKEN ? = balance read failed.'
 
 # Read-only ownership + role audit of the whole migration surface, all four lanes. Answers ONE question:
 # "who holds what, right now?" — the input every ownership-change decision needs (who must sign the next
@@ -4308,8 +4448,8 @@ balances:
 # each is supposed to equal, so a half-migrated lane reads out fully instead of aborting at check #1.
 #
 # No keys and no writes — every value is a `cast call` / `cast balance` / `cast nonce` against addresses
-# pinned in config/state/l2-<net>.{inputs,deployed}.yaml (plus the Linea-only Gelato automation from
-# l2-linea-extras.inputs.yaml). Resolved anchors are echoed per lane so the report carries its own oracle.
+# pinned in config/state/<net>.{inputs,deployed}.yaml (plus the Linea-only Gelato automation from
+# l2-linea-gelato.yaml). Resolved anchors are echoed per lane so the report carries its own oracle.
 #
 # `?` in a value column means the read failed (RPC error) — never silently a zero/false.
 #
@@ -4327,10 +4467,10 @@ audit-ownership:
 _audit-ownership-net net label rpc_url:
     #!/usr/bin/env bash
     set -uo pipefail
-    inp="config/state/l2-{{net}}.inputs.yaml"
-    dep="config/state/l2-{{net}}.deployed.yaml"
+    inp="config/state/{{net}}.inputs.yaml"
+    dep="config/state/{{net}}.deployed.yaml"
     rpc="{{rpc_url}}"
-    ext () { yq ".externals[] | select(anchor == \"$1\")" "$inp" | tr -d '"'; }
+    ext () { just _l2-input-anchor "{{net}}" "$1"; }
     dpl () { yq ".deployed.l2[] | select(anchor == \"$1\")" "$dep" | tr -d '"'; }
 
     # NB: no shell variable here may be named INITIAL_OWNER / L1_RECEIVER / LIDO_DAO_AGENT /
@@ -4340,12 +4480,14 @@ _audit-ownership-net net label rpc_url:
     INIT_OWNER="$(ext initialOwner)";    GOV_EXEC="$(ext l2GovernanceExecutor)"
     LOL="$(ext l2LiquidityOwner)";         DEPLOYER="$(ext l2LidoDeployer)"
     FORWARDER="$(ext l2CreForwarder)";     OLD_AUTOMATION="$(ext l2OldSyncAutomation)"
-    OLD_POOL="$(ext l2OldOraclePool)"
+    OLD_POOL="$(ext RETIRED_l2OraclePool)"
     POOL="$(dpl l2OraclePool)"; TRIGGER="$(dpl l2SyncTrigger)"; RECEIVER="$(dpl l2CreReceiver)"
-    # Linea's predecessor ran a second (Gelato) automation; the anchor lives in the extras inputs file.
+    RETIRED_TRIGGER="$(dpl RETIRED_l2SyncTrigger)"; RETIRED_RECEIVER="$(dpl RETIRED_l2CreReceiver)"
+    # Linea's predecessor ran a second (Gelato) automation; address lives under misc: in the
+    # standalone gelato wiring file (no .inputs sibling — see l2-linea-gelato.yaml).
     OLD_GELATO=""
     if [[ "{{net}}" == "linea" ]]; then
-      OLD_GELATO="$(yq '.externals[] | select(anchor == "l2OldGelatoSyncAutomation")' config/state/l2-linea-extras.inputs.yaml | tr -d '"')"
+      OLD_GELATO="$(yq '.misc[] | select(anchor == "RETIRED_l2GelatoSyncAutomation")' config/state/l2-linea-gelato.yaml | tr -d '"')"
     fi
 
     SYNC_ROLE="$(cast keccak 'SYNC_ROLE')"
@@ -4367,6 +4509,8 @@ _audit-ownership-net net label rpc_url:
         "$(lc "$FORWARDER")")      echo "CRE forwarder" ;;
         "$(lc "$TRIGGER")")        echo "SyncTrigger" ;;
         "$(lc "$RECEIVER")")       echo "CREReceiver" ;;
+        "$(lc "$RETIRED_TRIGGER")") echo "RETIRED SyncTrigger" ;;
+        "$(lc "$RETIRED_RECEIVER")") echo "RETIRED CREReceiver" ;;
         "$(lc "$POOL")")           echo "new OraclePool" ;;
         "$(lc "$OLD_POOL")")       echo "OLD OraclePool" ;;
         "?"|"")                    echo "read failed" ;;
@@ -4376,16 +4520,19 @@ _audit-ownership-net net label rpc_url:
     row () { printf '  %-46s %-42s %s\n' "$1" "$2" "$3"; }
 
     echo "════ {{label}} ════ block $(cast block-number --rpc-url "$rpc" 2>/dev/null || echo '?')"
-    echo "  anchors (config/state/l2-{{net}}.{inputs,deployed}.yaml):"
+    echo "  anchors (config/state/{{net}}.{inputs,deployed}.yaml):"
     printf '    %-22s %s\n' \
       CustomSender "$SENDER" ProxyAdmin "$PROXY_ADMIN" InitialOwner "$INIT_OWNER" \
       GovExecutor "$GOV_EXEC" LOL "$LOL" Deployer "$DEPLOYER" CreForwarder "$FORWARDER" \
       OraclePool "$POOL" SyncTrigger "$TRIGGER" CREReceiver "$RECEIVER" \
+      RetiredSyncTrigger "$RETIRED_TRIGGER" RetiredCREReceiver "$RETIRED_RECEIVER" \
       OldAutomation "$OLD_AUTOMATION" OldOraclePool "$OLD_POOL"
     [[ -n "$OLD_GELATO" ]] && printf '    %-22s %s\n' OldGelatoAutomation "$OLD_GELATO"
     echo
     echo "  ── owner() ──"
-    for pair in "OraclePool:$POOL" "SyncTrigger:$TRIGGER" "CREReceiver:$RECEIVER" "L2ProxyAdmin:$PROXY_ADMIN"; do
+    for pair in "OraclePool:$POOL" "SyncTrigger:$TRIGGER" "CREReceiver:$RECEIVER" \
+      "RETIRED SyncTrigger:$RETIRED_TRIGGER" "RETIRED CREReceiver:$RETIRED_RECEIVER" \
+      "L2ProxyAdmin:$PROXY_ADMIN"; do
       v="$(rd "${pair#*:}" 'owner()(address)')"; row "${pair%%:*}.owner()" "$v" "= $(who "$v")"
     done
     echo "  ── automation wiring ──"
@@ -4394,6 +4541,10 @@ _audit-ownership-net net label rpc_url:
     v="$(rd "$RECEIVER" 'isCallAllowed(address,bytes4)(bool)' "$TRIGGER" "$TRIGGER_SYNC_SEL")"
     row "CREReceiver.isCallAllowed(trigger,triggerSync)" "$v" ""
     v="$(rd "$TRIGGER" 'getForwarder()(address)')";       row "SyncTrigger.getForwarder()" "$v" "= $(who "$v")"
+    v="$(rd "$RETIRED_RECEIVER" 'isCallAllowed(address,bytes4)(bool)' "$RETIRED_TRIGGER" "$TRIGGER_SYNC_SEL")"
+    row "RETIRED CREReceiver.isCallAllowed(retired,triggerSync)" "$v" ""
+    v="$(rd "$RETIRED_TRIGGER" 'getForwarder()(address)')"
+    row "RETIRED SyncTrigger.getForwarder()" "$v" "= $(who "$v")"
     v="$(rd "$TRIGGER" 'SENDER()(address)')";             row "SyncTrigger.SENDER()" "$v" "$([[ "$(lc "$v")" == "$(lc "$SENDER")" ]] && echo '= CustomSender' || echo 'MISMATCH — investigate')"
     row "SyncTrigger ETH float" "$(cast balance "$TRIGGER" --rpc-url "$rpc" 2>/dev/null || echo '?') wei" "getMaxFees() = $(rd "$TRIGGER" 'getMaxFees()(uint256)')"
     echo "  ── CustomSender pointer + roles ──"
@@ -4408,7 +4559,8 @@ _audit-ownership-net net label rpc_url:
       *)             note="DEDICATED SYNC_ROLE ADMIN — investigate" ;;
     esac
     row "getRoleAdmin(SYNC_ROLE)" "$v" "$note"
-    for pair in "SyncTrigger:$TRIGGER" "old automation:$OLD_AUTOMATION" ${OLD_GELATO:+"old gelato:$OLD_GELATO"}; do
+    for pair in "SyncTrigger:$TRIGGER" "RETIRED SyncTrigger:$RETIRED_TRIGGER" \
+      "old automation:$OLD_AUTOMATION" ${OLD_GELATO:+"old gelato:$OLD_GELATO"}; do
       row "hasRole(SYNC_ROLE, ${pair%%:*})" "$(rd "$SENDER" 'hasRole(bytes32,address)(bool)' "$SYNC_ROLE" "${pair#*:}")" "${pair#*:}"
     done
     for pair in "Initial Owner:$INIT_OWNER" "gov executor:$GOV_EXEC" "Lido Deployer:$DEPLOYER" "LOL:$LOL"; do
@@ -4491,7 +4643,7 @@ verify-compiler-provenance:
           base)     rpc="${L2_BASE_RPC_URL:-${RPC_BASE_REMOTE:-${RPC_BASE:-}}}" ;;
           linea)    rpc="${L2_LINEA_RPC_URL:-${RPC_LINEA_REMOTE:-${RPC_LINEA:-}}}" ;;
         esac
-        addr="$(yq ".deployed.l2[] | select(anchor == \"$anchor\")" "config/state/l2-$net.deployed.yaml" | tr -d '"')"
+        addr="$(yq ".deployed.l2[] | select(anchor == \"$anchor\")" "config/state/$net.deployed.yaml" | tr -d '"')"
         if [[ -z "$rpc" ]]; then printf '    %-9s %s  SKIP (no RPC)\n' "$net" "$addr"; continue; fi
         got="$(trailer "$(cast code "$addr" --rpc-url "$rpc" 2>/dev/null || echo)")"
         if [[ -z "$got" ]]; then printf '    %-9s %s  FAIL (no code / RPC error)\n' "$net" "$addr"; fail=1
@@ -4662,7 +4814,11 @@ env-doctor:
     BAD()  { echo "  ✗ $*"; rc=1; }
     INFO() { echo "  · $*"; }
     lc()   { printf '%s' "${1:-}" | tr 'A-Z' 'a-z'; }
-    anchor() { yq "[.. | select(anchor==\"$2\")][0]" "$1" 2>/dev/null | tr -d '"' ; }
+    anchor() {
+      local net
+      net="$(basename "$1" .inputs.yaml)"
+      just _l2-input-anchor "$net" "$2" 2>/dev/null
+    }
 
     echo "===================================================================="
     echo "ENV DOCTOR — canonical variables and what they resolve to"
@@ -4749,17 +4905,21 @@ env-doctor:
     [[ -z "${L2_NETWORK:-}" ]] || LANES=("$L2_NETWORK")
     for net in "${LANES[@]}"; do
       echo "──────── lane: $net ────────"
-      IN="$ROOT_DIR/config/state/l2-$net.inputs.yaml"
+      IN="$ROOT_DIR/config/state/$net.inputs.yaml"
+      CRE_DEP="$ROOT_DIR/config/state/$net.deployed.yaml"
       if [[ "${L2_NETWORK:-}" == "$net" ]]; then
-        L2="${L2_RPC_URL:-}"; RECV="${L2_CRE_RECEIVER:-}"; TRIG="${L2_SYNC_TRIGGER:-}"; WFID="${CRE_WORKFLOW_ID:-}"
+        L2="${L2_RPC_URL:-}"; RECV="${L2_CRE_RECEIVER:-}"; TRIG="${L2_SYNC_TRIGGER:-}"
       else
         # No dotenv overlay for this lane in-process: read the file, expanding ${RPC_*} from the shell.
         L2="$(grep -m1 '^L2_RPC_URL=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
         L2="$(eval printf '%s' "\"${L2}\"" 2>/dev/null || true)"
         RECV="$(grep -m1 '^L2_CRE_RECEIVER=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
         TRIG="$(grep -m1 '^L2_SYNC_TRIGGER=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
-        WFID="$(grep -m1 '^CRE_WORKFLOW_ID=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
         INFO "(read from .env.$net — run with NETWORK=$net for the fully loaded overlay)"
+      fi
+      WFID=""
+      if [[ -f "$CRE_DEP" ]]; then
+        WFID="$(yq '.. | select(anchor == "creWorkflowId")' "$CRE_DEP" 2>/dev/null | tr -d '"' | head -n1)"
       fi
       INFO "L2 RPC   $(cre_env_host "$L2")"
       INFO "trigger  ${TRIG:-<unset>}"
@@ -4792,9 +4952,11 @@ env-doctor:
         fi
       fi
       if [[ -n "$WFID" ]]; then
-        [[ "$WFID" =~ ^0x[0-9a-fA-F]{64}$ ]] && OK "CRE_WORKFLOW_ID well-formed" || BAD "CRE_WORKFLOW_ID malformed: $WFID"
+        [[ "$WFID" =~ ^0x[0-9a-fA-F]{64}$ ]] \
+          && OK "creWorkflowId deployed-state anchor well-formed ($WFID)" \
+          || BAD "creWorkflowId malformed in $CRE_DEP: $WFID"
       else
-        INFO "CRE_WORKFLOW_ID: <unset> (no workflow registered for this lane yet)"
+        INFO "creWorkflowId: <unrecorded> (missing anchor in $CRE_DEP; record after workflow deploy/upsert)"
       fi
       echo
     done
@@ -4853,16 +5015,16 @@ cre *ARGS:
 rpc-start-l1:
     anvil -p 8545 -f "$L1_RPC_URL"
 
-rpc-start-l2-optimism:
+rpc-start-optimism:
     anvil -p 8551 -f "$L2_OPTIMISM_RPC_URL"
 
-rpc-start-l2-arbitrum:
+rpc-start-arbitrum:
     anvil -p 8552 -f "$L2_ARBITRUM_RPC_URL"
 
-rpc-start-l2-base:
+rpc-start-base:
     anvil -p 8553 -f "$L2_BASE_RPC_URL"
 
-rpc-start-l2-linea:
+rpc-start-linea:
     anvil -p 8554 -f "$L2_LINEA_RPC_URL"
 
 # ──────────────────────────────────────────────────────────────────

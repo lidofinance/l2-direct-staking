@@ -51,7 +51,7 @@ Each recipe is one broadcast by one actor: `just -E .env.<network> <recipe>`.
 ### Stage 1 — canary testing (Deployer)
 - `seed-test-weth` — deposit ETH→WETH and transfer ≥ test `minAmount` to the pool.
 - `simulate-sync` ⇒ `runSimulateSync()` — craft Keystone `metadata` (workflowOwner = deployer) + `report` (`abi.encode(syncTrigger, triggerSync.selector)`) and call `CREReceiver.onReport`. Runs `onReport → triggerSync → CustomSender.sync` (fee fronted from the SyncTrigger float — no value on the call, exactly like production). Validate `CallExecuted` + `Sync` + wstETH returns to the pool.
-- **Non-destructive fork rehearsal (keyless, CI):** `just -E .env.<net> test-<net>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an **in-process fork** of the live chain (`test_canarySyncOnDeployedAddresses`). It binds to the real on-chain canary addresses from `config/state/l2-<net>.deployed.yaml` — auto-detected as deployer-owned via `verifyCanaryStage1` — and **skips the deploy**; with no `.deployed.yaml` it falls back to a fresh on-fork deploy (so the same recipe runs pre- and post-`deploy-test`). Costs no gas, needs no key, mutates no real state: the CI-runnable sibling of `simulate-sync` (which broadcasts for real). Point its RPC at a mainnet upstream; it also forks L1, so `L1_RPC_URL` is required. Refuses to run (loud `require`) if the supplied addresses are deployed but past the canary stage (handed off / sealed).
+- **Non-destructive fork rehearsal (keyless, CI):** `just -E .env.<net> test-<net>-canary-acceptance` runs the same `onReport → triggerSync → CustomSender.sync` value-flow on an **in-process fork** of the live chain (`test_canarySyncOnDeployedAddresses`). It binds to the real on-chain canary addresses from `config/state/<net>.deployed.yaml` — auto-detected as deployer-owned via `verifyCanaryStage1` — and **skips the deploy**; with no `.deployed.yaml` it falls back to a fresh on-fork deploy (so the same recipe runs pre- and post-`deploy-test`). Costs no gas, needs no key, mutates no real state: the CI-runnable sibling of `simulate-sync` (which broadcasts for real). Point its RPC at a mainnet upstream; it also forks L1, so `L1_RPC_URL` is required. Refuses to run (loud `require`) if the supplied addresses are deployed but past the canary stage (handed off / sealed).
 
 ### 1 → 0 — roll back (Aphyla)
 - `rollback` ⇒ `runRollback()` — `setOraclePool(oldPool)` + `revokeRole(SYNC_ROLE, syncTrigger)`. The old automation was never revoked, so the predecessor system is fully restored.
@@ -73,18 +73,19 @@ Each recipe is one broadcast by one actor: `just -E .env.<network> <recipe>`.
 - **Tests:** pool + `CREReceiver` (forwarder/author/allow-list/nullary guards) + `SyncTrigger` (predicates/delay/float/`canSync`) + `CustomSender.sync` + CCIP forward leg + L1 staking + wstETH bridge-back.
 - **Skips (accepted):** the **real** Keystone forwarder's ERC-165 gating and the DON delivering a report — covered by `just verify-cre-forwarder` + the `supportsInterface` tests, and by close monitoring of the first production sync.
 
-## state-mate: production default + `--overrides` canary overlay
+## state-mate: production-only validation
 
-`config/state/l2.yaml` ships the **production profile**: the 7 checks that `handoff` restores reference the production anchors (`*l2LiquidityOwner`, `*l2CreForwarder`, `*syncDelay`, `*syncMinAmount`), all defined in `config/state/l2-<net>.inputs.yaml`. The final (post-handoff, 3→4) run verifies these **directly — no overlay, no edits**.
-
-For the **pre-handoff canary** state, apply the shared overlay `config/state/l2.inputs.test-stage.yaml` via state-mate's `--overrides` (or use the `test-<net>-upgrade-state-verify-canary` recipes). It redefines those four anchors to the deployer/test values the canary sets: `l2LiquidityOwner` + `l2CreForwarder` → the deployer (it owns the infra and stands in for the CRE forwarder + author), `syncMinAmount` → `0.0002e18`, `syncDelay` → `60`. One file serves all four lanes (the canary values are lane-invariant). state-mate enforces, per lane, that every overlay label already exists in the base, keeps its section, and changes value; `just verify-externals-coverage` mirrors all three pre-commit (no RPC).
+`config/state/l2.yaml` validates only the **production profile**. The checks that `handoff` restores
+reference `*l2LiquidityOwner`, `*l2CreForwarder`, `*syncDelay`, and `*syncMinAmount`, composed from
+`config/state/l2.common.inputs.yaml` plus `config/state/<net>.inputs.yaml`.
 
 The `customSender` ACL + `proxyAdmin.owner` flip at `finalize` (not `handoff`), so they stay production-pinned here and pass only post-seal — at Stage 1 the Solidity `verify-test` (`runVerifyTest`) covers them.
 
-- **Validate the canary at Stage 1:** `just -E .env.<net> test-<net>-upgrade-state-verify-canary` (adds `--overrides config/state/l2.inputs.test-stage.yaml`). For a **mainnet** canary, set the overlay's two deployer addresses (`l2LiquidityOwner` / `l2CreForwarder`) to the real deployer (`L2_TEST_DEPLOYER` from `deploy-test`) **locally and uncommitted** first.
-- **After `handoff`:** drop `--overrides` (run the plain `test-<net>-upgrade-state-verify`) for the 3→4 production run. The deployer ≠ LOL, so a stale overlay fails loudly — it cannot false-pass.
+- **Before handoff/finalization:** run `just -E .env.<net> test-<net>-upgrade-state-verify`; failures
+  are expected because the live setup has not yet reached production. Review them as the migration delta.
+- **After handoff/finalization:** the same command must pass.
 
-| `l2.yaml` check | production anchor (base) | canary value (overlay) |
+| `l2.yaml` check | production expectation | current canary shape |
 |---|---|---|
 | `oraclePool.owner` | `*l2LiquidityOwner` | deployer |
 | `syncTrigger.owner` | `*l2LiquidityOwner` | deployer |
