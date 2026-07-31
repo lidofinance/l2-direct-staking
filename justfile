@@ -1883,6 +1883,19 @@ migrate-l1:
     forge script script/l1/L1UpgradeScript.s.sol:L1UpgradeScript \
         --rpc-url "$L1_RPC_URL" --broadcast
 
+# Fork dress rehearsal of the irreversible seal only: impersonated Initial Owner runs
+# `runFinalizeUnlocked` on forks of all four live L2s, then `L1UpgradeScript.runUnlocked` on a
+# fork of Ethereum, then state-mate asserts the post-seal end state (`l2.yaml --only l2` per
+# lane + Linea Gelato + `ethereum.yaml`). Starts from *current* live wiring (no redeploy) —
+# unlike `test-acceptance`, which redeploys a fresh canary on the forks.
+#
+# Needs live mainnet RPCs and no Initial Owner key (anvil impersonation only). Env resolution
+# order and tunables: see the header of script/shared/rehearse-seal-forks.sh.
+#
+# Usage: just rehearse-seal
+rehearse-seal:
+    bash script/shared/rehearse-seal-forks.sh
+
 # Run the Optimism pool upgrade fork test
 test-optimism-upgrade:
     forge test --match-contract OptimismPoolUpgradeTest --rpc-url "$LOCAL_L2_OPTIMISM_RPC_URL" -vvv
@@ -3353,7 +3366,7 @@ _optimism-state-update-config rpc_url='':
     echo "Regenerated state-mate .deployed sibling: ${STATE_MATE_DEPLOYED} (rpc: ${RPC_URL})"
 
 [private]
-_state-verify network rpc_url='':
+_state-verify network rpc_url='' only='':
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -3363,6 +3376,12 @@ _state-verify network rpc_url='':
     cre_env_load_secrets
     L1_STATE_MATE_RPC_URL="$(resolve_l1_rpc)"
     RPC_URL="{{rpc_url}}"
+    # Optional `--only <section>` narrowing for the wiring run. Empty (the default) checks both
+    # sections; `l2` skips the shared L1 CRE-registry block, for callers that know the step under test
+    # cannot have touched it (e.g. `rehearse-seal`, where the seal leaves the WorkflowRegistry alone
+    # and an unrelated registry mismatch would mask the verdict).
+    ONLY_ARGS=()
+    [[ -z "{{only}}" ]] || ONLY_ARGS=(--only "{{only}}")
 
     # Map network name to default RPC env var.
     # Priority: positional [rpc_url] > L2_RPC_URL (from .env.<net>) > legacy fallbacks.
@@ -3437,14 +3456,15 @@ _state-verify network rpc_url='':
     echo "Running combined L1 + L2 state-mate checks for $NETWORK"
     # Echo the exact invocation (cwd + argv) so an operator can replay/audit the run by hand.
     echo "+ cd $STATE_MATE_DIR"
-    echo "+ L1_RPC_URL=<ethereum-rpc> L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $STATE_MATE_CONFIG ${STATE_MATE_SIBLING_ARGS[*]+${STATE_MATE_SIBLING_ARGS[*]}}"
+    echo "+ L1_RPC_URL=<ethereum-rpc> L2_STATE_MATE_RPC_URL=$RPC_URL ${YARN_CMD[*]} start $STATE_MATE_CONFIG ${STATE_MATE_SIBLING_ARGS[*]+${STATE_MATE_SIBLING_ARGS[*]}} ${ONLY_ARGS[*]+${ONLY_ARGS[*]}}"
 
     set +e
     (
       cd "$STATE_MATE_DIR"
       env -u NO_COLOR L1_RPC_URL="$L1_STATE_MATE_RPC_URL" L2_STATE_MATE_RPC_URL="$RPC_URL" \
         FORCE_COLOR=3 CLICOLOR_FORCE=1 "${YARN_CMD[@]}" start "$STATE_MATE_CONFIG" \
-        "${STATE_MATE_SIBLING_ARGS[@]+"${STATE_MATE_SIBLING_ARGS[@]}"}"
+        "${STATE_MATE_SIBLING_ARGS[@]+"${STATE_MATE_SIBLING_ARGS[@]}"}" \
+        "${ONLY_ARGS[@]+"${ONLY_ARGS[@]}"}"
     ) 2>&1 | tee "$STATE_MATE_LOG"
     STATE_MATE_EXIT="${PIPESTATUS[0]}"
     set -e
@@ -3558,7 +3578,10 @@ _acceptance-test:
     set -euo pipefail
 
     ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    # Shared anvil fork farm: die/step/substep, spawn_fork, PID reaping (also used by rehearse-seal).
+    source "$ROOT_DIR/script/shared/fork-farm.sh"
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/acceptance.XXXXXX")"
+    FORK_FARM_LOG_DIR="$WORK_DIR"
     ANVIL_BALANCE="0x3635C9ADC5DEA00000" # 1000 ETH
     BASE_PORT="${ACCEPTANCE_BASE_PORT:-8650}"
 
@@ -3588,34 +3611,17 @@ _acceptance-test:
     NET_LOLS=(     0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6)
     NET_COUNT=${#NET_NAMES[@]}
 
-    die() { echo "FAIL: $*" >&2; exit 1; }
-
     # Validate parallel arrays have consistent length
     for arr_name in NET_RPC_ENVS NET_RPC_ENVS_LEGACY NET_GOVS NET_SCRIPTS NET_TESTS NET_LOLS; do
       eval "arr_len=\${#${arr_name}[@]}"
       [[ "$arr_len" -eq "$NET_COUNT" ]] || die "Array $arr_name has $arr_len elements, expected $NET_COUNT"
     done
-    step() { echo ""; echo "═══ $1 ═══"; }
-    substep() { echo "  ── $1"; }
 
-    ANVIL_PIDS=""
     cleanup() {
-      for pid in $ANVIL_PIDS; do
-        kill "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-      done
+      fork_farm_kill_forks
       rm -rf "$WORK_DIR"
     }
     trap cleanup EXIT
-
-    wait_for_rpc() {
-      local url="$1" name="$2" timeout="${3:-180}"
-      for i in $(seq 1 "$timeout"); do
-        cast chain-id --rpc-url "$url" >/dev/null 2>&1 && return 0
-        sleep 1
-      done
-      die "$name fork failed to start within ${timeout}s"
-    }
 
     extract_first_address() {
       local extracted
@@ -3664,49 +3670,25 @@ _acceptance-test:
     echo "Deployer: $DEPLOYER_ADDR"
 
     # ── Step 1: Spawn forks ────────────────────────────────────────
-    # Forks are spawned serially (each anvil waits for the previous to be ready,
-    # plus a short cool-down) because anvil performs a burst of eth_get* calls
-    # during genesis creation; 4 parallel L2 forks against one Infura key hit
-    # HTTP 429 rate limits and the failing anvils exit with "failed to create
-    # genesis". `wait_for_rpc` returns as soon as chain-id responds, but the
-    # genesis burst is still draining for a few seconds afterwards — the
-    # cool-down lets it finish before the next fork starts hammering the same
-    # API key. Override with FORK_SPAWN_COOLDOWN_SECONDS=N.
-    # Default 0: the RPC_<NET> upstreams are local anvil forks that don't rate-limit, so the
+    # Serial spawn + cool-down rationale lives with spawn_fork in script/shared/fork-farm.sh.
+    # Default 0 here: the RPC_<NET> upstreams are local anvil forks that don't rate-limit, so the
     # genesis burst can't trip 429s. Bump it (e.g. FORK_SPAWN_COOLDOWN_SECONDS=10) when pointing
     # the legacy L2_<NET>_RPC_URL fallbacks at a shared remote key like Infura.
     FORK_SPAWN_COOLDOWN_SECONDS="${FORK_SPAWN_COOLDOWN_SECONDS:-0}"
-    # Wall-clock budget from spawn (not an additive sleep): if wait_for_rpc already
-    # burned the budget on a slow Infura day, skip the sleep. Applied to L1 too —
-    # L1 and L2 RPCs share an Infura key in some setups, so the first L2 spawning
-    # back-to-back with L1's genesis burst can race.
-    spawn_with_cooldown() {
-      local fork_url="$1" name="$2" upstream="$3" port="$4" log="$5" cooldown="$6"
-      local spawn_t=$SECONDS
-      anvil --silent --auto-impersonate -p "$port" -f "$upstream" >"$log" 2>&1 &
-      ANVIL_PIDS="$ANVIL_PIDS $!"
-      echo "$name fork: $fork_url"
-      wait_for_rpc "$fork_url" "$name"
-      if (( cooldown > 0 )); then
-        local remaining=$(( cooldown - (SECONDS - spawn_t) ))
-        (( remaining > 0 )) && sleep "$remaining"
-      fi
-    }
 
     step "Step 1: Starting Anvil forks"
     L1_PORT="$BASE_PORT"
-    L1_FORK_URL="http://127.0.0.1:$L1_PORT"
-    spawn_with_cooldown "$L1_FORK_URL" "L1" "$L1_UPSTREAM" "$L1_PORT" "$WORK_DIR/l1.log" "$FORK_SPAWN_COOLDOWN_SECONDS"
+    spawn_fork "L1" "$L1_UPSTREAM" "$L1_PORT"
+    L1_FORK_URL="$FORK_URL"
 
     L2_FORK_URLS=()
     L2_FORK_SNAPSHOTS=()
     for i in $(seq 0 $((NET_COUNT - 1))); do
-      port=$((BASE_PORT + 1 + i))
-      fork_url="http://127.0.0.1:$port"
       # Skip cool-down after the last L2 — nothing else spawns after it.
       cooldown=$FORK_SPAWN_COOLDOWN_SECONDS
       (( i == NET_COUNT - 1 )) && cooldown=0
-      spawn_with_cooldown "$fork_url" "${NET_NAMES[$i]}" "${L2_UPSTREAMS[$i]}" "$port" "$WORK_DIR/${NET_NAMES[$i]}.log" "$cooldown"
+      spawn_fork "${NET_NAMES[$i]}" "${L2_UPSTREAMS[$i]}" "$((BASE_PORT + 1 + i))" "$cooldown"
+      fork_url="$FORK_URL"
       L2_FORK_URLS+=("$fork_url")
       # Snapshot the pristine fork. Step 2 (migrate) + Step 3 (state-mate) then exercise it,
       # which warms anvil's upstream-state cache; Step 4 reverts to this snapshot to hand the
