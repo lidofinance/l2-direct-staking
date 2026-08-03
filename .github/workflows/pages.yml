@@ -1,0 +1,27 @@
+# Publishes monitoring/ to the gh-pages branch; GitHub Pages then builds the site
+# from that branch (Settings -> Pages -> Source: Deploy from a branch, gh-pages / root).
+name: Publish monitoring dashboard to gh-pages
+
+on:
+  # Run manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Push monitoring/ to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./monitoring
+          force_orphan: true
