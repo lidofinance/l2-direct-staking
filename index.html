@@ -133,6 +133,37 @@ tr.group a:hover { color: var(--accent); }
 .rowlabel { font-weight: 600; white-space: nowrap; }
 .rowlabel .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--muted); }
 
+/* ── Tabs ── */
+.tabs { display: flex; gap: 8px; margin-left: 26px; }
+.tab {
+  font: inherit; font-weight: 600; font-size: 13px; padding: 8px 16px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.tab:not(.active):hover { border-color: var(--muted); }
+.tab.active { background: var(--dark); border-color: var(--dark); color: #fff; }
+.tab-dot { display: none; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.tab[data-status="new"] .tab-dot { display: block; background: #2aa96e; }
+.tab[data-status="warn"] .tab-dot { display: block; background: #d9a422; }
+.tab[data-status="crit"] .tab-dot { display: block; background: #d64a3a; }
+
+/* ── Loader ── */
+.loader { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 64px 0; color: var(--muted); font-size: 13px; }
+.spin {
+  width: 18px; height: 18px; border-radius: 50%; flex: none;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Activity tags ── */
+.tag {
+  display: inline-block; border-radius: 9px; padding: 5px 10px; border: 1px solid var(--line);
+  background: var(--page); color: var(--ink-2); font-weight: 600; font-size: 12.5px; white-space: nowrap;
+}
+.tag.stake { background: var(--ok-bg); border-color: var(--ok-bd); color: var(--ok-fg); }
+.tag.sync  { background: var(--tint); border-color: var(--ok-bd); color: var(--accent); }
+
 .err-banner { margin: 12px 26px 6px; padding: 12px 16px; border-radius: 10px;
   background: var(--crit-bg); border: 1px solid var(--crit-bd); color: var(--crit-fg); font-size: 13px; font-weight: 600; }
 .chip .mono { color: inherit; font-size: inherit; }
@@ -155,6 +186,11 @@ footer {
     <h1>Direct Staking Watch</h1>
     <div class="subtitle">Onchain operations console</div>
   </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="main">Overview<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="access">Access Control<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="activity">Pool activity<span class="tab-dot" aria-hidden="true"></span></button>
+  </nav>
   <div class="right">
     <span id="rpcstat"></span>
     <span id="updated">loading…</span>
@@ -162,26 +198,29 @@ footer {
   </div>
 </div>
 
-<main id="main"></main>
+<main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
+<main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
+<main id="activity" hidden><div class="card"><div class="loader"><span class="spin"></span> loading pool activity…</div></div></main>
 
 <footer>
-  <span>◷ Auto-refreshes every 60 seconds · read-only <span class="mono">eth_call</span> against public RPCs</span>
+  <span>◷ Auto-refreshes every 60 seconds · read-only <span class="mono">eth_call</span> against public RPCs · pool activity via Blockscout API</span>
 </footer>
 
 <script>
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner
+const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner (CREReceiver owner + author)
+const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger owner since Aug 2026
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 const ADMIN_ROLE = '0x' + '0'.repeat(64);
 const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner',
+  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [ST_OWNER]: 'Trigger Owner',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
-const EOAS = new Set([AUTO_OWNER]);
+const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
 const SAFES = new Set([LOL]);
 // Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
 const ICO = {
@@ -210,26 +249,31 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 
 const LANES = [
   { name: 'Optimism', abbr: 'OP', rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
+    bs: 'https://explorer.optimism.io',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
   { name: 'Arbitrum', abbr: 'AR', rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
+    bs: 'https://arbitrum.blockscout.com',
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
     oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
   { name: 'Base', abbr: 'BA', rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
+    bs: 'https://base.blockscout.com',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x0E37599436974a25dDeEdF795C848d30Af46eaCF', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
   { name: 'Linea', abbr: 'LI', rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
+    bs: 'https://api-explorer.linea.build',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0x9eF6468C5f37b976E57d52054c693269479A784d',
     weth: '0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f', wsteth: '0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F' },
 ].map(l => ({ ...l, ...COMMON_DEPLOYED }));
+LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
 
 // ── Minimal ABI plumbing ─────────────────────────────────────────────────────
 const SEL = {
@@ -347,7 +391,7 @@ function laneGroups(L, d) {
       { key: 'owner', sub: 'owner()', ...cell(eq(d.proxyOwner, L.gov) ? ['ok', holder(L.gov, 'Gov Executor')] : ['crit', holder(d.proxyOwner)], d.proxyOwner) },
     ] },
     { contract: 'SyncTrigger', addr: L.syncTrigger, checks: [
-      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.stOwner, AUTO_OWNER), d.stOwner) },
+      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.stOwner, ST_OWNER), d.stOwner) },
       { key: 'forwarder', sub: 'getForwarder()', ...cell(eq(d.stForwarder, L.creReceiver) ? ['ok', holder(L.creReceiver, 'CREReceiver')] : ['crit', holder(d.stForwarder)], d.stForwarder) },
     ] },
     { contract: 'CREReceiver', addr: L.creReceiver, checks: [
@@ -389,7 +433,16 @@ function floatState(d) {
 const laneLevel = lane => lane.error ? 'crit' :
   worst([syncState(lane.d)[0], floatState(lane.d).level, ...laneChecks(lane.L, lane.d).map(c => c.level)]);
 
-function l1Checks(d) {
+function l1AccessChecks(d) {
+  const [pl, pv] = ownerCheck(d.proxyOwner, DAO_AGENT);
+  return [
+    { key: 'Receiver admin', level: d.daoIsAdmin ? 'ok' : 'crit',
+      value: d.daoIsAdmin ? holder(DAO_AGENT) : 'not DAO Agent', sub: 'DEFAULT_ADMIN_ROLE' },
+    { key: 'ProxyAdmin owner', level: pl, value: pv, sub: 'owner()' },
+  ];
+}
+
+function l1BalanceChecks(d) {
   const balRow = (label, v) => ({
     key: label,
     ...(v == null ? { level: 'crit', value: 'unreadable', sub: '' }
@@ -397,13 +450,130 @@ function l1Checks(d) {
       : v > 10n ** 12n ? { level: 'warn', value: fmtEth(v, 6), sub: 'transient?' }
       : { level: 'ok', value: '~0', sub: 'as expected' }),
   });
-  const [pl, pv] = ownerCheck(d.proxyOwner, DAO_AGENT);
   return [
-    { key: 'Receiver admin', level: d.daoIsAdmin ? 'ok' : 'crit',
-      value: d.daoIsAdmin ? holder(DAO_AGENT) : 'not DAO Agent', sub: 'DEFAULT_ADMIN_ROLE' },
-    { key: 'ProxyAdmin owner', level: pl, value: pv, sub: 'owner()' },
     balRow('Receiver ETH', d.eth), balRow('Receiver wstETH', d.wsteth), balRow('Receiver stETH', d.steth),
   ];
+}
+
+const l1Checks = d => [...l1AccessChecks(d), ...l1BalanceChecks(d)];
+
+// ── Pool activity ────────────────────────────────────────────────────────────
+// Blockscout token transfers for the pool (latest ≤50 canonical events per lane), grouped per tx.
+// Blockscout because publicnode refuses eth_getLogs on Arbitrum/Base.
+const eqa = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+const ZERO = '0x' + '0'.repeat(40);
+const fmtAmt = wei => fmtEth(wei, wei > 0n && wei < 10n ** 15n ? 8 : 4); // dust stays visible
+
+async function activityData(L) {
+  const byTx = new Map();
+  const base = `${L.bs}/api/v2/addresses/${L.pool}/token-transfers`;
+  let nextPage = {};
+  while (nextPage && byTx.size < 50) {
+    const url = new URL(base);
+    Object.entries(nextPage).forEach(([key, value]) => url.searchParams.set(key, value));
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const page = await res.json();
+    for (const t of page.items ?? []) {
+      const g = byTx.get(t.transaction_hash) ??
+        { tx: t.transaction_hash, ts: Date.parse(t.timestamp) / 1000 || 0, in: [], out: [] };
+      const addr = t.token.address_hash ?? t.token.address;
+      // only the canonical WETH/wstETH — spam airdrops carry attacker-controlled symbols
+      const token = eqa(addr, L.weth) ? 'WETH' : eqa(addr, L.wsteth) ? 'wstETH' : null;
+      if (!token) continue;
+      (eqa(t.to.hash, L.pool) ? g.in : g.out)
+        .push({ token, amount: BigInt(t.total.value), from: t.from.hash, to: t.to.hash });
+      byTx.set(t.transaction_hash, g);
+    }
+    nextPage = page.next_page_params;
+  }
+  return [...byTx.values()].slice(0, 50).map(g => classifyTx(L, g));
+}
+
+function classifyTx(L, g) {
+  const find = (legs, token) => legs.find(l => l.token === token);
+  const wIn = find(g.in, 'WETH'), wsOut = find(g.out, 'wstETH');
+  const wOut = find(g.out, 'WETH'), wsIn = find(g.in, 'wstETH');
+  const base = { tx: g.tx, ts: g.ts };
+  if (wIn && wsOut) return { ...base, kind: 'stake', label: 'Fast stake',
+    amount: `${fmtAmt(wIn.amount)} WETH → ${fmtAmt(wsOut.amount)} wstETH`, cp: wsOut.to };
+  if (wOut) return eqa(wOut.to, L.sender)
+    ? { ...base, kind: 'sync', label: 'Sync → L1', amount: `−${fmtAmt(wOut.amount)} WETH`, cp: wOut.to }
+    : { ...base, kind: 'flow', label: 'WETH out', amount: `−${fmtAmt(wOut.amount)} WETH`, cp: wOut.to };
+  if (wsIn) return { ...base, kind: 'flow', label: eqa(wsIn.from, ZERO) ? 'Top-up · bridge' : 'Top-up',
+    amount: `+${fmtAmt(wsIn.amount)} wstETH`, cp: wsIn.from };
+  if (wsOut) return { ...base, kind: 'flow', label: 'wstETH out', amount: `−${fmtAmt(wsOut.amount)} wstETH`, cp: wsOut.to };
+  return { ...base, kind: 'flow', label: 'WETH in', amount: `+${fmtAmt(wIn.amount)} WETH`, cp: wIn.from };
+}
+
+const ACTIVITY_SEEN_KEY = 'direct-staking-watch.activity-seen';
+let latestActivity = null;
+let activitySeen = readActivitySeen();
+let activityFailed = false;
+
+function readActivitySeen() {
+  try {
+    const marker = JSON.parse(localStorage.getItem(ACTIVITY_SEEN_KEY));
+    return marker && Number.isFinite(marker.ts) && Array.isArray(marker.txs) ? marker : null;
+  } catch { return null; }
+}
+
+function saveActivitySeen() {
+  try { localStorage.setItem(ACTIVITY_SEEN_KEY, JSON.stringify(activitySeen)); } catch {}
+}
+
+function hasUnseenActivity() {
+  if (!latestActivity || !activitySeen) return false;
+  return latestActivity.ts > activitySeen.ts ||
+    latestActivity.ts === activitySeen.ts && latestActivity.txs.some(tx => !activitySeen.txs.includes(tx));
+}
+
+function updateActivityTabStatus() {
+  setTabStatus('activity', activityFailed ? 'crit' : hasUnseenActivity() ? 'new' : null);
+}
+
+function markActivitySeen() {
+  if (latestActivity) {
+    activitySeen = latestActivity;
+    saveActivitySeen();
+  }
+  updateActivityTabStatus();
+}
+
+function renderActivity(results) {
+  const failed = results.filter(r => r.error).map(r => `${r.L.name} (${r.error})`);
+  const rows = results.filter(r => !r.error)
+    .flatMap(r => r.events.map(e => ({ L: r.L, ...e })))
+    .sort((a, b) => b.ts - a.ts).slice(0, 60);
+  activityFailed = failed.length > 0;
+  latestActivity = rows.length ? {
+    ts: rows[0].ts,
+    txs: rows.filter(r => r.ts === rows[0].ts).map(r => r.tx).sort(),
+  } : null;
+  if (!activitySeen && latestActivity) {
+    activitySeen = latestActivity;
+    saveActivitySeen();
+  }
+  if (activeTab === 'activity') markActivitySeen();
+  else updateActivityTabStatus();
+  const tr = rows.map(e => `<tr>
+    <td><span class="num"><div class="m">${ago(e.ts)}</div><div class="s">${new Date(e.ts * 1000).toLocaleString()}</div></span></td>
+    <td><span class="who"><span class="avatar">${e.L.abbr}</span><span class="name">${e.L.name}</span></span></td>
+    <td><span class="tag ${e.kind}">${e.label}</span></td>
+    <td><span class="num"><div class="m">${e.amount}</div></span></td>
+    <td><span class="who">${alink(e.L, e.cp, NAMES[e.cp.toLowerCase()] && !eqa(e.cp, ZERO) ? holder(e.cp) : undefined)}</span></td>
+    <td><a href="${e.L.explorer}/tx/${e.tx}" target="_blank" title="${e.tx}" class="mono">${short(e.tx)}&thinsp;↗</a></td>
+  </tr>`).join('');
+  document.getElementById('activity').innerHTML = `<div class="card">
+    <div class="card-head">
+      <h3>Pool Activity</h3>
+      <span class="desc">Latest token flows through each OraclePool · fast stakes, syncs, liquidity top-ups · newest first.</span>
+    </div>
+    ${failed.length ? `<div class="err-banner">✕ Blockscout unreachable: ${failed.join(', ')}</div>` : ''}
+    ${rows.length ? `<div class="scroll-x"><table>
+      <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
+      ${tr}</table></div>` : failed.length ? '' : '<div class="err-banner">no transfers found</div>'}
+  </div>`;
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
@@ -411,6 +581,17 @@ function render(l1, lanes) {
   const l1Level = l1.error ? 'crit' : worst(l1Checks(l1.d).map(c => c.level));
   const levels = { [L1.name]: l1Level };
   lanes.forEach(l => levels[l.L.name] = laneLevel(l));
+
+  const overviewLevel = worst([
+    l1.error ? 'crit' : worst(l1BalanceChecks(l1.d).map(c => c.level)),
+    ...lanes.map(l => l.error ? 'crit' : worst([syncState(l.d)[0], floatState(l.d).level])),
+  ]);
+  const accessLevel = worst([
+    l1.error ? 'crit' : worst(l1AccessChecks(l1.d).map(c => c.level)),
+    ...lanes.map(l => l.error ? 'crit' : worst(laneChecks(l.L, l.d).map(c => c.level))),
+  ]);
+  setTabStatus('main', overviewLevel === 'ok' ? null : overviewLevel);
+  setTabStatus('access', accessLevel === 'ok' ? null : accessLevel);
 
   const rpcOk = [l1, ...lanes].filter(x => !x.error).length;
   document.getElementById('rpcstat').innerHTML =
@@ -451,17 +632,14 @@ function render(l1, lanes) {
   // sync matrix
   const num = (m, s) => `<span class="num"><div class="m">${m}</div><div class="s">${s}</div></span>`;
   const syncRows = lanes.map(l => {
-    if (l.error) return `<tr><td>${laneWho(l.L)}</td><td colspan="5"><span class="chip crit"><div class="m">✕ RPC error</div><div class="s">${l.error}</div></span></td></tr>`;
+    if (l.error) return `<tr><td>${laneWho(l.L)}</td><td colspan="4"><span class="chip crit"><div class="m">✕ RPC error</div><div class="s">${l.error}</div></span></td></tr>`;
     const d = l.d, [slv, sm, ss] = syncState(d), f = floatState(d);
-    const checks = laneChecks(l.L, d);
-    const okCount = checks.filter(c => c.level === 'ok').length;
     return `<tr>
       <td>${laneWho(l.L)}</td>
       <td>${chip(slv, sm, slv === 'ok' ? 'last sync ' + ago(d.lastExec) : ss)}</td>
       <td>${num(fmtEth(d.poolWeth, 2) + ' WETH', d.minAmount != null ? `min ${fmtEth(d.minAmount, 0)} · max ${fmtEth(d.maxAmount, 0)}` : '—')}</td>
       <td>${num(fmtEth(d.poolWsteth, 2) + ' wstETH', 'fastStake liquidity')}</td>
       <td>${chip(f.level, f.x != null ? f.x.toFixed(2) + '× maxFees' : '—', fmtEth(d.float) + ' ETH on trigger')}</td>
-      <td>${chip(worst(checks.map(c => c.level)), okCount + '/' + checks.length + ' checks', 'owners &amp; wiring')}</td>
     </tr>`;
   }).join('');
 
@@ -471,7 +649,7 @@ function render(l1, lanes) {
       ${legendHtml()}
     </div>
     <div class="scroll-x"><table class="syncm">
-      <tr><th>Lane</th><th>Sync state</th><th>Pool WETH</th><th>Pool wstETH</th><th>Fee float</th><th>Access control</th></tr>
+      <tr><th>Lane</th><th>Sync state</th><th>Pool WETH</th><th>Pool wstETH</th><th>Fee float</th></tr>
       ${syncRows}
     </table></div>
   </div>`;
@@ -517,18 +695,31 @@ function render(l1, lanes) {
     <div class="scroll-x">${buildTable(() => true)}</div>
   </div>`;
 
-  // L1 card
-  const l1Body = l1.error
+  // L1 cards: balances stay in Overview; roles and ownership live in Access Control.
+  const l1Access = l1.error ? [] : l1AccessChecks(l1.d);
+  const l1Balances = l1.error ? [] : l1BalanceChecks(l1.d);
+  const l1BalanceBody = l1.error
     ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="scroll-x"><table class="ownm"><tr>${l1Checks(l1.d).map(c => `<th>${c.key}</th>`).join('')}</tr>
-       <tr>${l1Checks(l1.d).map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
-  const l1Card = `<div class="card">
+    : `<div class="scroll-x"><table class="ownm"><tr>${l1Balances.map(c => `<th>${c.key}</th>`).join('')}</tr>
+       <tr>${l1Balances.map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
+  const l1BalanceCard = `<div class="card">
     <div class="card-head">
-      <h3>Ethereum L1 — Shared Receiver</h3>
+      <h3>Ethereum L1 — Shared Receiver Balances</h3>
       <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · balances are transient during a stake; parked funds are an incident.</span>
-    </div>${l1Body}</div>`;
+    </div>${l1BalanceBody}</div>`;
 
-  document.getElementById('main').innerHTML = hero + syncCard + ownCard + l1Card;
+  const l1AccessBody = l1.error
+    ? `<div class="err-banner">RPC error: ${l1.error}</div>`
+    : `<div class="scroll-x"><table class="ownm"><tr>${l1Access.map(c => `<th>${c.key}</th>`).join('')}</tr>
+       <tr>${l1Access.map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
+  const l1AccessCard = `<div class="card">
+    <div class="card-head">
+      <h3>Ethereum L1 — Access Control</h3>
+      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · role and owner targets.</span>
+    </div>${l1AccessBody}</div>`;
+
+  document.getElementById('main').innerHTML = hero + syncCard + l1BalanceCard;
+  document.getElementById('access').innerHTML = ownCard + l1AccessCard;
   document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 
@@ -550,9 +741,41 @@ async function refresh() {
   ]);
   render(l1, lanes);
 }
-document.getElementById('refresh').onclick = refresh;
-refresh();
-setInterval(refresh, 60_000);
+async function refreshActivity() {
+  const results = await Promise.all(LANES.map(L =>
+    activityData(L).then(events => ({ L, events })).catch(e => ({ L, error: e.message }))));
+  renderActivity(results);
+}
+const refreshAll = () => { refresh(); refreshActivity(); };
+
+const tabButtons = [...document.querySelectorAll('.tab')];
+let activeTab = 'main';
+
+function setTabStatus(tab, status) {
+  const button = tabButtons.find(b => b.dataset.tab === tab);
+  if (!button) return;
+  button.dataset.status = status ?? '';
+  button.title = status === 'crit' ? 'Critical issue' : status === 'warn' ? 'Warning' : status === 'new' ? 'New activity' : '';
+}
+
+function selectTab(tab) {
+  const selected = tabButtons.find(b => b.dataset.tab === tab) ?? tabButtons[0];
+  activeTab = selected.dataset.tab;
+  tabButtons.forEach(b => b.classList.toggle('active', b === selected));
+  document.getElementById('main').hidden = activeTab !== 'main';
+  document.getElementById('access').hidden = activeTab !== 'access';
+  document.getElementById('activity').hidden = activeTab !== 'activity';
+  if (activeTab === 'activity') markActivitySeen();
+  if (location.hash !== '#' + activeTab) history.replaceState(null, '', '#' + activeTab);
+}
+
+tabButtons.forEach(b => b.onclick = () => selectTab(b.dataset.tab));
+window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
+selectTab(location.hash.slice(1));
+
+document.getElementById('refresh').onclick = refreshAll;
+refreshAll();
+setInterval(refreshAll, 60_000);
 </script>
 </body>
 </html>
