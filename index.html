@@ -746,7 +746,16 @@ async function refreshActivity() {
     activityData(L).then(events => ({ L, events })).catch(e => ({ L, error: e.message }))));
   renderActivity(results);
 }
-const refreshAll = () => { refresh(); refreshActivity(); };
+let refreshInFlight = false;
+async function refreshAll() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    await Promise.all([refresh(), refreshActivity()]);
+  } finally {
+    refreshInFlight = false;
+  }
+}
 
 const tabButtons = [...document.querySelectorAll('.tab')];
 let activeTab = 'main';
