@@ -3,5 +3,5 @@
   "chainSelectorName": "ethereum-mainnet-optimism-1",
   "writeGasLimit": "750000",
   "targetAddress": "0x871a5cddE9813627Ff37A2895A0c9B117A664622",
-  "schedule": "0 */5 * * * *"
+  "schedule": "0 0 * * * *"
 }

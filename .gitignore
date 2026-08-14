@@ -23,3 +23,7 @@ cre-workflows/**/.cre_build_tmp.js
 
 /.diffyscan_cache
 /digest
+
+# CRE migration: the Safe batches are tracked; the CLI logs beside them are not
+# (they echo API-keyed RPC URLs verbatim).
+safe-txs/cre/*.log

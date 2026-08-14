@@ -52,7 +52,7 @@ const configSchema = z.object({
   writeGasLimit: z.string(),
   /** SyncTrigger contract address (shouldSync/triggerSync target) */
   targetAddress: evmAddress,
-  // Cron schedule for polling (e.g. "0 */5 * * * *" = every 5 minutes)
+  // Cron schedule for polling (e.g. "0 0 * * * *" = hourly, on the hour)
   schedule: z.string(),
 });
 

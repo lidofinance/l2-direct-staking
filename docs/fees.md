@@ -740,7 +740,7 @@ cast call <L2_CCIP_ROUTER> "getOnRamp(uint64)(address)" 5009297550715157269 --rp
 | `L2_SYNC_MIN_AMOUNT` | 5 WETH | Floor below which `shouldSyncAmount()` is 0. Keeps round-trip fees a sub-percent fraction of the synced amount; too low → fees become a yield drag; too high → deposits sit idle missing Lido yield. |
 | `L2_SYNC_MAX_AMOUNT` | 100 WETH | Per-sync cap (residual stays for the next sync). Bounds CCIP fee exposure, Lido `submit` impact, and in-flight L1→L2 bridge exposure to ≤100 wstETH. Too low → many small syncs, more overhead. |
 | `L2_SYNC_DELAY` | 12 h | Min wall-clock between syncs — ≤2 paid syncs/day/lane, roughly aligned with Lido's daily oracle cadence. Shorter → ~12× more fees; longer → larger idle balances / tail risk. Doubles as the migration cutover quiet-window. |
-| CRE cron | `*/5 * * * *` | DON *evaluation* cadence (most ticks return false — a cheap staticcall), not action cadence. 5 min = 1/144 of the 12 h delay → ≤5 min latency once a sync is due. Tighter → ~5× DON cost; looser → added post-delay latency. |
+| CRE cron | `0 0 * * * *` (hourly) | DON *evaluation* cadence (most ticks return false — a cheap staticcall), not action cadence. 1 h = 1/12 of the 12 h delay → ≤1 h latency once a sync is due. Tighter (e.g. 5 min) → ~12× DON cost; looser → added post-delay latency. |
 
 ## L1→L2 vs L2→L1 — why the two legs differ
 

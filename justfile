@@ -14,7 +14,7 @@ set dotenv-filename := [".env", x'.env.${NETWORK:-}']
 # `setup-cre-cli` installs exactly this tag into `CRE_DIR` (gitignored, inside the repo — the
 # upstream installer would write to $HOME and edit your shell rc). Bump the tag here and re-run
 # `just setup-cre-cli`; the recipe is a no-op when the installed binary already reports it.
-CRE_CLI_VERSION := "v1.27.0"
+CRE_CLI_VERSION := "v1.29.0"
 CRE_DIR := justfile_directory() / ".cre"
 
 # Default recipe: list all available recipes (runs on bare `just`).

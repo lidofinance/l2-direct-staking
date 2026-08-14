@@ -74,7 +74,7 @@ hostile.
 | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | **`SyncTrigger`** (per L2)               | Holds `SYNC_ROLE` on `CustomSender`. Enforces per-sync gates (min 5 / max 100 WETH, 12 h delay) and calls `CustomSender.sync()`. Replaces the legacy automation as the sole `SYNC_ROLE` holder. Also the **fee treasury**: fronts `maxFee + feeDtoO` per sync from its own ETH balance (`maxFee` excess refunds back to it); must stay ≥ `getMaxFees()` or the lane stalls — funding permissionless, recovery `sweep()` = owner-only = the Automation Owner (docs/fees.md §Funding the float). | `src/SyncTrigger.sol`                                         |
 | **`CREReceiver`** (per L2)               | Receives signed CRE reports and authorizes them three ways (forwarder + report author + `(target, selector)` allow-list), then calls `SyncTrigger.triggerSync()`. Defense-in-depth between the off-chain network and the on-chain sync. | `src/cre/CREReceiver.sol`, `src/cre/interfaces/IReceiver.sol` |
-| **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network every 5 min, polls `SyncTrigger.shouldSyncAmount()` (due-ness + amount) and `canSync()` (executability), and emits a signed report only when a sync is both due and executable.                                                                           | `cre-workflows/sync-automation/*`                             |
+| **CRE sync workflow**                    | Off-chain TypeScript→WASM that runs on the Chainlink CRE network hourly, polls `SyncTrigger.shouldSyncAmount()` (due-ness + amount) and `canSync()` (executability), and emits a signed report only when a sync is both due and executable.                                                                           | `cre-workflows/sync-automation/*`                             |
 | **Migration scripts + state-mate YAMLs** | The migration scripts (Forge) and the post-condition checks (shared `config/state/l2.yaml` + `l2.common.inputs.yaml` + each lane's `.inputs.yaml`/`.deployed.yaml`). Not runtime contracts; they define and verify the target state.                                                                                                         | `script/**`                                                   |
 
 **Provenance — both are *derived*, not clean-room, and in two different senses.**
@@ -548,7 +548,7 @@ flowchart TB
     end
 
     subgraph DON["Chainlink CRE (external — uncontrolled)"]
-        WF["CRE workflow<br/>(WASM, every 5 min)"]
+        WF["CRE workflow<br/>(WASM, hourly)"]
         FWD["CRE Forwarder<br/>(KeystoneForwarder, Router build)"]
     end
 
@@ -632,7 +632,7 @@ one ungated step (4) writes nothing. 9–17 is the refill round-trip that 8 star
 that ends back at the same pool. The two loops meet only at the pool's balances,
 which is why `shouldSyncAmount` (4) reads a *balance* and not an event.
 
-**What is deliberately not on an arrow.** The `~5 min` cadence is a property of
+**What is deliberately not on an arrow.** The hourly cadence is a property of
 the workflow, not of edge 4 — the DON polls on its own clock and suppresses a
 due-but-`!canSync` tick with no report at all (§5.1), so no arrow is traversed.
 Edge 8's `value` is `getMaxFees()`, the reserve `triggerSync` pre-flights, **not**

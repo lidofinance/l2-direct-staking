@@ -30,7 +30,7 @@ work is attributed to a holder under a role assignment (`A.15`, CC-A15-3).
 
 | Holder | Role | Context | Owns latency? |
 |---|---|---|---|
-| CRE workflow (WASM, 5-min poll) | `SyncObserver` — observes and *proposes* | off-chain | no |
+| CRE workflow (WASM, hourly poll) | `SyncObserver` — observes and *proposes* | off-chain | no |
 | CRE Forwarder | `ReportCarrier` | off-chain → L2 | no |
 | `CREReceiver` `0x29113eD7…` | `Admission` (forwarder + author + allow-list) | L2 | no |
 | `SyncTrigger` `0x1594705D…` | **`SYNC_ROLE` — the accountable caller** | L2 | no |

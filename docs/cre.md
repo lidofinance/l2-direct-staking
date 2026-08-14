@@ -15,7 +15,7 @@ Pool rebalancing is triggered by a CRE (Chainlink Runtime Environment) TypeScrip
 
 ```
 CRE DON (TypeScript/WASM, off-chain)
-  ├── CronCapability trigger (every 5 minutes)
+  ├── CronCapability trigger (hourly, on the hour)
   ├── EVMClient.callContract() → SyncTrigger.shouldSyncAmount() (due? amount?) + canSync() (executable?)
   ├── If due && executable:
   │   ├── Encode triggerSync() calldata
@@ -164,7 +164,7 @@ The sync workflow is off-chain WASM on Chainlink's CRE platform; its only on-cha
 | `cre workflow pause` / `activate` | LOL Safe (m-of-n) | Stop / start DON execution |
 | `cre workflow delete` | LOL Safe (m-of-n) | Retire the workflow |
 | `cre account link-key` / `unlink-key` | LOL Safe (m-of-n) | Associate / disassociate a wallet (owner-gated) |
-| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report only if `shouldSyncAmount()` (amount/delay) is nonzero AND `canSync()` (float, `SYNC_ROLE`, pool-pause) is true; skips a due-but-blocked tick (`shouldSyncAmount() > 0 && !canSync()`) without a report |
+| cron tick (hourly) | CRE DON | Runs the WASM; signs a report only if `shouldSyncAmount()` (amount/delay) is nonzero AND `canSync()` (float, `SYNC_ROLE`, pool-pause) is true; skips a due-but-blocked tick (`shouldSyncAmount() > 0 && !canSync()`) without a report |
 
 - The owner's EVM address (the **Safe address**) is propagated into every report as `metadata.workflowOwner` (bytes `[42:62]`); `CREReceiver._extractWorkflowOwner` reads it and, if `expectedAuthor != 0`, the two must match.
 - The report's `workflowName`/`workflowId` are deliberately **not** checked — authentication is `(forwarder, workflowOwner)` only (an owner-scoped label adds no defence against owner compromise, and the argument-less call-lock already bounds the blast radius; see [DOC.md §2.6](../DOC.md#26-credibility--security-of-the-application-layer-contracts)).

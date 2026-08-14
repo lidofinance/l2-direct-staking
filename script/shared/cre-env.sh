@@ -14,8 +14,15 @@
 #
 # Canonical variables (see RUNBOOK "Env model"):
 #   secrets, root .env         L2_AUTOMATION_OWNER_PRIVATE_KEY (or _PK) · L2_AUTOMATION_OWNER
-#   lane facts, .env.<network> L2_NETWORK · L1_RPC_URL · L2_RPC_URL
+#   lane facts, .env.<network> L2_NETWORK · L2_RPC_URL
 #   machine, shell profile     RPC_ETHEREUM_REMOTE (upstream) · RPC_ETHEREUM (local fork proxy)
+#
+# L1_RPC_URL is NOT a fourth store: root .env declares it as `${RPC_ETHEREUM_REMOTE}`, an indirection
+# that only `just`'s dotenv expands. So it cannot join the cre_env_load_secrets list below (which takes
+# values literally, and would hand out the string `${RPC_ETHEREUM_REMOTE}` verbatim), and a plain script
+# that sources this file resolves mainnet from RPC_ETHEREUM_REMOTE in the shell profile. When that is
+# unset, resolve_l1_rpc falls through to the local FORK proxy — which is why anything that writes to
+# mainnet must call cre_env_require_live_mainnet rather than trusting the resolution.
 
 cre_env_die() {
   echo "cre-env: $*" >&2
@@ -62,8 +69,30 @@ cre_env_load_secrets() {
 # which set it themselves).
 resolve_l1_rpc() {
   local url="${L1_RPC_URL:-${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-}}}"
-  [[ -n "$url" ]] || cre_env_die "no Ethereum-mainnet RPC. Set L1_RPC_URL in .env.<network> (bound to \${RPC_ETHEREUM_REMOTE})." || return 1
+  [[ -n "$url" ]] || cre_env_die "no Ethereum-mainnet RPC. Export RPC_ETHEREUM_REMOTE in your shell profile (root .env binds L1_RPC_URL to it, but only under \`just\`)." || return 1
   printf '%s\n' "$url"
+}
+
+# Prove the resolved endpoint is LIVE Ethereum mainnet before a ceremony writes to it.
+#
+# resolve_l1_rpc's precedence is a preference, not a proof: when RPC_ETHEREUM_REMOTE is unset the local
+# fork proxy wins silently, and a fork cannot be told from mainnet by chain-id — `anvil -f` reports 1.
+# The discriminator is head freshness: a fork is pinned at its fork block and advances only when
+# something mines on it. Anything mainnet-writing calls this instead of trusting the resolution; reads
+# and fork-scoped recipes deliberately do not.
+cre_env_require_live_mainnet() {
+  local url="${1:-}" id ts age
+  [[ -n "$url" ]] || cre_env_die "cre_env_require_live_mainnet: no URL given" || return 1
+  id="$(cast chain-id --rpc-url "$url" 2>/dev/null | tr -d ' \r' || true)"
+  [[ "$id" == 1 ]] \
+    || cre_env_die "L1 endpoint $(cre_env_host "$url") reports chain-id '${id:-<unreachable>}', not 1" || return 1
+  ts="$(cast block latest --field timestamp --rpc-url "$url" 2>/dev/null | tr -d ' \r' || true)"
+  [[ "$ts" =~ ^[0-9]+$ ]] \
+    || cre_env_die "could not read the head block timestamp from $(cre_env_host "$url")" || return 1
+  age=$(( $(date +%s) - ts ))
+  (( age >= 0 && age < ${CRE_L1_MAX_HEAD_AGE:-900} )) \
+    || cre_env_die "L1 head at $(cre_env_host "$url") is ${age}s old — a pinned fork or a stalled node, not live mainnet. This step writes to mainnet; refusing." || return 1
+  echo "cre-env: L1 $(cre_env_host "$url") is live mainnet (head ${age}s old)." >&2
 }
 
 # The Automation Owner signing key, read with the SAME name-and-fallback order as
@@ -85,8 +114,16 @@ resolve_automation_owner_key() {
 #
 # Aborts when the declared owner address and the signing key are different accounts: registering a
 # workflow under an address the DON will not sign as bricks every report at the CREReceiver author gate.
+#
+# One predicate, two shapes of owner — "the declared owner is controllable from here":
+#   owner == the key's address  → an EOA the key signs for.
+#   owner != the key's address  → it must be a CONTRACT on mainnet (a Safe) AND the run must be
+#                                 unsigned, because the `cre` CLI can then only PRINT the
+#                                 WorkflowRegistry calldata for the Safe to execute (ADR-0001).
+# CRE_ETH_PRIVATE_KEY stays required and exported on both: the CLI needs a wallet to initialise its RPC
+# client. On the Safe shape it never signs the owner transaction.
 cre_env_export() {
-  local key owner derived net upper alias
+  local key owner derived net upper alias mode code l1
   cre_env_load_secrets
   key="$(resolve_automation_owner_key)" || return 1
   owner="${CRE_WORKFLOW_OWNER:-${L2_AUTOMATION_OWNER:-}}"
@@ -98,8 +135,23 @@ cre_env_export() {
   command -v cast >/dev/null 2>&1 || cre_env_die "missing 'cast' (foundry) — needed to cross-check the key against the address" || return 1
   derived="$(cast wallet address --private-key "$key" 2>/dev/null || true)"
   [[ -n "$derived" ]] || cre_env_die "could not derive an address from the Automation Owner key — is it a valid 0x-prefixed private key?" || return 1
+
+  l1="$(resolve_l1_rpc)" || return 1
+  mode="key verified"
   if [[ "$(cast to-check-sum-address "$derived")" != "$(cast to-check-sum-address "$owner")" ]]; then
-    cre_env_die "key/address mismatch — the Automation Owner key signs as $derived but the declared owner is $owner. Fix L2_AUTOMATION_OWNER or the key in the root .env; do not proceed." || return 1
+    [[ "${CRE_DEPLOY_UNSIGNED:-false}" == "true" ]] \
+      || cre_env_die "key/address mismatch — the Automation Owner key signs as $derived but the declared owner is $owner. Fix L2_AUTOMATION_OWNER or the key in the root .env; do not proceed. (Registering under a Safe? That is the CRE_DEPLOY_UNSIGNED=true path.)" || return 1
+    # Code check on the SAME chain the WorkflowRegistry lives on (Ethereum mainnet): an address with code
+    # on an L2 and none on L1 is exactly the cross-chain mix-up this catches. Unreadable ≠ disproved, so
+    # an RPC that cannot answer warns rather than stranding the operator on a read they cannot fix.
+    code="$(cast code "$owner" --rpc-url "$l1" 2>/dev/null | tr -d '\r\n' || true)"
+    if [[ "$code" == "0x" ]]; then
+      cre_env_die "$owner has NO code on Ethereum mainnet — it is an EOA or a typo, not a Safe. The workflow owner is fixed at registration and cannot be transferred; do not proceed." || return 1
+    elif [[ -z "$code" ]]; then
+      echo "cre-env: WARNING — could not read code at $owner on Ethereum mainnet (RPC unreachable?). Unable to confirm it is a multisig; verify by hand before executing the calldata." >&2
+    fi
+    mode="multisig, unsigned"
+    echo "cre-env: CRE_ETH_PRIVATE_KEY ($derived) is used for RPC init only and will NOT sign the owner tx." >&2
   fi
 
   export CRE_ETH_PRIVATE_KEY="$key"
@@ -111,10 +163,8 @@ cre_env_export() {
   # `getMaxWorkflowsPerUserDON(owner, zone-a)`, and a workflow registered on a different family than the
   # one that check reports would make that evidence meaningless.
   export CRE_CLI_DON_FAMILY="${CRE_CLI_DON_FAMILY:-zone-a}"
-  # Assign first, THEN export: `export V="$(cmd)"` reports export's own status, so a failing
-  # resolve_l1_rpc would be swallowed and an empty URL exported.
-  local l1
-  l1="$(resolve_l1_rpc)" || return 1
+  # Assigned above (not `export V="$(cmd)"`, which reports export's own status and would swallow a
+  # failing resolve_l1_rpc, exporting an empty URL).
   export L1_RPC_URL="$l1"
 
   # Legacy per-lane spelling: project.yaml no longer needs it (it reads ${L2_RPC_URL}), but the forge
@@ -126,7 +176,7 @@ cre_env_export() {
     [[ -n "${!alias:-}" ]] || export "$alias=$L2_RPC_URL"
   fi
 
-  echo "cre-env: workflow owner $CRE_WORKFLOW_OWNER (key verified) · L1 $(cre_env_host "$L1_RPC_URL")${net:+ · lane $net $(cre_env_host "${L2_RPC_URL:-}")}"
+  echo "cre-env: workflow owner $CRE_WORKFLOW_OWNER ($mode) · L1 $(cre_env_host "$L1_RPC_URL")${net:+ · lane $net $(cre_env_host "${L2_RPC_URL:-}")}"
 }
 
 # Host-only rendering of an RPC URL — these carry API keys in the path, so never echo them whole.
