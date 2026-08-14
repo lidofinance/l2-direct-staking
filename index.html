@@ -166,6 +166,9 @@ tr.group a:hover { color: var(--accent); }
 
 .err-banner { margin: 12px 26px 6px; padding: 12px 16px; border-radius: 10px;
   background: var(--crit-bg); border: 1px solid var(--crit-bd); color: var(--crit-fg); font-size: 13px; font-weight: 600; }
+.err-banner .retry { margin-left: 10px; padding: 3px 10px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--crit-bd); background: transparent; color: var(--crit-fg); font: inherit; font-size: 12px; }
+.err-banner .retry:disabled { opacity: .5; cursor: default; }
 .chip .mono { color: inherit; font-size: inherit; }
 .hico { vertical-align: -1px; margin: 0 1px; }
 
@@ -209,7 +212,8 @@ footer {
 <script>
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner (CREReceiver owner + author)
+const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner (CREReceiver owner)
+const CRE_AUTHOR = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // CREReceiver expectedAuthor (Automation Safe)
 const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger owner since Aug 2026
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
@@ -217,11 +221,11 @@ const ADMIN_ROLE = '0x' + '0'.repeat(64);
 const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [ST_OWNER]: 'Trigger Owner',
+  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [CRE_AUTHOR]: 'Automation Safe', [ST_OWNER]: 'Trigger Owner',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
 const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
-const SAFES = new Set([LOL]);
+const SAFES = new Set([LOL, CRE_AUTHOR]);
 // Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
 const ICO = {
   eoa: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="EOA"><circle cx="8" cy="4.5" r="3"/><path d="M8 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/></svg>',
@@ -397,7 +401,7 @@ function laneGroups(L, d) {
     { contract: 'CREReceiver', addr: L.creReceiver, checks: [
       { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.creOwner, AUTO_OWNER), d.creOwner) },
       { key: 'forwarder', sub: 'getForwarder()', ...cell(eq(d.creForwarderActual, L.creForwarder) ? ['ok', holder(L.creForwarder, 'CRE Forwarder')] : ['crit', holder(d.creForwarderActual)], d.creForwarderActual) },
-      { key: 'expected author', sub: 'getExpectedAuthor()', ...cell(ownerCheck(d.creAuthor, AUTO_OWNER), d.creAuthor) },
+      { key: 'expected author', sub: 'getExpectedAuthor()', ...cell(ownerCheck(d.creAuthor, CRE_AUTHOR), d.creAuthor) },
       { key: 'triggerSync allowed', sub: 'isCallAllowed()', ...cell(d.callAllowed ? ['ok', 'allowed'] : ['crit', 'blocked']) },
     ] },
     { contract: 'OraclePool', addr: L.pool, checks: [
@@ -507,9 +511,23 @@ function classifyTx(L, g) {
 }
 
 const ACTIVITY_SEEN_KEY = 'direct-staking-watch.activity-seen';
+const ACTIVITY_CACHE_KEY = 'direct-staking-watch.activity-cache';
 let latestActivity = null;
 let activitySeen = readActivitySeen();
 let activityFailed = false;
+let activityCache = readActivityCache();
+
+// Last successful per-lane events; instant paint on load, fallback while Blockscout is down.
+function readActivityCache() {
+  try {
+    const cache = JSON.parse(localStorage.getItem(ACTIVITY_CACHE_KEY));
+    return cache && typeof cache === 'object' ? cache : {};
+  } catch { return {}; }
+}
+
+function saveActivityCache() {
+  try { localStorage.setItem(ACTIVITY_CACHE_KEY, JSON.stringify(activityCache)); } catch {}
+}
 
 function readActivitySeen() {
   try {
@@ -542,7 +560,8 @@ function markActivitySeen() {
 
 function renderActivity(results) {
   const failed = results.filter(r => r.error).map(r => `${r.L.name} (${r.error})`);
-  const rows = results.filter(r => !r.error)
+  const stale = results.some(r => r.error && r.events);
+  const rows = results.filter(r => r.events)
     .flatMap(r => r.events.map(e => ({ L: r.L, ...e })))
     .sort((a, b) => b.ts - a.ts).slice(0, 60);
   activityFailed = failed.length > 0;
@@ -569,7 +588,7 @@ function renderActivity(results) {
       <h3>Pool Activity</h3>
       <span class="desc">Latest token flows through each OraclePool · fast stakes, syncs, liquidity top-ups · newest first.</span>
     </div>
-    ${failed.length ? `<div class="err-banner">✕ Blockscout unreachable: ${failed.join(', ')}</div>` : ''}
+    ${failed.length ? `<div class="err-banner">✕ Blockscout unreachable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
       ${tr}</table></div>` : failed.length ? '' : '<div class="err-banner">no transfers found</div>'}
@@ -743,7 +762,10 @@ async function refresh() {
 }
 async function refreshActivity() {
   const results = await Promise.all(LANES.map(L =>
-    activityData(L).then(events => ({ L, events })).catch(e => ({ L, error: e.message }))));
+    activityData(L)
+      .then(events => { activityCache[L.name] = events; return { L, events }; })
+      .catch(e => ({ L, error: e.message, events: activityCache[L.name] }))));
+  saveActivityCache();
   renderActivity(results);
 }
 let refreshInFlight = false;
@@ -783,6 +805,8 @@ window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
 selectTab(location.hash.slice(1));
 
 document.getElementById('refresh').onclick = refreshAll;
+if (LANES.some(L => activityCache[L.name]))
+  renderActivity(LANES.map(L => ({ L, events: activityCache[L.name] })));
 refreshAll();
 setInterval(refreshAll, 60_000);
 </script>
