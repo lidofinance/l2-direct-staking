@@ -9,7 +9,7 @@
 deployed:
   # Content-derived CRE workflow ID, recorded after the Base workflow deployment.
   l1:
-    - &creWorkflowId "0x009e0a713e8d99a0e3a7191ddbf007994bb9250a6663f950f235887c7ed64ce5"
+    - &creWorkflowId "0x0021e1307bdff1b533b760f0b5fadd36f9e7f2b7886b89e75fa3277deae68b76"
   l2:
     - &l2OraclePool "0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8"
     - &l2SyncTrigger "0x871a5cddE9813627Ff37A2895A0c9B117A664622"

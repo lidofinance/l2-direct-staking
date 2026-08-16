@@ -998,12 +998,182 @@ record-cre-workflow-id network workflow_id:
     [[ -f "$OUT" ]] || { echo "Missing deployed state: $OUT" >&2; exit 1; }
     TMP="$(mktemp "${TMPDIR:-/tmp}/$NETWORK.deployed.XXXXXX.yaml")"
     trap 'rm -f "$TMP"' EXIT
+    # `style="double"` is load-bearing, not cosmetic: a bare 0x… scalar is an integer to any
+    # YAML 1.1 loader, which would silently turn the 64-hex-digit ID into a lossy float.
     WF="$WORKFLOW_ID" yq \
-      '(.deployed.l1) = [strenv(WF)] | .deployed.l1[0] anchor = "creWorkflowId"' \
+      '(.deployed.l1) = [strenv(WF)] | .deployed.l1[0] anchor = "creWorkflowId" | .deployed.l1[0] style = "double"' \
       "$OUT" > "$TMP"
     mv "$TMP" "$OUT"
     trap - EXIT
     echo "Recorded $NETWORK CRE workflow ID in $OUT"
+
+# What does the CRE WorkflowRegistry actually say? Keyless, read-only, no .env needed — the CLI
+# mirror of the dashboard's Automation tab (docs/dashboard-automation-tab.md §1).
+#
+# It ENUMERATES `getWorkflowListByOwner` rather than reading the pinned IDs, because `workflowId` is
+# content-derived: every `upsertWorkflow` mints a new one, so a pin-first read reports a stale repo
+# anchor as if it were a chain fault. The pins are then diffed against the enumeration as a separate,
+# clearly-labelled DRIFT row — a fact about this repository, not about the automation's health.
+#
+# The registry is ONE Ethereum-mainnet singleton for all four lanes; lanes are matched by workflow
+# name. Owners queried = the pinned Automation Owner plus every distinct live
+# `CREReceiver.getExpectedAuthor()`, so the read keeps working through the pending Safe migration
+# without an edit here.
+#
+# L1 RPC: RPC_ETHEREUM_REMOTE, else RPC_ETHEREUM, else L1_RPC_URL, else a public endpoint.
+# L2 RPCs (RPC_<NET>[_REMOTE]) are OPTIONAL — without them the author-gate cross-check is skipped,
+# not failed. Exits nonzero on any ✕ row.
+#
+# Complements, does not replace: `just -E .env.<net> verify-cre-workflow` (state-mate, exhaustive,
+# pin-based) and `just postflight-monitor` §4.
+cre-registry-status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    command -v yq >/dev/null 2>&1 || { echo "yq (mikefarah) is required" >&2; exit 1; }
+    command -v cast >/dev/null 2>&1 || { echo "cast (foundry) is required" >&2; exit 1; }
+
+    # The registry's WorkflowMetadataView, spelled out once. cast decodes the whole tuple[] for us.
+    LIST_SIG='getWorkflowListByOwner(address,uint256,uint256)((bytes32,address,uint64,uint8,string,string,string,string,bytes,string)[])'
+    NETS=( optimism arbitrum base linea )
+
+    REGISTRY="$(just _l2-input-anchor optimism creWorkflowRegistry)"
+    DON_FAMILY="$(just _l2-input-anchor optimism creDonFamily)"
+    AUTOMATION_OWNER="$(just _l2-input-anchor optimism l2AutomationOwner)"
+    CRE_RECEIVER="$(just _l2-input-anchor optimism l2CreReceiver 2>/dev/null || true)"
+    [[ -n "$CRE_RECEIVER" ]] || CRE_RECEIVER="$(yq '[.. | select(anchor == "l2CreReceiver")][0]' \
+      "$ROOT_DIR/config/state/optimism.deployed.yaml" | tr -d '"')"
+
+    L1="${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-${L1_RPC_URL:-https://ethereum-rpc.publicnode.com}}}"
+
+    echo "Resolved from config/state/*.inputs.yaml + *.deployed.yaml:"
+    echo "  registry         = $REGISTRY  (Ethereum-mainnet singleton, all 4 lanes)"
+    echo "  don family       = $DON_FAMILY"
+    echo "  automation owner = $AUTOMATION_OWNER"
+    echo "  CREReceiver      = $CRE_RECEIVER  (same CREATE2 address on every lane)"
+    echo "  L1 rpc           = $L1"
+    echo
+
+    cast chain-id --rpc-url "$L1" >/dev/null 2>&1 \
+      || { echo "L1 RPC not reachable: $L1" >&2; exit 1; }
+
+    rc=0
+    OK()  { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+    BAD() { printf '  \033[31m✕\033[0m %s\n' "$1"; rc=1; }
+    WARN(){ printf '  \033[33m⚠\033[0m %s\n' "$1"; }
+    INFO(){ printf '    %s\n' "$1"; }
+
+    # ── Live expectedAuthor per lane (optional; also grows the owner set) ──
+    declare -a AUTHORS
+    OWNERS="$AUTOMATION_OWNER"
+    echo "──── author pins (L2) ────"
+    for i in "${!NETS[@]}"; do
+      net="${NETS[$i]}"; u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
+      rpc_var="RPC_${u}_REMOTE"; rpc="${!rpc_var:-}"
+      [[ -n "$rpc" ]] || { rpc_var="RPC_${u}"; rpc="${!rpc_var:-}"; }
+      AUTHORS[$i]=""
+      if [[ -z "$rpc" ]] || ! cast chain-id --rpc-url "$rpc" >/dev/null 2>&1; then
+        WARN "$net: expectedAuthor not read (set RPC_${u}_REMOTE) — author-gate cross-check skipped"
+        continue
+      fi
+      a="$(cast call "$CRE_RECEIVER" 'getExpectedAuthor()(address)' --rpc-url "$rpc" 2>/dev/null | tr -d ' \r')"
+      if [[ ! "$a" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+        BAD "$net: getExpectedAuthor() unreadable on $CRE_RECEIVER"; continue
+      fi
+      AUTHORS[$i]="$a"
+      INFO "$(printf '%-9s expectedAuthor = %s' "$net" "$a")"
+      grep -qi -- "$a" <<<"$OWNERS" || OWNERS="$OWNERS $a"
+    done
+    echo
+
+    # ── Owner-account state: the link is what the DON signs as; the quota is deploy access ──
+    echo "──── owner accounts (L1 registry) ────"
+    for owner in $OWNERS; do
+      linked="$(cast call "$REGISTRY" 'isOwnerLinked(address)(bool)' "$owner" --rpc-url "$L1" 2>/dev/null | tr -d ' \r')"
+      quota="$(cast call "$REGISTRY" 'getMaxWorkflowsPerUserDON(address,string)(uint32)' "$owner" "$DON_FAMILY" --rpc-url "$L1" 2>/dev/null | tr -d ' \r')"
+      quota="${quota%% *}"
+      eth="$(cast balance "$owner" --rpc-url "$L1" 2>/dev/null || echo 0)"
+      if [[ "$linked" == "true" ]]; then
+        OK "$owner  isOwnerLinked = true  ·  quota(${DON_FAMILY}) = ${quota:-?}  ·  $(cast from-wei "${eth%% *}") ETH"
+      else
+        BAD "$owner  isOwnerLinked = ${linked:-<unreadable>} — the DON will NOT sign as this address"
+      fi
+      # The owner signs every registry transaction itself, so DUST is as disabling as zero: no `pause`,
+      # no `delete`. Same 0.001 ETH floor the dashboard's Automation tab applies, so the two views
+      # cannot return opposite verdicts on one balance.
+      [[ "${eth%% *}" -lt 1000000000000000 ]] 2>/dev/null \
+        && WARN "$owner has $(cast from-wei "${eth%% *}") mainnet ETH — too thin to pause/delete its own workflows"
+    done
+    echo
+
+    # ── Registered workflows, enumerated ──
+    # `--json` (not the human form) because the human form's `), (` tuple separator is not a reliable
+    # record delimiter, and BSD vs GNU sed disagree about `\n` in a replacement.
+    echo "──── registered workflows (enumerated, not pinned) ────"
+    ROWS="$(mktemp "${TMPDIR:-/tmp}/cre-rows.XXXXXX")"
+    trap 'rm -f "$ROWS"' EXIT
+    : > "$ROWS"
+    for owner in $OWNERS; do
+      raw="$(cast call "$REGISTRY" "$LIST_SIG" "$owner" 0 20 --rpc-url "$L1" --json 2>&1)"
+      jq -e . >/dev/null 2>&1 <<<"$raw" \
+        || { BAD "getWorkflowListByOwner($owner) failed: ${raw:0:120}"; continue; }
+      # id \t owner \t createdAt \t status \t name \t tag \t donFamily — tab-separated, one per line.
+      jq -r '.[0][] | [.[0], .[1], .[2], .[3], .[4], .[7], .[9]] | @tsv' <<<"$raw" >> "$ROWS"
+    done
+    while IFS=$'\t' read -r f_id f_owner f_created f_status f_name f_tag f_don; do
+      [[ -n "$f_name" ]] || continue
+      printf '  %s\n' "$f_name"
+      INFO "id       $f_id"
+      INFO "owner    $f_owner"
+      INFO "created  $(date -u -r "$f_created" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@$f_created" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "$f_created")"
+      [[ "$f_status" == "0" ]] && OK "status   ACTIVE" || BAD "status   $f_status (1 = PAUSED) — the DON is not running this workflow"
+      [[ "$f_don" == "$DON_FAMILY" ]] && OK "don      $f_don" || BAD "don      $f_don (expected $DON_FAMILY — the quota above is for a different family)"
+      [[ "$f_tag" == "$f_name" ]] || WARN "tag      $f_tag (differs from name)"
+    done < "$ROWS"
+    echo
+
+    # ── DRIFT: repo pins vs the enumeration. A repo fact, deliberately not a chain fault. ──
+    echo "──── repo pins vs chain (config/state/<net>.deployed.yaml) ────"
+    # Join on THIS lane's workflow and compare THAT row's id. Matching the pin against the whole id set
+    # (or the name as a substring) would pass a lane whose pin actually holds a different lane's id —
+    # the cross-chain blindness this repo has been bitten by before.
+    for net in "${NETS[@]}"; do
+      name="$(just _l2-input-anchor "$net" creWorkflowName)"
+      pin="$(yq '[.. | select(anchor == "creWorkflowId")][0]' "$ROOT_DIR/config/state/$net.deployed.yaml" 2>/dev/null | tr -d '"')"
+      live="$(awk -F'\t' -v n="$name" '$5 == n { print $1 }' "$ROWS")"
+      count="$(printf '%s' "$live" | grep -c . || true)"
+      if [[ "$count" -eq 0 ]]; then
+        BAD "$(printf '%-9s no workflow named %s registered under any queried owner' "$net" "$name")"
+      elif [[ "$count" -gt 1 ]]; then
+        BAD "$(printf '%-9s %s workflows named %s across the queried owners — ambiguous' "$net" "$count" "$name")"
+      elif [[ "$live" == "$pin" ]]; then
+        OK "$(printf '%-9s pin matches chain  %s' "$net" "$pin")"
+      else
+        WARN "$(printf '%-9s pin STALE: repo %s, chain %s — refresh with just record-cre-workflow-id %s %s' \
+          "$net" "$pin" "$live" "$net" "$live")"
+      fi
+    done
+    echo
+
+    # ── The cross-plane conjunct the registry alone cannot show ──
+    echo "──── author gate (registry owner ↔ L2 expectedAuthor) ────"
+    for i in "${!NETS[@]}"; do
+      net="${NETS[$i]}"; a="${AUTHORS[$i]}"
+      [[ -n "$a" ]] || { WARN "$net: skipped (no L2 RPC)"; continue; }
+      linked="$(cast call "$REGISTRY" 'isOwnerLinked(address)(bool)' "$a" --rpc-url "$L1" 2>/dev/null | tr -d ' \r')"
+      if [[ "$linked" == "true" ]]; then
+        OK "$(printf '%-9s expectedAuthor %s is link-registered — reports will pass the author gate' "$net" "$a")"
+      else
+        BAD "$(printf '%-9s expectedAuthor %s is NOT link-registered — every report reverts InvalidAuthor (silent stall)' "$net" "$a")"
+      fi
+    done
+    echo
+    echo "Not readable here (see docs/dashboard-automation-tab.md §6): DON liveness (no heartbeat;"
+    echo "idle and dead are indistinguishable), registered artifact CONTENT (binaryUrl/configUrl are"
+    echo "403-gated), CRE credit balance (dashboard-only), and report REJECTIONS (the forwarder"
+    echo "absorbs receiver reverts, so InvalidAuthor leaves no log)."
+    exit $rc
 
 # Rewrite the CRE workflow config for the current network with the deployed SyncTrigger
 # + CREReceiver addresses. Run after the canary deploy (`deploy-test`) before `deploy-cre-workflow`.
