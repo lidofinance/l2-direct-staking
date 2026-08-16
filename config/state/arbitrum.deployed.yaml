@@ -9,7 +9,7 @@
 deployed:
   # Zero bytes32 is a fail-closed stub until the replacement workflow is deployed and recorded.
   l1:
-    - &creWorkflowId "0x0038ff0f3c1e01c508a3c548014e7b90190e1f7b98be8aeeaa364e1c184df292"
+    - &creWorkflowId "0x008911b99e8c5f9fff811212c57c356b5ff185f80387d01f9352af58dfc9253c"
   l2:
     - &l2OraclePool "0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8"
     - &l2SyncTrigger "0x871a5cddE9813627Ff37A2895A0c9B117A664622"

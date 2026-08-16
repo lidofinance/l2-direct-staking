@@ -8,7 +8,7 @@
 # deploy-commit: 3d1d484c31d39881cdbe8423614e3043e89e027f
 deployed:
   l1:
-    - &creWorkflowId "0x00050431c7697a5f43bb6a41eec1b7bb46635a688313ee9e12c9feb668681c81"
+    - &creWorkflowId "0x00d11943080885d24f18337d63721e5e80b55ae6a2c8385d7702b6a6decdb544"
   l2:
     - &l2OraclePool "0xac143bF41BBA4a8014b4Ef5a5F46b39a36AE40A8"
     - &l2SyncTrigger "0x871a5cddE9813627Ff37A2895A0c9B117A664622"
