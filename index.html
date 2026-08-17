@@ -51,6 +51,53 @@ button.refresh {
   border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
 }
 button.refresh:hover { border-color: var(--muted); }
+button.refresh.alt { font-weight: 500; padding: 8px 12px; }
+button.refresh.alt .badge {
+  margin-left: 6px; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+  background: var(--warn-bg); border: 1px solid var(--warn-bd); color: var(--warn-fg);
+}
+
+/* ── RPC settings dialog ── */
+dialog#rpcdlg {
+  border: 1px solid var(--line); border-radius: 14px; padding: 0; max-width: 680px; width: calc(100% - 32px);
+  background: var(--surface); color: var(--ink); font: inherit; box-shadow: 0 18px 50px rgba(16,32,26,.18);
+}
+dialog#rpcdlg::backdrop { background: rgba(16,25,21,.34); }
+#rpcdlg .head { padding: 18px 22px 12px; border-bottom: 1px solid var(--line-soft); }
+#rpcdlg .head h2 { margin: 0 0 4px; font-size: 16px; }
+#rpcdlg .head p { margin: 0; color: var(--ink-2); font-size: 12.5px; }
+#rpcdlg .rows { padding: 8px 22px 4px; max-height: 52vh; overflow-y: auto; }
+#rpcdlg .row { padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
+#rpcdlg .row:last-child { border-bottom: 0; }
+#rpcdlg .row .lab { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+#rpcdlg .row .lab b { font-size: 13px; }
+#rpcdlg .row .lab span { color: var(--muted); font-size: 11.5px; }
+#rpcdlg .row .ctl { display: flex; gap: 8px; }
+#rpcdlg input {
+  flex: 1; min-width: 0; font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--ink);
+}
+#rpcdlg input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#rpcdlg input.bad { border-color: var(--crit-bd); background: var(--crit-bg); }
+#rpcdlg .row .msg { margin-top: 5px; font-size: 11.5px; min-height: 0; }
+#rpcdlg .row .msg.bad { color: var(--crit-fg); }
+#rpcdlg .row .msg.good { color: var(--ok-fg); }
+#rpcdlg .row .msg.dim { color: var(--muted); }
+#rpcdlg .foot {
+  display: flex; align-items: center; gap: 10px; padding: 14px 22px;
+  border-top: 1px solid var(--line-soft); background: var(--page); border-radius: 0 0 14px 14px;
+}
+#rpcdlg .foot .spacer { margin-left: auto; }
+#rpcdlg button {
+  font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
+}
+#rpcdlg button:hover:not(:disabled) { border-color: var(--muted); }
+#rpcdlg button.primary { background: var(--dark); border-color: var(--dark); color: #fff; font-weight: 600; }
+#rpcdlg button:disabled { opacity: .55; cursor: default; }
+#rpcdlg button.link {
+  border: 0; background: none; padding: 7px 4px; color: var(--ink-2); text-decoration: underline;
+}
 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.ok { background: #2aa96e; } .dot.warn { background: #d9a422; } .dot.crit { background: #d64a3a; }
@@ -203,9 +250,29 @@ footer {
   <div class="right">
     <span id="rpcstat"></span>
     <span id="updated">loading…</span>
+    <button class="refresh alt" id="rpcbtn" title="Configure RPC endpoints">⚙ RPCs</button>
     <button class="refresh" id="refresh">⟳ Refresh</button>
   </div>
 </div>
+
+<dialog id="rpcdlg">
+  <form method="dialog">
+    <div class="head">
+      <h2>RPC endpoints</h2>
+      <p>Overrides are stored in this browser only and survive reloads. Leave a field empty to use the
+         built-in public endpoint. Each custom URL is checked with <span class="mono">eth_chainId</span>
+         before it is saved — a URL pointing at the wrong chain would silently render another network's
+         state under this one's name.</p>
+    </div>
+    <div class="rows" id="rpcrows"></div>
+    <div class="foot">
+      <button type="button" class="link" id="rpcreset">Reset all to defaults</button>
+      <span class="spacer"></span>
+      <button type="button" id="rpccancel">Cancel</button>
+      <button type="button" class="primary" id="rpcsave">Verify &amp; save</button>
+    </div>
+  </form>
+</dialog>
 
 <main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
 <main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
@@ -219,12 +286,18 @@ footer {
 <script>
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner — CREReceiver owner, CRE workflow owner
+const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner — CRE workflow owner + author
+  // gate ONLY. It held owner() on both automation contracts until 2026-08-17; see AUTO_HOLDER below.
 const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // Automation Safe — the msig migration target
 const CRE_AUTHOR = AUTO_OWNER; // expected CREReceiver.getExpectedAuthor(): re-pinned from AUTO_SAFE on 2026-08-16.
   // The Safe is not isOwnerLinked on the L1 WorkflowRegistry, so while the gate pointed at it every
   // report reverted InvalidAuthor. The Automation tab checks that link rather than trusting this pin.
-const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger owner since Aug 2026
+// Holder of owner() on BOTH SyncTrigger (since Aug 2026) and CREReceiver (2026-08-17, all four lanes).
+// Deliberately NOT named after a principal: this address is unattributed — it appears in no config, no
+// runbook and no deploy recipe, and the only record of where it came from is that it received the
+// 2026-08-07 emergency sweep from the AO and Deployer keys after both were declared compromised. It is
+// therefore tracked as a known value, not a trusted one — see UNATTRIBUTED below.
+const AUTO_HOLDER = '0x2a140ba9ad3b306ff62185954f49b130492266ab';
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 const ADMIN_ROLE = '0x' + '0'.repeat(64);
@@ -232,10 +305,10 @@ const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
 const DON_FAMILY = 'zone-a'; // creDonFamily — the quota in getMaxWorkflowsPerUserDON is per family
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'Automation Safe', [ST_OWNER]: 'Trigger Owner',
-  [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
+  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'Automation Safe',
+  [AUTO_HOLDER]: 'Automation Holder', [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
-const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
+const EOAS = new Set([AUTO_OWNER, AUTO_HOLDER]);
 const SAFES = new Set([LOL, AUTO_SAFE]);
 // Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
 const ICO = {
@@ -248,7 +321,8 @@ const holder = (a, name) => `${ICO[holderKind((a || '').toLowerCase())]} ${name 
 
 // ponytail: RPC endpoints hardcoded; edit here if publicnode misbehaves.
 const L1 = {
-  name: 'Ethereum', tag: 'L1', abbr: 'ET', rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io',
+  name: 'Ethereum', tag: 'L1', abbr: 'ET', chainId: 1,
+  rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io',
   receiver: '0x6F357d53d6bE3238180316BA5F8f11467e164588',
   proxyAdmin: '0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD',
   wsteth: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0',
@@ -276,25 +350,25 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 };
 
 const LANES = [
-  { name: 'Optimism', abbr: 'OP', rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
+  { name: 'Optimism', chainId: 10, abbr: 'OP', rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
     bs: 'https://explorer.optimism.io',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
-  { name: 'Arbitrum', abbr: 'AR', rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
+  { name: 'Arbitrum', chainId: 42161, abbr: 'AR', rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
     bs: 'https://arbitrum.blockscout.com',
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
     oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
-  { name: 'Base', abbr: 'BA', rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
+  { name: 'Base', chainId: 8453, abbr: 'BA', rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
     bs: 'https://base.blockscout.com',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x0E37599436974a25dDeEdF795C848d30Af46eaCF', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
-  { name: 'Linea', abbr: 'LI', rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
+  { name: 'Linea', chainId: 59144, abbr: 'LI', rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
     bs: 'https://api-explorer.linea.build',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
@@ -304,6 +378,116 @@ const LANES = [
 ].map(l => ({ ...l, ...COMMON_DEPLOYED, workflowName: 'lido-sync-automation-' + l.name.toLowerCase(),
               workflowIdPin: WORKFLOW_ID_PINS[l.name] }));
 LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
+
+// ── RPC endpoint overrides ───────────────────────────────────────────────────
+// Per-browser overrides for the endpoints above, so an operator can point the dashboard at a private
+// or paid provider (or a fork) without editing this file. localStorage rather than a cookie: this page
+// is routinely opened over file://, where cookie writes are blocked in Chrome and Safari, and there is
+// no server that would ever want these URLs in a request header — they frequently carry an API key.
+const NETS = [L1, ...LANES];
+const RPC_STORE = 'dsw.rpc.v1';
+const RPC_DEFAULTS = Object.fromEntries(NETS.map(n => [n.name, n.rpc]));
+
+function loadRpcOverrides() {
+  try {
+    const o = JSON.parse(localStorage.getItem(RPC_STORE) || '{}');
+    // Keep only keys that still name a network and still hold a string: a stale entry from a renamed
+    // lane must not resurrect itself, and a malformed value must not become a fetch target.
+    return Object.fromEntries(Object.entries(o)
+      .filter(([k, v]) => RPC_DEFAULTS[k] && typeof v === 'string' && v.trim()));
+  } catch { return {}; } // unparseable or storage blocked → defaults, never a hard failure
+}
+function applyRpcOverrides(o = loadRpcOverrides()) {
+  NETS.forEach(n => n.rpc = o[n.name] || RPC_DEFAULTS[n.name]);
+  const n = Object.keys(o).length;
+  const badge = document.querySelector('#rpcbtn .badge');
+  if (badge) badge.remove();
+  if (n) document.getElementById('rpcbtn')
+    .insertAdjacentHTML('beforeend', `<span class="badge">${n} custom</span>`);
+  return o;
+}
+
+// Probe a candidate endpoint. Returns the chain id it reports, or throws — an unreachable or
+// non-JSON-RPC URL must never be treated as "probably fine".
+async function probeChainId(url) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+    if (j.error) throw new Error(j.error.message || 'JSON-RPC error');
+    if (!j.result) throw new Error('no eth_chainId result');
+    return Number(BigInt(j.result));
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'timed out after 8s'
+      : /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? 'unreachable (or CORS-blocked)'
+      : e.message);
+  } finally { clearTimeout(t); }
+}
+
+function renderRpcRows() {
+  const o = loadRpcOverrides();
+  document.getElementById('rpcrows').innerHTML = NETS.map(n => `
+    <div class="row" data-net="${n.name}">
+      <div class="lab"><b>${n.name}</b><span>chain ${n.chainId}</span></div>
+      <div class="ctl">
+        <input type="url" spellcheck="false" placeholder="${RPC_DEFAULTS[n.name]}"
+               value="${o[n.name] ? o[n.name].replace(/"/g, '&quot;') : ''}">
+        <button type="button" class="clear">Default</button>
+      </div>
+      <div class="msg dim">${o[n.name] ? 'custom endpoint' : 'using the built-in public endpoint'}</div>
+    </div>`).join('');
+}
+
+function openRpcDialog() { renderRpcRows(); document.getElementById('rpcdlg').showModal(); }
+
+// Verify every changed endpoint before persisting any of them. A URL that answers on the wrong chain is
+// rejected outright: the addresses on this dashboard are deterministic deploys that exist on several
+// lanes, so a mis-bound endpoint would render a real-looking, entirely wrong lane.
+async function saveRpcDialog() {
+  const save = document.getElementById('rpcsave');
+  const rows = [...document.querySelectorAll('#rpcrows .row')];
+  save.disabled = true; save.textContent = 'Verifying…';
+  const next = {};
+  let bad = 0;
+  await Promise.all(rows.map(async row => {
+    const net = NETS.find(n => n.name === row.dataset.net);
+    const input = row.querySelector('input');
+    const msg = row.querySelector('.msg');
+    const url = input.value.trim();
+    input.classList.remove('bad');
+    if (!url) { msg.className = 'msg dim'; msg.textContent = 'using the built-in public endpoint'; return; }
+    if (!/^https?:\/\//i.test(url)) {
+      bad++; input.classList.add('bad'); msg.className = 'msg bad';
+      msg.textContent = 'must start with http:// or https://'; return;
+    }
+    msg.className = 'msg dim'; msg.textContent = 'checking…';
+    try {
+      const id = await probeChainId(url);
+      if (id !== net.chainId) {
+        bad++; input.classList.add('bad'); msg.className = 'msg bad';
+        msg.textContent = `answers for chain ${id}, expected ${net.chainId} — not saved`;
+        return;
+      }
+      next[net.name] = url;
+      msg.className = 'msg good'; msg.textContent = `✓ chain ${id}`;
+    } catch (e) {
+      bad++; input.classList.add('bad'); msg.className = 'msg bad'; msg.textContent = e.message;
+    }
+  }));
+  save.disabled = false; save.textContent = 'Verify & save';
+  if (bad) return; // leave the dialog open with the failures marked
+  try { localStorage.setItem(RPC_STORE, JSON.stringify(next)); }
+  catch { /* private mode: the in-memory override below still applies for this session */ }
+  applyRpcOverrides(next);
+  document.getElementById('rpcdlg').close();
+  refreshAll();
+}
 LANES.forEach(l => NAMES[l.creForwarder.toLowerCase()] = 'CRE Forwarder'); // Linea's differs from the other three
 // Named by ADDRESS so event rows can resolve a target instead of assuming one.
 NAMES[COMMON_DEPLOYED.syncTrigger.toLowerCase()] = 'SyncTrigger';
@@ -375,13 +559,30 @@ const decAddr = h => h && h.length >= 66 ? '0x' + h.slice(-40) : null;
 const decBool = h => h ? BigInt(h) !== 0n : null;
 const decU = h => h ? BigInt(h) : null;
 
-async function rpcBatch(url, calls) {
-  const body = calls.map((c, i) => ({ jsonrpc: '2.0', id: i, ...c }));
+// Chunked so a batch-limited endpoint still works: free tiers commonly cap a batch (mainnet.optimism.io
+// at 10) and answer an oversized one with a single error OBJECT instead of the per-call array, which
+// used to surface as a bare "out.map is not a function". A lane reads ~20 calls, so this is 2 requests
+// against the default endpoints and the ceiling stays below every cap seen in the wild.
+const RPC_BATCH_MAX = 10;
+
+async function rpcBatchChunk(url, calls, idBase) {
+  const body = calls.map((c, i) => ({ jsonrpc: '2.0', id: idBase + i, ...c }));
   const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const out = await res.json();
+  // A batch request answered with a single object is a whole-batch rejection (rate limit, batch-size
+  // cap, auth). Report what it said — never let it fall through as a shape error.
+  if (!Array.isArray(out)) throw new Error(out?.error?.message || 'endpoint rejected the batch request');
   const byId = new Map(out.map(r => [r.id, r]));
-  return calls.map((_, i) => byId.get(i)?.result ?? null); // per-call revert → null
+  return calls.map((_, i) => byId.get(idBase + i)?.result ?? null); // per-call revert → null
+}
+
+async function rpcBatch(url, calls) {
+  const chunks = [];
+  for (let i = 0; i < calls.length; i += RPC_BATCH_MAX) chunks.push(i);
+  const parts = await Promise.all(chunks.map(i =>
+    rpcBatchChunk(url, calls.slice(i, i + RPC_BATCH_MAX), i)));
+  return parts.flat();
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -400,10 +601,19 @@ const chip = (level, main, sub) =>
   `<span class="chip ${level}"><div class="m">${level === 'ok' ? '✓ ' : level === 'warn' ? '⚠ ' : level === 'crit' ? '✕ ' : ''}${main}</div>${sub ? `<div class="s">${sub}</div>` : ''}</span>`;
 const alink = (net, a, text) => `<a href="${net.explorer}/address/${a}" target="_blank" title="${a}">${text ?? short(a)}&thinsp;↗</a>`;
 
-// Owner matches the target → ok; anything else → crit (migration is complete).
+// Addresses that hold a privileged slot without an established identity. Matching one is not a pass:
+// it means "this is the holder we know about", not "this holder has been vetted". Green would assert a
+// review that has not happened, and a green owner row is precisely how an unnoticed takeover looks.
+// Reading owner() settles WHICH address holds the slot and never WHETHER it was authorized to take it.
+// Drop an entry here only when the authorizing act is cited in docs/automation-owner-unattributed.md.
+const UNATTRIBUTED = new Set([AUTO_HOLDER]);
+
+// Owner matches the target → ok (warn if the target is unattributed); anything else → crit.
 function ownerCheck(actual, target) {
   if (!actual) return ['crit', 'unreadable'];
-  return [target.toLowerCase() === actual.toLowerCase() ? 'ok' : 'crit', holder(actual)];
+  const a = actual.toLowerCase();
+  if (target.toLowerCase() !== a) return ['crit', holder(actual)];
+  return UNATTRIBUTED.has(a) ? ['warn', holder(actual) + ' · unattributed'] : ['ok', holder(actual)];
 }
 
 // ── Data ─────────────────────────────────────────────────────────────────────
@@ -554,11 +764,11 @@ function laneGroups(L, d) {
       { key: 'owner', sub: 'owner()', ...cell(eq(d.proxyOwner, L.gov) ? ['ok', holder(L.gov, 'Gov Executor')] : ['crit', holder(d.proxyOwner)], d.proxyOwner) },
     ] },
     { contract: 'SyncTrigger', addr: L.syncTrigger, checks: [
-      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.stOwner, ST_OWNER), d.stOwner) },
+      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.stOwner, AUTO_HOLDER), d.stOwner) },
       { key: 'forwarder', sub: 'getForwarder()', ...cell(eq(d.stForwarder, L.creReceiver) ? ['ok', holder(L.creReceiver, 'CREReceiver')] : ['crit', holder(d.stForwarder)], d.stForwarder) },
     ] },
     { contract: 'CREReceiver', addr: L.creReceiver, checks: [
-      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.creOwner, AUTO_OWNER), d.creOwner) },
+      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.creOwner, AUTO_HOLDER), d.creOwner) },
       { key: 'forwarder', sub: 'getForwarder()', ...cell(eq(d.creForwarderActual, L.creForwarder) ? ['ok', holder(L.creForwarder, 'CRE Forwarder')] : ['crit', holder(d.creForwarderActual)], d.creForwarderActual) },
       { key: 'expected author', sub: 'getExpectedAuthor()', ...cell(ownerCheck(d.creAuthor, CRE_AUTHOR), d.creAuthor) },
       { key: 'triggerSync allowed', sub: 'isCallAllowed()', ...cell(d.callAllowed ? ['ok', 'allowed'] : ['crit', 'blocked']) },
@@ -1356,6 +1566,29 @@ window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
 selectTab(location.hash.slice(1));
 
 document.getElementById('refresh').onclick = refreshAll;
+
+document.getElementById('rpcbtn').onclick = openRpcDialog;
+document.getElementById('rpcsave').onclick = saveRpcDialog;
+document.getElementById('rpccancel').onclick = () => document.getElementById('rpcdlg').close();
+document.getElementById('rpcreset').onclick = () => {
+  document.querySelectorAll('#rpcrows .row').forEach(row => {
+    row.querySelector('input').value = '';
+    row.querySelector('input').classList.remove('bad');
+    row.querySelector('.msg').className = 'msg dim';
+    row.querySelector('.msg').textContent = 'using the built-in public endpoint';
+  });
+};
+// Per-row "Default" clears the field; saving with it empty is what actually drops the override.
+document.getElementById('rpcrows').addEventListener('click', e => {
+  if (!e.target.classList.contains('clear')) return;
+  const row = e.target.closest('.row');
+  row.querySelector('input').value = '';
+  row.querySelector('input').classList.remove('bad');
+  row.querySelector('.msg').className = 'msg dim';
+  row.querySelector('.msg').textContent = 'using the built-in public endpoint';
+});
+applyRpcOverrides(); // before the first read, so a stored override is used from the very first paint
+
 if (LANES.some(L => activityCache[L.name]))
   renderActivity(LANES.map(L => ({ L, events: activityCache[L.name] })));
 refreshAll();
