@@ -40,17 +40,72 @@ body {
 }
 .logo {
   width: 36px; height: 36px; border-radius: 9px; background: var(--dark);
-  color: #fff; display: grid; place-items: center; font-size: 16px;
+  color: #fff; display: grid; place-items: center; font-size: 16px; flex: none;
 }
 .appbar h1 { font-size: 16px; margin: 0; }
-.appbar .subtitle { color: var(--muted); font-size: 12px; }
-.appbar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-#updated { color: var(--ink-2); font-size: 13px; }
+.appbar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; flex: none; }
+.view-refresh {
+  width: 28px; height: 28px; padding: 6px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer;
+  display: grid; place-items: center; flex: none;
+}
+.view-refresh:hover { border-color: var(--muted); color: var(--ink); }
+.view-refresh:disabled { cursor: wait; opacity: .7; }
+.view-refresh svg { width: 14px; height: 14px; }
+.view-refresh.loading svg { animation: spin .8s linear infinite; }
+.card-head .view-refresh { margin-left: auto; }
 button.refresh {
   font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 9px;
   border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
 }
 button.refresh:hover { border-color: var(--muted); }
+button.refresh.alt { font-weight: 500; padding: 8px 12px; }
+button.refresh.alt .badge {
+  margin-left: 6px; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+  background: var(--warn-bg); border: 1px solid var(--warn-bd); color: var(--warn-fg);
+}
+
+/* ── RPC settings dialog ── */
+dialog#rpcdlg {
+  border: 1px solid var(--line); border-radius: 14px; padding: 0; max-width: 680px; width: calc(100% - 32px);
+  background: var(--surface); color: var(--ink); font: inherit; box-shadow: 0 18px 50px rgba(16,32,26,.18);
+}
+dialog#rpcdlg::backdrop { background: rgba(16,25,21,.34); }
+#rpcdlg .head { padding: 18px 22px 12px; border-bottom: 1px solid var(--line-soft); }
+#rpcdlg .head h2 { margin: 0 0 4px; font-size: 16px; }
+#rpcdlg .head p { margin: 0; color: var(--ink-2); font-size: 12.5px; }
+#rpcdlg .rows { padding: 8px 22px 4px; max-height: 52vh; overflow-y: auto; }
+#rpcdlg .row { padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
+#rpcdlg .row:last-child { border-bottom: 0; }
+#rpcdlg .row .lab { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+#rpcdlg .row .lab b { font-size: 13px; }
+#rpcdlg .row .lab span { color: var(--muted); font-size: 11.5px; }
+#rpcdlg .row .ctl { display: flex; gap: 8px; }
+#rpcdlg input {
+  flex: 1; min-width: 0; font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--ink);
+}
+#rpcdlg input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#rpcdlg input.bad { border-color: var(--crit-bd); background: var(--crit-bg); }
+#rpcdlg .row .msg { margin-top: 5px; font-size: 11.5px; min-height: 0; }
+#rpcdlg .row .msg.bad { color: var(--crit-fg); }
+#rpcdlg .row .msg.good { color: var(--ok-fg); }
+#rpcdlg .row .msg.dim { color: var(--muted); }
+#rpcdlg .foot {
+  display: flex; align-items: center; gap: 10px; padding: 14px 22px;
+  border-top: 1px solid var(--line-soft); background: var(--page); border-radius: 0 0 14px 14px;
+}
+#rpcdlg .foot .spacer { margin-left: auto; }
+#rpcdlg button {
+  font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
+}
+#rpcdlg button:hover:not(:disabled) { border-color: var(--muted); }
+#rpcdlg button.primary { background: var(--dark); border-color: var(--dark); color: #fff; font-weight: 600; }
+#rpcdlg button:disabled { opacity: .55; cursor: default; }
+#rpcdlg button.link {
+  border: 0; background: none; padding: 7px 4px; color: var(--ink-2); text-decoration: underline;
+}
 
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.ok { background: #2aa96e; } .dot.warn { background: #d9a422; } .dot.crit { background: #d64a3a; }
@@ -67,14 +122,21 @@ main { max-width: 1240px; margin: 0 auto; padding: 26px 28px 40px; }
 /* ── Hero ── */
 .hero { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; }
 .hero > div { padding: 22px 26px; border-left: 1px solid var(--line); }
-.hero > div:first-child { border-left: none; }
-.overline { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+.hero > div:first-child { border-left: none; position: relative; }
+.hero .view-refresh { position: absolute; top: 14px; right: 14px; }
 .hero h2 { font-size: 30px; margin: 6px 0 8px; font-weight: 600; }
 .hero p { margin: 0; color: var(--ink-2); font-size: 13px; max-width: 46ch; }
 .stat .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
 .stat .v { font-size: 40px; line-height: 1.15; margin-top: 8px; }
+.stat .v.loading {
+  min-height: 46px; display: flex; align-items: center; gap: 10px;
+  color: var(--ink-2); font-family: Inter, system-ui, sans-serif; font-size: 14px;
+}
+.stat .v.loading .spin { width: 20px; height: 20px; }
 .stat .s { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .stat.tinted { background: var(--tint); }
+.stat.warning { background: var(--warn-bg); }
+.stat.warning .v { color: var(--warn-fg); }
 .stat.critical { background: var(--crit-bg); }
 .stat.critical .v { color: var(--crit-fg); }
 
@@ -155,6 +217,9 @@ tr.group a:hover { color: var(--accent); }
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin, .view-refresh.loading svg { animation: none; }
+}
 
 /* ── Activity tags ── */
 .tag {
@@ -177,13 +242,65 @@ footer {
   display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
   color: var(--muted); font-size: 12px;
 }
-.scroll-x { overflow-x: auto; }
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
 /* Value we can display but not resolve — never styled as a link, so it promises nothing. */
 .inert { color: var(--muted); border-bottom: 1px dotted var(--line); cursor: help; }
 .limits { padding: 6px 26px 20px; color: var(--ink-2); font-size: 13px; }
 .limits p { margin: 6px 0; max-width: 92ch; }
 .limits strong { color: var(--ink); }
-@media (max-width: 980px) { .hero { grid-template-columns: 1fr 1fr; } .hero > div { border-top: 1px solid var(--line); } }
+@media (max-width: 1120px) {
+  .appbar { flex-wrap: wrap; }
+  .tabs { order: 3; width: 100%; min-width: 0; margin-left: 0; overflow-x: auto; }
+  .tab { flex: none; }
+}
+@media (max-width: 980px) {
+  .hero { grid-template-columns: 1fr 1fr; }
+  .hero > div { border-top: 1px solid var(--line); }
+  .hero > div:first-child { border-top: none; }
+}
+@media (max-width: 600px) {
+  .appbar { gap: 8px; padding: 10px 12px; }
+  .appbar .right { width: auto; margin-left: auto; gap: 8px; justify-content: flex-end; }
+  #rpcbtn { width: 36px; height: 36px; padding: 0; font-size: 0; display: grid; place-items: center; }
+  #rpcbtn::before { content: "⚙"; font-size: 16px; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; overflow: visible; }
+  .tab { justify-content: center; min-width: 0; min-height: 44px; padding: 9px 8px; }
+  .view-refresh { width: 36px; height: 36px; padding: 9px; }
+  .view-refresh svg { width: 16px; height: 16px; }
+  main { padding: 12px; }
+  footer { padding: 0 12px 24px; }
+  .card { margin-bottom: 14px; border-radius: 12px; }
+  .hero > div { padding: 18px; }
+  .hero > div:first-child, .hero > div:last-child { grid-column: 1 / -1; border-left: none; }
+  .hero > div:nth-child(2) { border-left: none; }
+  .hero h2 { font-size: 26px; }
+  .stat .v { font-size: 34px; }
+  .card-head { align-items: flex-start; flex-wrap: wrap; gap: 6px 10px; padding: 14px 16px 6px; }
+  .card-head .desc { order: 2; flex-basis: 100%; }
+  .legend { margin-left: auto; }
+  th, td { padding-left: 10px; padding-right: 10px; }
+  th:first-child, td:first-child { padding-left: 16px; }
+  th:last-child, td:last-child { padding-right: 16px; }
+  .scroll-x th:first-child, .scroll-x td:first-child {
+    position: sticky; left: 0; z-index: 1; background: var(--surface);
+    box-shadow: 1px 0 var(--line);
+  }
+  .scroll-x th:first-child { z-index: 2; }
+  .scroll-x tr.group td:first-child { background: #fafaf8; }
+  .syncm .chip, .ownm .chip { width: 158px; }
+  .who { gap: 8px; }
+  .avatar { width: 30px; height: 30px; }
+  .err-banner { margin: 12px 16px 6px; }
+  .err-banner .retry { display: block; margin: 8px 0 0; }
+  .limits { padding: 6px 16px 16px; }
+  #rpcdlg .head { padding: 16px 16px 12px; }
+  #rpcdlg .rows { padding: 8px 16px 4px; }
+  #rpcdlg .foot { padding: 12px 16px; flex-wrap: wrap; }
+}
 </style>
 </head>
 <body>
@@ -192,7 +309,6 @@ footer {
   <div class="logo">⇄</div>
   <div>
     <h1>Direct Staking Watch</h1>
-    <div class="subtitle">Onchain operations console</div>
   </div>
   <nav class="tabs">
     <button class="tab active" data-tab="main">Overview<span class="tab-dot" aria-hidden="true"></span></button>
@@ -202,10 +318,28 @@ footer {
   </nav>
   <div class="right">
     <span id="rpcstat"></span>
-    <span id="updated">loading…</span>
-    <button class="refresh" id="refresh">⟳ Refresh</button>
+    <button class="refresh alt" id="rpcbtn" title="Configure RPC endpoints">⚙ RPCs</button>
   </div>
 </div>
+
+<dialog id="rpcdlg">
+  <form method="dialog">
+    <div class="head">
+      <h2>RPC endpoints</h2>
+      <p>Overrides are stored in this browser only and survive reloads. Leave a field empty to use the
+         built-in public endpoint. Each custom URL is checked with <span class="mono">eth_chainId</span>
+         before it is saved — a URL pointing at the wrong chain would silently render another network's
+         state under this one's name.</p>
+    </div>
+    <div class="rows" id="rpcrows"></div>
+    <div class="foot">
+      <button type="button" class="link" id="rpcreset">Reset all to defaults</button>
+      <span class="spacer"></span>
+      <button type="button" id="rpccancel">Cancel</button>
+      <button type="button" class="primary" id="rpcsave">Verify &amp; save</button>
+    </div>
+  </form>
+</dialog>
 
 <main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
 <main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
@@ -213,26 +347,26 @@ footer {
 <main id="automation" hidden><div class="card"><div class="loader"><span class="spin"></span> reading the CRE workflow registry…</div></div></main>
 
 <footer>
-  <span>◷ Auto-refreshes every 60 seconds · read-only <span class="mono">eth_call</span> against public RPCs · pool activity via Blockscout API</span>
+  <span>◷ Auto-refresh: 60s · read-only</span>
 </footer>
 
 <script>
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner — CREReceiver owner, CRE workflow owner
+const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner — CRE workflow owner + author
 const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // Automation Safe — the msig migration target
 const CRE_AUTHOR = AUTO_OWNER; // expected CREReceiver.getExpectedAuthor(): re-pinned from AUTO_SAFE on 2026-08-16.
   // The Safe is not isOwnerLinked on the L1 WorkflowRegistry, so while the gate pointed at it every
   // report reverted InvalidAuthor. The Automation tab checks that link rather than trusting this pin.
-const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger owner since Aug 2026
+const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger and CREReceiver control owner since Aug 2026
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 const ADMIN_ROLE = '0x' + '0'.repeat(64);
 const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
-const DON_FAMILY = 'zone-a'; // creDonFamily — the quota in getMaxWorkflowsPerUserDON is per family
+const DON_FAMILY = 'zone-a'; // expected creDonFamily for all four workflows
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'Automation Safe', [ST_OWNER]: 'Trigger Owner',
+  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'Automation Safe', [ST_OWNER]: 'L2 Control Owner',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
 const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
@@ -248,7 +382,8 @@ const holder = (a, name) => `${ICO[holderKind((a || '').toLowerCase())]} ${name 
 
 // ponytail: RPC endpoints hardcoded; edit here if publicnode misbehaves.
 const L1 = {
-  name: 'Ethereum', tag: 'L1', abbr: 'ET', rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io',
+  name: 'Ethereum', tag: 'L1', abbr: 'ET', chainId: 1,
+  rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io',
   receiver: '0x6F357d53d6bE3238180316BA5F8f11467e164588',
   proxyAdmin: '0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD',
   wsteth: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0',
@@ -256,16 +391,6 @@ const L1 = {
   // creWorkflowRegistry — WorkflowRegistry 2.0.0. ONE mainnet singleton for all four lanes, even
   // though every workflow it holds drives an L2.
   workflowRegistry: '0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5',
-};
-
-// creWorkflowId per lane. Content-derived: every upsertWorkflow mints a new one, so these are the
-// REPO's record of the last deploy, not an identity to look workflows up by — the Automation tab
-// enumerates getWorkflowListByOwner and uses these only to report repo-vs-chain drift.
-const WORKFLOW_ID_PINS = {
-  Optimism: '0x009a1e79819002d8702a9e8dd65812703a1ae732111c954b55cab2b31a9fe359',
-  Arbitrum: '0x008911b99e8c5f9fff811212c57c356b5ff185f80387d01f9352af58dfc9253c',
-  Base:     '0x0021e1307bdff1b533b760f0b5fadd36f9e7f2b7886b89e75fa3277deae68b76',
-  Linea:    '0x00d11943080885d24f18337d63721e5e80b55ae6a2c8385d7702b6a6decdb544',
 };
 
 const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
@@ -276,34 +401,144 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 };
 
 const LANES = [
-  { name: 'Optimism', abbr: 'OP', rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
+  { name: 'Optimism', chainId: 10, abbr: 'OP', rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
     bs: 'https://explorer.optimism.io',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
-  { name: 'Arbitrum', abbr: 'AR', rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
+  { name: 'Arbitrum', chainId: 42161, abbr: 'AR', rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
     bs: 'https://arbitrum.blockscout.com',
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
     oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
-  { name: 'Base', abbr: 'BA', rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
-    bs: 'https://base.blockscout.com',
+  { name: 'Base', chainId: 8453, abbr: 'BA', rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
+    logsRpc: 'https://base.gateway.tenderly.co', activityFrom: 48000000, senderFrom: 20476091,
+    syncCheckpoint: { block: 50175146, wei: '305269281818334669206', count: 38 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x0E37599436974a25dDeEdF795C848d30Af46eaCF', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
-  { name: 'Linea', abbr: 'LI', rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
+  { name: 'Linea', chainId: 59144, abbr: 'LI', rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
     bs: 'https://api-explorer.linea.build',
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0x9eF6468C5f37b976E57d52054c693269479A784d',
     weth: '0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f', wsteth: '0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F' },
   // creWorkflowName mirrors cre-workflows/sync-automation/workflow.yaml's production-<net> target.
-].map(l => ({ ...l, ...COMMON_DEPLOYED, workflowName: 'lido-sync-automation-' + l.name.toLowerCase(),
-              workflowIdPin: WORKFLOW_ID_PINS[l.name] }));
+].map(l => ({ ...l, ...COMMON_DEPLOYED, workflowName: 'lido-sync-automation-' + l.name.toLowerCase() }));
 LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
+
+// ── RPC endpoint overrides ───────────────────────────────────────────────────
+// Per-browser overrides for the endpoints above, so an operator can point the dashboard at a private
+// or paid provider (or a fork) without editing this file. localStorage rather than a cookie: this page
+// is routinely opened over file://, where cookie writes are blocked in Chrome and Safari, and there is
+// no server that would ever want these URLs in a request header — they frequently carry an API key.
+const NETS = [L1, ...LANES];
+const RPC_STORE = 'dsw.rpc.v1';
+const RPC_DEFAULTS = Object.fromEntries(NETS.map(n => [n.name, n.rpc]));
+
+function loadRpcOverrides() {
+  try {
+    const o = JSON.parse(localStorage.getItem(RPC_STORE) || '{}');
+    // Keep only keys that still name a network and still hold a string: a stale entry from a renamed
+    // lane must not resurrect itself, and a malformed value must not become a fetch target.
+    return Object.fromEntries(Object.entries(o)
+      .filter(([k, v]) => RPC_DEFAULTS[k] && typeof v === 'string' && v.trim()));
+  } catch { return {}; } // unparseable or storage blocked → defaults, never a hard failure
+}
+function applyRpcOverrides(o = loadRpcOverrides()) {
+  NETS.forEach(n => n.rpc = o[n.name] || RPC_DEFAULTS[n.name]);
+  const n = Object.keys(o).length;
+  const badge = document.querySelector('#rpcbtn .badge');
+  if (badge) badge.remove();
+  if (n) document.getElementById('rpcbtn')
+    .insertAdjacentHTML('beforeend', `<span class="badge">${n} custom</span>`);
+  return o;
+}
+
+// Probe a candidate endpoint. Returns the chain id it reports, or throws — an unreachable or
+// non-JSON-RPC URL must never be treated as "probably fine".
+async function probeChainId(url) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+    if (j.error) throw new Error(j.error.message || 'JSON-RPC error');
+    if (!j.result) throw new Error('no eth_chainId result');
+    return Number(BigInt(j.result));
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'timed out after 8s'
+      : /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? 'unreachable (or CORS-blocked)'
+      : e.message);
+  } finally { clearTimeout(t); }
+}
+
+function renderRpcRows() {
+  const o = loadRpcOverrides();
+  document.getElementById('rpcrows').innerHTML = NETS.map(n => `
+    <div class="row" data-net="${n.name}">
+      <div class="lab"><b>${n.name}</b><span>chain ${n.chainId}</span></div>
+      <div class="ctl">
+        <input type="url" spellcheck="false" placeholder="${RPC_DEFAULTS[n.name]}"
+               value="${o[n.name] ? o[n.name].replace(/"/g, '&quot;') : ''}">
+        <button type="button" class="clear">Default</button>
+      </div>
+      <div class="msg dim">${o[n.name] ? 'custom endpoint' : 'using the built-in public endpoint'}</div>
+    </div>`).join('');
+}
+
+function openRpcDialog() { renderRpcRows(); document.getElementById('rpcdlg').showModal(); }
+
+// Verify every changed endpoint before persisting any of them. A URL that answers on the wrong chain is
+// rejected outright: the addresses on this dashboard are deterministic deploys that exist on several
+// lanes, so a mis-bound endpoint would render a real-looking, entirely wrong lane.
+async function saveRpcDialog() {
+  const save = document.getElementById('rpcsave');
+  const rows = [...document.querySelectorAll('#rpcrows .row')];
+  save.disabled = true; save.textContent = 'Verifying…';
+  const next = {};
+  let bad = 0;
+  await Promise.all(rows.map(async row => {
+    const net = NETS.find(n => n.name === row.dataset.net);
+    const input = row.querySelector('input');
+    const msg = row.querySelector('.msg');
+    const url = input.value.trim();
+    input.classList.remove('bad');
+    if (!url) { msg.className = 'msg dim'; msg.textContent = 'using the built-in public endpoint'; return; }
+    if (!/^https?:\/\//i.test(url)) {
+      bad++; input.classList.add('bad'); msg.className = 'msg bad';
+      msg.textContent = 'must start with http:// or https://'; return;
+    }
+    msg.className = 'msg dim'; msg.textContent = 'checking…';
+    try {
+      const id = await probeChainId(url);
+      if (id !== net.chainId) {
+        bad++; input.classList.add('bad'); msg.className = 'msg bad';
+        msg.textContent = `answers for chain ${id}, expected ${net.chainId} — not saved`;
+        return;
+      }
+      next[net.name] = url;
+      msg.className = 'msg good'; msg.textContent = `✓ chain ${id}`;
+    } catch (e) {
+      bad++; input.classList.add('bad'); msg.className = 'msg bad'; msg.textContent = e.message;
+    }
+  }));
+  save.disabled = false; save.textContent = 'Verify & save';
+  if (bad) return; // leave the dialog open with the failures marked
+  try { localStorage.setItem(RPC_STORE, JSON.stringify(next)); }
+  catch { /* private mode: the in-memory override below still applies for this session */ }
+  applyRpcOverrides(next);
+  document.getElementById('rpcdlg').close();
+  refreshAll();
+}
 LANES.forEach(l => NAMES[l.creForwarder.toLowerCase()] = 'CRE Forwarder'); // Linea's differs from the other three
 // Named by ADDRESS so event rows can resolve a target instead of assuming one.
 NAMES[COMMON_DEPLOYED.syncTrigger.toLowerCase()] = 'SyncTrigger';
@@ -317,16 +552,10 @@ const SEL = {
   getOraclePool: '0x37d86246', getLastExecution: '0x7acd7f48', getDelay: '0xcebc9a82',
   getAmounts: '0x3d370b4e', getMaxFees: '0x77c46f80', shouldSyncAmount: '0x755b53a3',
   canSync: '0x269d5486', hasRole: '0x91d14854', balanceOf: '0x70a08231', isCallAllowed: '0x797c8d69',
-  isOwnerLinked: '0x0987294c', getWorkflowListByOwner: '0x8c42ffc5', getMaxWorkflowsPerUserDON: '0xbe674333',
+  isOwnerLinked: '0x0987294c', getWorkflowListByOwner: '0x8c42ffc5',
 };
 const pad = a => a.toLowerCase().replace('0x', '').padStart(64, '0');
 const padU = n => BigInt(n).toString(16).padStart(64, '0');
-// The TAIL of a dynamic string argument (length + right-padded body). The caller emits the head offset.
-function encStrTail(s) {
-  const bytes = new TextEncoder().encode(s);
-  const body = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
-  return padU(bytes.length) + body.padEnd(Math.ceil(body.length / 64) * 64, '0');
-}
 
 // Minimal reader for the one dynamic return shape this page needs — getWorkflowListByOwner's
 // (bytes32,address,uint64,uint8,string,string,string,string,bytes,string)[]. Deliberately not a
@@ -375,13 +604,66 @@ const decAddr = h => h && h.length >= 66 ? '0x' + h.slice(-40) : null;
 const decBool = h => h ? BigInt(h) !== 0n : null;
 const decU = h => h ? BigInt(h) : null;
 
-async function rpcBatch(url, calls) {
-  const body = calls.map((c, i) => ({ jsonrpc: '2.0', id: i, ...c }));
-  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+const rpcQueues = new Map();
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function rpcFetch(url, init) {
+  const request = async () => {
+    let res;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      res = await fetch(url, init);
+      if (res.status !== 429) {
+        if (url.includes('base.gateway.tenderly.co')) await wait(1000);
+        return res;
+      }
+      await wait(500 * 2 ** attempt);
+    }
+    return res;
+  };
+  if (!url.includes('base.gateway.tenderly.co')) return request();
+  const queued = (rpcQueues.get(url) ?? Promise.resolve()).then(request, request);
+  rpcQueues.set(url, queued.then(() => undefined, () => undefined));
+  return queued;
+}
+
+// Chunked so a batch-limited endpoint still works: free tiers commonly cap a batch (mainnet.optimism.io
+// at 10) and answer an oversized one with a single error OBJECT instead of the per-call array, which
+// used to surface as a bare "out.map is not a function". A lane reads ~20 calls, so this is 2 requests
+// against the default endpoints and the ceiling stays below every cap seen in the wild.
+const RPC_BATCH_MAX = 10;
+
+async function rpcBatchChunk(url, calls, idBase) {
+  const body = calls.map((c, i) => ({ jsonrpc: '2.0', id: idBase + i, ...c }));
+  const res = await rpcFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const out = await res.json();
+  // A batch request answered with a single object is a whole-batch rejection (rate limit, batch-size
+  // cap, auth). Report what it said — never let it fall through as a shape error.
+  if (!Array.isArray(out)) throw new Error(out?.error?.message || 'endpoint rejected the batch request');
   const byId = new Map(out.map(r => [r.id, r]));
-  return calls.map((_, i) => byId.get(i)?.result ?? null); // per-call revert → null
+  return calls.map((_, i) => byId.get(idBase + i)?.result ?? null); // per-call revert → null
+}
+
+async function rpcBatch(url, calls) {
+  const chunks = [];
+  for (let i = 0; i < calls.length; i += RPC_BATCH_MAX) chunks.push(i);
+  const parts = await Promise.all(chunks.map(i =>
+    rpcBatchChunk(url, calls.slice(i, i + RPC_BATCH_MAX), i)));
+  return parts.flat();
+}
+
+async function rpcBatchChunks(url, calls, size = 5) {
+  const results = [];
+  for (let i = 0; i < calls.length; i += size) results.push(...await rpcBatch(url, calls.slice(i, i + size)));
+  return results;
+}
+
+async function rpcRequest(url, method, params) {
+  const res = await rpcFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const out = await res.json();
+  if (out.error || out.result == null) throw new Error(out.error?.message || 'invalid RPC response');
+  return out.result;
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -399,11 +681,26 @@ const worst = levels => levels.includes('crit') ? 'crit' : levels.includes('warn
 const chip = (level, main, sub) =>
   `<span class="chip ${level}"><div class="m">${level === 'ok' ? '✓ ' : level === 'warn' ? '⚠ ' : level === 'crit' ? '✕ ' : ''}${main}</div>${sub ? `<div class="s">${sub}</div>` : ''}</span>`;
 const alink = (net, a, text) => `<a href="${net.explorer}/address/${a}" target="_blank" title="${a}">${text ?? short(a)}&thinsp;↗</a>`;
+const refreshingViews = new Set();
+const REFRESH_ICON = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.4 5.4A5.8 5.8 0 1 0 13 11"/><path d="M13.4 2.7v2.7h-2.7"/></svg>`;
+const viewRefresh = (view, label) => {
+  const loading = refreshingViews.has(view);
+  return `<button class="view-refresh${loading ? ' loading' : ''}" data-refresh-view="${view}"
+    title="Refresh ${label}" aria-label="Refresh ${label}"${loading ? ' disabled' : ''}>${REFRESH_ICON}</button>`;
+};
+function updateViewRefresh(view) {
+  const button = document.querySelector(`[data-refresh-view="${view}"]`);
+  if (!button) return;
+  const loading = refreshingViews.has(view);
+  button.classList.toggle('loading', loading);
+  button.disabled = loading;
+}
 
-// Owner matches the target → ok; anything else → crit (migration is complete).
 function ownerCheck(actual, target) {
   if (!actual) return ['crit', 'unreadable'];
-  return [target.toLowerCase() === actual.toLowerCase() ? 'ok' : 'crit', holder(actual)];
+  const a = actual.toLowerCase();
+  if (target.toLowerCase() !== a) return ['crit', holder(actual)];
+  return ['ok', holder(actual)];
 }
 
 // ── Data ─────────────────────────────────────────────────────────────────────
@@ -469,38 +766,30 @@ async function registryData(owners) {
   const q = owners.flatMap(o => [
     call(R, SEL.getWorkflowListByOwner + pad(o) + padU(0) + padU(20)),
     call(R, SEL.isOwnerLinked + pad(o)),
-    // (address,string): two head words, so the string's head offset is 0x40.
-    call(R, SEL.getMaxWorkflowsPerUserDON + pad(o) + padU(64) + encStrTail(DON_FAMILY)),
-    bal(o), // the owner signs every registry tx itself — broke means it cannot pause its own workflows
   ]);
   const r = await rpcBatch(L1.rpc, q);
   return owners.map((o, i) => ({
     owner: o,
-    workflows: decodeTupleArray(r[i * 4], LAYOUT_WORKFLOW),
-    linked: decBool(r[i * 4 + 1]),
-    quota: decU(r[i * 4 + 2]),
-    eth: decU(r[i * 4 + 3]),
+    workflows: decodeTupleArray(r[i * 2], LAYOUT_WORKFLOW),
+    linked: decBool(r[i * 2 + 1]),
   }));
 }
 
 // Tuple fields, by index, so the render code never counts positions.
-const WF = { id: 0, owner: 1, createdAt: 2, status: 3, name: 4, binaryUrl: 5, configUrl: 6, tag: 7, attributes: 8, donFamily: 9 };
+const WF = { owner: 1, status: 3, name: 4, tag: 7, donFamily: 9 };
 
 // rpcBatch turns a PER-CALL revert into null while the batch still resolves, so a non-null `regs` does
 // not mean the enumeration succeeded. "The registry says no such workflow" and "we could not ask the
 // registry" are different claims and only the first may be reported as an absence.
 const regsUsable = regs => regs != null && regs.every(a => a.workflows != null);
 const findWorkflow = (regs, L) => !regsUsable(regs) ? null : regs
-  .flatMap(acct => acct.workflows.map(t => ({ acct, t })))
+  .flatMap(acct => acct.workflows.map(t => ({ t })))
   .find(({ t }) => t[WF.name] === L.workflowName) ?? null;
 
 // Text arriving from chain or from an explorer is attacker-controlled — the registry's workflowName is
 // written by the workflow owner, and this repo's own threat model treats that key as compromised.
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-// Only the CRE artifact host may become a live href; anything else is shown as inert text.
-const safeUrl = u => /^https:\/\/storage\.cre\.chain\.link\//.test(String(u ?? '')) ? String(u) : null;
-
 // ── CRE control plane events (CREReceiver lifecycle) ─────────────────────────
 // Matched on topics[0], NOT on Blockscout's `decoded` field: the Linea explorer returns
 // `decoded: null` for these events. Every argument this tab shows is indexed, so topics suffice.
@@ -514,23 +803,47 @@ const EVT = {
   '0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0':   { label: 'Owner', kind: 'gate' },
 };
 
+const RPC_CONFIRMATIONS = 1800; // ~1 hour on Base; cached cursors never include the chain tip
+async function rpcSafeBlock(L) {
+  const latest = Number(BigInt(await rpcRequest(L.logsRpc, 'eth_blockNumber', [])));
+  return Math.max(0, latest - RPC_CONFIRMATIONS);
+}
+
+async function rpcHistoryLogs(L, address, topics, fromBlock) {
+  const toBlock = await rpcSafeBlock(L);
+  if (toBlock < fromBlock) return [];
+  return rpcRequest(L.logsRpc, 'eth_getLogs', [{
+    fromBlock: '0x' + fromBlock.toString(16), toBlock: '0x' + toBlock.toString(16), address, topics,
+  }]);
+}
+
 async function automationLogs(L) {
-  // The whole CREReceiver history is ~8 events per lane, so one unpaginated page is the full record.
-  const res = await fetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const page = await res.json();
-  const rows = (page.items ?? [])
-    .filter(i => EVT[(i.topics?.[0] ?? '').toLowerCase()])
-    .map(i => ({
+  // The whole CREReceiver history is ~8 events per lane, so one query is the full record.
+  let rows;
+  if (L.logsRpc) {
+    const logs = await rpcHistoryLogs(L, L.creReceiver, [[...Object.keys(EVT)]], L.activityFrom);
+    rows = logs.map(i => ({
       topic: i.topics[0].toLowerCase(), topics: i.topics.map(t => t && t.toLowerCase()),
-      data: i.data, block: i.block_number, tx: i.transaction_hash,
-      ts: i.block_timestamp ? Math.floor(Date.parse(i.block_timestamp) / 1000) : null,
+      data: i.data, block: Number(BigInt(i.blockNumber)), tx: i.transactionHash, ts: null,
     }));
+  } else {
+    const res = await fetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const page = await res.json();
+    rows = (page.items ?? [])
+      .filter(i => EVT[(i.topics?.[0] ?? '').toLowerCase()])
+      .map(i => ({
+        topic: i.topics[0].toLowerCase(), topics: i.topics.map(t => t && t.toLowerCase()),
+        data: i.data, block: i.block_number, tx: i.transaction_hash,
+        ts: i.block_timestamp ? Math.floor(Date.parse(i.block_timestamp) / 1000) : null,
+      }));
+  }
   // Linea's explorer also omits block_timestamp here; backfill from the lane's own RPC by block.
   const missing = [...new Set(rows.filter(r => r.ts == null && r.block != null).map(r => r.block))];
   if (missing.length) {
-    const blocks = await rpcBatch(L.rpc, missing.map(n =>
-      ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })));
+    const calls = missing.map(n =>
+      ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] }));
+    const blocks = L.logsRpc ? await rpcBatchChunks(L.logsRpc, calls) : await rpcBatch(L.rpc, calls);
     const stamps = new Map(missing.map((n, i) => [n, blocks[i]?.timestamp ? Number(BigInt(blocks[i].timestamp)) : null]));
     rows.forEach(r => { if (r.ts == null) r.ts = stamps.get(r.block) ?? null; });
   }
@@ -558,7 +871,7 @@ function laneGroups(L, d) {
       { key: 'forwarder', sub: 'getForwarder()', ...cell(eq(d.stForwarder, L.creReceiver) ? ['ok', holder(L.creReceiver, 'CREReceiver')] : ['crit', holder(d.stForwarder)], d.stForwarder) },
     ] },
     { contract: 'CREReceiver', addr: L.creReceiver, checks: [
-      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.creOwner, AUTO_OWNER), d.creOwner) },
+      { key: 'owner', sub: 'owner()', ...cell(ownerCheck(d.creOwner, ST_OWNER), d.creOwner) },
       { key: 'forwarder', sub: 'getForwarder()', ...cell(eq(d.creForwarderActual, L.creForwarder) ? ['ok', holder(L.creForwarder, 'CRE Forwarder')] : ['crit', holder(d.creForwarderActual)], d.creForwarderActual) },
       { key: 'expected author', sub: 'getExpectedAuthor()', ...cell(ownerCheck(d.creAuthor, CRE_AUTHOR), d.creAuthor) },
       { key: 'triggerSync allowed', sub: 'isCallAllowed()', ...cell(d.callAllowed ? ['ok', 'allowed'] : ['crit', 'blocked']) },
@@ -590,11 +903,8 @@ function syncState(d) {
 function floatState(d) {
   if (d.float == null || d.maxFees == null || d.maxFees === 0n) return { level: 'crit', x: null };
   const x = Number(d.float) / Number(d.maxFees);
-  return { level: x >= 2 ? 'ok' : x >= 1 ? 'warn' : 'crit', x };
+  return { level: x >= 1.5 ? 'ok' : x >= 1 ? 'warn' : 'crit', x };
 }
-
-const laneLevel = lane => lane.error ? 'crit' :
-  worst([syncState(lane.d)[0], floatState(lane.d).level, ...laneChecks(lane.L, lane.d).map(c => c.level)]);
 
 function l1AccessChecks(d) {
   const [pl, pv] = ownerCheck(d.proxyOwner, DAO_AGENT);
@@ -618,16 +928,21 @@ function l1BalanceChecks(d) {
   ];
 }
 
-const l1Checks = d => [...l1AccessChecks(d), ...l1BalanceChecks(d)];
-
 // ── Pool activity ────────────────────────────────────────────────────────────
-// Blockscout token transfers for the pool (latest ≤50 canonical events per lane), grouped per tx.
-// Blockscout because publicnode refuses eth_getLogs on Arbitrum/Base.
+// Explorer transfers for OP/Arbitrum/Linea; Base uses a log-capable RPC because its Blockscout API
+// is currently unreliable. SlowStake comes from CustomSender logs on the same per-lane source.
 const eqa = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 const ZERO = '0x' + '0'.repeat(40);
-const fmtAmt = wei => fmtEth(wei, wei > 0n && wei < 10n ** 15n ? 8 : 4); // dust stays visible
+const fmtAmt = wei => {
+  const value = fmtEth(wei, wei > 0n && wei < 10n ** 15n ? 8 : 4);
+  return wei > 0n && value === '0' ? '<0.00000001' : value;
+};
+const SLOW_STAKE_TOPIC = '0xb9a1909fb1e8f533ab60d262ba908dc82a1d8dfaef2e6c4e4b2da76de8a1ca4d';
+const SYNC_TOPIC = '0x2826f7440c9ba1050bcd2c586a60551875ac8951ec73f01df55ef00b59ae1a9c';
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
-async function activityData(L) {
+async function poolActivityData(L) {
+  if (L.logsRpc) return rpcPoolActivityData(L);
   const byTx = new Map();
   const base = `${L.bs}/api/v2/addresses/${L.pool}/token-transfers`;
   let nextPage = {};
@@ -653,6 +968,139 @@ async function activityData(L) {
   return [...byTx.values()].slice(0, 50).map(g => classifyTx(L, g));
 }
 
+async function rpcPoolActivityData(L) {
+  const toBlock = await rpcSafeBlock(L);
+  if (toBlock < L.activityFrom) return [];
+  const poolTopic = '0x' + '0'.repeat(24) + L.pool.slice(2).toLowerCase();
+  const filter = topics => ({ fromBlock: '0x' + L.activityFrom.toString(16),
+    toBlock: '0x' + toBlock.toString(16), address: [L.weth, L.wsteth], topics });
+  const [outbound, inbound] = await Promise.all([
+    rpcRequest(L.logsRpc, 'eth_getLogs', [filter([TRANSFER_TOPIC, poolTopic])]),
+    rpcRequest(L.logsRpc, 'eth_getLogs', [filter([TRANSFER_TOPIC, null, poolTopic])]),
+  ]);
+  const byTx = new Map();
+  const seen = new Set();
+  for (const log of [...outbound, ...inbound]) {
+    const key = `${log.transactionHash}:${log.logIndex}`;
+    if (seen.has(key) || (log.topics?.[0] ?? '').toLowerCase() !== TRANSFER_TOPIC ||
+        !/^0x[0-9a-f]{64}$/i.test(log.data ?? '')) continue;
+    seen.add(key);
+    const from = topicAddress(log.topics[1]), to = topicAddress(log.topics[2]);
+    const token = eqa(log.address, L.weth) ? 'WETH' : eqa(log.address, L.wsteth) ? 'wstETH' : null;
+    if (!from || !to || !token) continue;
+    const g = byTx.get(log.transactionHash) ?? { tx: log.transactionHash,
+      block: Number(BigInt(log.blockNumber)), ts: 0, in: [], out: [] };
+    (eqa(to, L.pool) ? g.in : g.out).push({ token, amount: BigInt(log.data), from, to });
+    byTx.set(log.transactionHash, g);
+  }
+  const groups = [...byTx.values()].sort((a, b) => b.block - a.block).slice(0, 50);
+  const blockNumbers = [...new Set(groups.map(g => g.block))];
+  const blocks = blockNumbers.length ? await rpcBatchChunks(L.logsRpc, blockNumbers.map(n =>
+    ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] }))) : [];
+  const stamps = new Map(blockNumbers.map((n, i) =>
+    [n, blocks[i]?.timestamp ? Number(BigInt(blocks[i].timestamp)) : 0]));
+  groups.forEach(g => { g.ts = stamps.get(g.block) ?? 0; });
+  return groups.map(g => classifyTx(L, g));
+}
+
+const topicAddress = topic => /^0x[0-9a-f]{64}$/i.test(topic ?? '') ? '0x' + topic.slice(-40) : null;
+
+function parseSlowStakeLog(L, log) {
+  const topics = log.topics ?? [];
+  const data = log.data ?? '';
+  const tx = log.transactionHash ?? '';
+  if ((topics[0] ?? '').toLowerCase() !== SLOW_STAKE_TOPIC ||
+      !/^0x[0-9a-f]{128}$/i.test(data) || !/^0x[0-9a-f]{64}$/i.test(tx)) return null;
+  const user = topicAddress(topics[1]);
+  const token = topicAddress(topics[3]);
+  if (!user || !eqa(token, L.weth)) return null;
+  const parsedTs = /^0x[0-9a-f]+$/i.test(log.timeStamp ?? '') ? Number(BigInt(log.timeStamp)) : 0;
+  const amount = BigInt('0x' + data.slice(66, 130));
+  return { tx, ts: parsedTs,
+    kind: 'stake', label: 'Slow stake', amount: `${fmtAmt(amount)} WETH → L1`, cp: user };
+}
+
+async function senderLogs(L, topic) {
+  if (L.logsRpc) {
+    const logs = await rpcHistoryLogs(L, L.sender, [topic], L.senderFrom);
+    const blockNumbers = [...new Set(logs.map(log => Number(BigInt(log.blockNumber))))];
+    const blocks = blockNumbers.length ? await rpcBatchChunks(L.logsRpc, blockNumbers.map(n =>
+      ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] }))) : [];
+    const stamps = new Map(blockNumbers.map((n, i) =>
+      [n, blocks[i]?.timestamp ? blocks[i].timestamp : null]));
+    return logs.map(log => ({ ...log, timeStamp: stamps.get(Number(BigInt(log.blockNumber))) }));
+  }
+  const url = new URL(`${L.bs}/api`);
+  Object.entries({ module: 'logs', action: 'getLogs', fromBlock: 0, toBlock: 'latest',
+    address: L.sender, topic0: topic }).forEach(([key, value]) => url.searchParams.set(key, value));
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const page = await res.json();
+  if (!Array.isArray(page.result)) throw new Error(page.message || 'invalid logs response');
+  return page.result;
+}
+
+async function slowStakeData(L) {
+  const logs = await senderLogs(L, SLOW_STAKE_TOPIC);
+  return logs.map(log => parseSlowStakeLog(L, log)).filter(Boolean);
+}
+
+const SYNC_PROGRESS_KEY = 'direct-staking-watch.sync-progress';
+function readSyncProgress(L) {
+  const seed = L.syncCheckpoint;
+  try {
+    const all = JSON.parse(localStorage.getItem(SYNC_PROGRESS_KEY));
+    const saved = all?.[L.name];
+    if (Number.isSafeInteger(saved?.block) && saved.block >= seed.block &&
+        Number.isSafeInteger(saved?.count) && saved.count >= seed.count &&
+        /^\d+$/.test(saved?.wei ?? '') && BigInt(saved.wei) >= BigInt(seed.wei)) return saved;
+  } catch {}
+  return seed;
+}
+
+function saveSyncProgress(L, progress) {
+  try {
+    const all = JSON.parse(localStorage.getItem(SYNC_PROGRESS_KEY)) || {};
+    all[L.name] = progress;
+    localStorage.setItem(SYNC_PROGRESS_KEY, JSON.stringify(all));
+  } catch {}
+}
+
+const syncAmount = log => (log.topics?.[0] ?? '').toLowerCase() === SYNC_TOPIC &&
+  /^0x[0-9a-f]{128}$/i.test(log.data ?? '') ? BigInt('0x' + log.data.slice(66, 130)) : null;
+
+async function checkpointedSyncVolumeData(L) {
+  const progress = readSyncProgress(L);
+  const toBlock = await rpcSafeBlock(L);
+  if (toBlock <= progress.block) return { wei: BigInt(progress.wei), count: progress.count };
+  const logs = await rpcRequest(L.logsRpc, 'eth_getLogs', [{
+    fromBlock: '0x' + (progress.block + 1).toString(16), toBlock: '0x' + toBlock.toString(16),
+    address: L.sender, topics: [SYNC_TOPIC],
+  }]);
+  const unique = [...new Map(logs.map(log => [`${log.transactionHash}:${log.logIndex}`, log])).values()];
+  const amounts = unique.map(syncAmount).filter(amount => amount != null);
+  const next = { block: toBlock,
+    wei: (BigInt(progress.wei) + amounts.reduce((sum, amount) => sum + amount, 0n)).toString(),
+    count: progress.count + amounts.length };
+  saveSyncProgress(L, next);
+  return { wei: BigInt(next.wei), count: next.count };
+}
+
+async function syncVolumeData(L) {
+  if (L.syncCheckpoint) return checkpointedSyncVolumeData(L);
+  const logs = await senderLogs(L, SYNC_TOPIC);
+  const amounts = logs.map(syncAmount).filter(amount => amount != null);
+  return { wei: amounts.reduce((sum, amount) => sum + amount, 0n), count: amounts.length };
+}
+
+async function activityData(L) {
+  const [pool, slowStakes] = await Promise.all([
+    poolActivityData(L).catch(e => { throw new Error(`pool: ${e.message}`); }),
+    slowStakeData(L).catch(e => { throw new Error(`SlowStake: ${e.message}`); }),
+  ]);
+  return [...pool, ...slowStakes].sort((a, b) => b.ts - a.ts).slice(0, 50);
+}
+
 function classifyTx(L, g) {
   const find = (legs, token) => legs.find(l => l.token === token);
   const wIn = find(g.in, 'WETH'), wsOut = find(g.out, 'wstETH');
@@ -675,8 +1123,36 @@ let latestActivity = null;
 let activitySeen = readActivitySeen();
 let activityFailed = false;
 let activityCache = readActivityCache();
+let syncVolume = null;
 
-// Last successful per-lane events; instant paint on load, fallback while Blockscout is down.
+function syncVolumeStatus() {
+  if (!syncVolume) return { level: 'tinted', loading: true, value: '', sub: 'reading CustomSender history' };
+  if (!syncVolume.readable) return { level: 'critical', value: 'unread', sub: 'no lane history readable' };
+  const partial = syncVolume.readable < LANES.length;
+  return { level: partial ? 'warning' : 'tinted',
+    value: (partial ? '≥ ' : '') + fmtEth(syncVolume.wei, 2),
+    sub: `WETH · ${syncVolume.count} sync${syncVolume.count === 1 ? '' : 's'} · ${syncVolume.readable}/${LANES.length} lanes` };
+}
+
+const syncVolumeValue = status => status.loading
+  ? '<span class="spin" aria-hidden="true"></span><span>Loading</span>'
+  : status.value;
+
+function updateSyncVolumeTile() {
+  const tile = document.getElementById('sync-volume');
+  if (!tile) return;
+  const status = syncVolumeStatus();
+  tile.classList.toggle('tinted', status.level === 'tinted');
+  tile.classList.toggle('warning', status.level === 'warning');
+  tile.classList.toggle('critical', status.level === 'critical');
+  const value = tile.querySelector('.v');
+  value.classList.toggle('loading', !!status.loading);
+  value.setAttribute('aria-busy', String(!!status.loading));
+  value.innerHTML = syncVolumeValue(status);
+  tile.querySelector('.s').textContent = status.sub;
+}
+
+// Last successful per-lane events; instant paint on load, fallback while a source is down.
 function readActivityCache() {
   try {
     const cache = JSON.parse(localStorage.getItem(ACTIVITY_CACHE_KEY));
@@ -745,9 +1221,10 @@ function renderActivity(results) {
   document.getElementById('activity').innerHTML = `<div class="card">
     <div class="card-head">
       <h3>Pool Activity</h3>
-      <span class="desc">Latest token flows through each OraclePool · fast stakes, syncs, liquidity top-ups · newest first.</span>
+      <span class="desc">Latest pool transactions across all lanes.</span>
+      ${viewRefresh('activity', 'Pool activity')}
     </div>
-    ${failed.length ? `<div class="err-banner">✕ Blockscout unreachable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
+    ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
       ${tr}</table></div>` : failed.length ? '' : '<div class="err-banner">no transfers found</div>'}
@@ -814,7 +1291,7 @@ function gateChecks(L, d, regs) {
 }
 
 // Registration is a RECORD. It warrants "the DON should run this" and nothing about acceptance or delivery.
-function registrationChecks(L, d, regs) {
+function registrationChecks(L, regs) {
   if (!regsUsable(regs)) return { level: 'warn', rows: null, unread: true };
   const wf = findWorkflow(regs, L);
   if (!wf) return { level: 'crit', rows: null, unread: false };
@@ -827,10 +1304,7 @@ function registrationChecks(L, d, regs) {
   // registration no longer describes the lane it is named for.
   const tag = t[WF.tag] === t[WF.name] ? { level: 'ok', value: 'tag = name' }
     : { level: 'crit', value: 'tag ≠ name', sub: esc(t[WF.tag]) || '(empty)' };
-  // Pin drift is a fact about THIS REPO, not about the chain — warn, and label which it is.
-  const pin = t[WF.id].toLowerCase() === (L.workflowIdPin ?? '').toLowerCase()
-    ? { level: 'ok', value: 'pin matches' } : { level: 'warn', value: 'repo pin stale' };
-  return { level: worst([status.level, don.level, tag.level]), rows: { t, status, don, tag, pin, acct: wf.acct } };
+  return { level: worst([status.level, don.level, tag.level]), rows: { t, status, don, tag } };
 }
 
 // Absence of a delivery is NOT failure: the workflow signs only when a sync is due. Only the
@@ -863,8 +1337,8 @@ function deliveryState(L, d) {
   if (d.shouldSync > 0n)
     return { level: 'ok', label: 'DUE', n: execs.length, last, note: 'awaiting the next DON tick' };
   if (!execs.length)
-    return { level: 'warn', label: 'NEVER DELIVERED', n: 0, last, note: 'no CallExecuted in this lane’s history' };
-  return { level: 'ok', label: 'IDLE', n: execs.length, last, note: 'nothing due · last report ' + ago(last) };
+    return { level: 'warn', label: 'NEVER DELIVERED', n: 0, last, note: 'no accepted report' };
+  return { level: 'ok', label: 'IDLE', n: execs.length, last, note: 'nothing due' };
 }
 
 // One event's human reading, from indexed topics only — Linea's explorer decodes nothing for us.
@@ -892,11 +1366,10 @@ function renderAutomation() {
   const lanes = automation.lanes;
   if (!lanes) return; // the log fetch alone cannot draw the planes; first paint comes from refresh()
   const regs = automation.regs;
-  const live = lanes.filter(l => !l.error);
 
   const perLane = lanes.map(l => l.error ? null : ({
     L: l.L, d: l.d,
-    reg: registrationChecks(l.L, l.d, regs),
+    reg: registrationChecks(l.L, regs),
     gate: gateChecks(l.L, l.d, regs),
     del: deliveryState(l.L, l.d),
   }));
@@ -909,185 +1382,87 @@ function renderAutomation() {
   // Name the conjunct that actually blocks, rather than assuming the reason.
   const gateBlocked = [...new Set(perLane.filter(Boolean)
     .map(p => p.gate.find(c => c.level === 'crit')?.key).filter(Boolean))];
-  const registrants = regsRead
-    ? [...new Set(perLane.filter(p => p && p.reg.rows).map(p => who(p.reg.rows.t[WF.owner])))].join(', ') || '—'
-    : '—';
-
-  // Both roles matter and they are not the same address during the migration: the REGISTRANT pays gas
-  // to pause/delete, the AUTHOR is what the gate compares against. Show every account either role
-  // resolves to, and say which role each one holds.
-  const roles = new Map();
-  const addRole = (a, role) => { if (a) roles.set(a.toLowerCase(), (roles.get(a.toLowerCase()) ?? new Set()).add(role)); };
-  perLane.filter(Boolean).forEach(p => {
-    addRole(p.d.creAuthor, 'author');
-    if (p.reg.rows) addRole(p.reg.rows.t[WF.owner], 'registrant');
-  });
-  const ownerCells = [...roles].map(([o, r]) => {
-    const a = acctFor(regs, o);
-    const role = [...r].join(' + ');
-    if (!a) return { level: 'warn', html: chip('warn', holder(o), `${role} · not queried`) };
-    const quota = a.quota == null ? 'warn' : a.quota >= BigInt(LANES.length) ? 'ok' : 'crit';
-    // The registrant signs every registry transaction itself, so a dust balance is a real incident
-    // risk: no `pause`, no `delete`. 0.001 ETH is a generous floor for a mainnet call, not a gas model.
-    const gas = a.eth == null ? 'warn' : a.eth < 10n ** 15n ? 'warn' : 'ok';
-    const level = worst([quota, gas]);
-    const bal = a.eth == null ? 'balance unread' : `${fmtAmt(a.eth)} ETH${a.eth < 10n ** 15n ? ' — too thin to pause' : ''}`;
-    return { level, html: chip(level, `${a.quota == null ? 'quota unread' : a.quota + ' workflow slots'}`,
-      `${holder(o)} · ${role} · ${bal}`) };
-  });
-  const quotaCells = ownerCells.map(c => c.html).join(' ');
 
   const level = worst([
     ...(automation.regError ? ['crit'] : []),
     ...lanes.filter(l => l.error).map(() => 'crit'),
-    ...ownerCells.map(c => c.level),
-    // An explorer outage means the delivery plane is unverified; a green tab must not be read off a
+    // An event-source outage means the delivery plane is unverified; a green tab must not be read off a
     // cache that could not be refreshed.
     ...(automation.logErrors.length ? ['warn'] : []),
-    ...perLane.filter(Boolean).flatMap(p => [p.reg.level, p.del.level, ...p.gate.map(c => c.level),
-      p.reg.rows ? p.reg.rows.pin.level : 'warn']),
+    ...perLane.filter(Boolean).flatMap(p => [p.reg.level, p.del.level, ...p.gate.map(c => c.level)]),
   ]);
   setTabStatus('automation', level === 'ok' ? null : level);
 
   const hero = `<div class="card hero">
     <div>
-      <div class="overline">CRE automation</div>
-      <h2 class="serif">Registered, armed, delivering</h2>
-      <p>Three separate questions. The registry says what <em>should</em> run; the author gate says whether a
-      signed report would be <em>accepted</em>; only a <span class="mono">CallExecuted</span> log proves one
-      actually <em>landed</em>. A green registry tile is not evidence of the other two.</p>
+      <h2 class="serif">CRE automation</h2>
+      <p>Registry, author gate, and delivery by lane.</p>
+      ${viewRefresh('automation', 'Automation')}
     </div>
     <div class="stat">
       <div class="k">Workflows ACTIVE</div>
       <div class="v serif">${regsRead ? `${active.length}<span style="color:var(--muted)">/${LANES.length}</span>`
         : '<span style="color:var(--muted)">?</span>'}</div>
-      <div class="s">${regsRead ? `registrants ${registrants} · DON ${DON_FAMILY}` : 'registry unread — count unknown'}</div>
+      <div class="s">${regsRead ? `DON ${DON_FAMILY}` : 'registry unread — count unknown'}</div>
     </div>
     <div class="stat ${gateBlocked.length ? 'critical' : 'tinted'}">
       <div class="k">Author gate armed</div>
       <div class="v serif">${armed.length}<span style="color:var(--muted)">/${LANES.length}</span></div>
-      <div class="s">${armed.length === LANES.length ? 'a signed report would be accepted'
+      <div class="s">${armed.length === LANES.length ? 'reports accepted'
         : gateBlocked.length ? 'blocked at: ' + esc(gateBlocked.join(', '))
-        : 'gate state unverified — see the conjuncts below'}</div>
+        : 'gate state unverified — see the lane table'}</div>
     </div>
     <div class="stat tinted">
       <div class="k">Last delivery</div>
       <div class="v serif" style="font-size:26px">${deliveryRead
         ? (lastDelivery ? ago(lastDelivery) : 'never')
         : '<span style="color:var(--muted)">unread</span>'}</div>
-      <div class="s">${deliveryRead ? 'idle ≠ broken — a report is signed only when a sync is due'
-        : 'explorer unreachable — delivery history not verified'}</div>
+      <div class="s">${deliveryRead ? 'reports run only when sync is due'
+        : 'event source unreachable — delivery history not verified'}</div>
     </div>
   </div>`;
 
-  // ── Card A — registration ──
-  const regRows = perLane.map((p, i) => {
-    if (!p) return `<tr><td>${laneWho(lanes[i].L)}</td><td colspan="4">${chip('crit', '✕ RPC error', lanes[i].error)}</td></tr>`;
-    // "unread" and "absent" are different claims — an unreadable registry must not be reported as a
-    // missing registration.
-    if (!p.reg.rows) return `<tr><td>${laneWho(p.L)}</td><td colspan="4">${p.reg.unread
-      ? chip('warn', 'registry unread', 'L1 read failed — registration state unknown')
-      : chip('crit', 'not registered', `no workflow named ${esc(p.L.workflowName)} under any queried owner`)}</td></tr>`;
-    const { t, status, don, tag, pin } = p.reg.rows;
-    // NOT a link. The artifact URLs are signed-CloudFront and return 403 MissingKey to every caller
-    // but the DON, so a clickable "config ↗" would promise a fetch it can never complete and read as
-    // a broken dashboard. Shown as inert text, hover for the URL, off-host flagged as suspicious.
-    const url = safeUrl(t[WF.configUrl]);
+  const laneRows = perLane.map((p, i) => {
+    if (!p) return `<tr><td>${laneWho(lanes[i].L)}</td><td colspan="4">${chip('crit', 'RPC error', lanes[i].error)}</td></tr>`;
+    const regBad = p.reg.rows
+      ? [p.reg.rows.status, p.reg.rows.don, p.reg.rows.tag].find(c => c.level !== 'ok')
+      : null;
+    const registration = !p.reg.rows
+      ? (p.reg.unread ? chip('warn', 'UNKNOWN', 'registry unread') : chip('crit', 'MISSING', 'workflow not registered'))
+      : regBad ? chip(regBad.level, 'MISCONFIGURED', regBad.value)
+      : chip('ok', 'ACTIVE');
+    const gateBad = p.gate.find(c => c.level !== 'ok');
+    const gate = gateBad
+      ? chip(gateBad.level, gateBad.level === 'crit' ? 'BLOCKED' : 'UNKNOWN', gateBad.key)
+      : chip('ok', 'ARMED');
     return `<tr>
       <td>${laneWho(p.L)}</td>
-      <td><span class="num"><div class="m">${esc(t[WF.name])}</div>
-          <div class="s mono">${short(t[WF.id])} · ${url
-            ? `<span class="inert" title="${esc(url)}&#10;&#10;DON-only: this host returns HTTP 403 MissingKey to any other caller.">config (DON-only)</span>`
-            : `<span class="chip crit" title="${esc(t[WF.configUrl])}">config off-host</span>`}</div></span></td>
-      <td>${chip(status.level, status.value, 'registered ' + ago(Number(t[WF.createdAt])))}</td>
-      <td>${chip(don.level, don.value, 'donFamily')}</td>
-      <td>${tag.level === 'ok'
-        ? chip(pin.level, pin.value, pin.level === 'ok' ? 'deployed.yaml' : 'chain upserted since')
-        : chip('crit', tag.value, tag.sub)}</td>
+      <td>${registration}</td>
+      <td>${gate}</td>
+      <td>${chip(p.del.level, p.del.label, p.del.note)}</td>
+      <td><span class="num"><div class="m">${p.del.last ? ago(p.del.last) : '—'}</div>
+          <div class="s">${p.del.last ? new Date(p.del.last * 1000).toLocaleString() : 'no accepted report'}</div></span></td>
     </tr>`;
   }).join('');
 
-  const regCard = `<div class="card">
+  const laneCard = `<div class="card">
     <div class="card-head">
-      <h3>Registered Workflows</h3>
-      <span class="desc">${alink(L1, L1.workflowRegistry, 'WorkflowRegistry 2.0.0')} on Ethereum — one registry for
-      all four lanes. Enumerated by owner, not looked up by the repo's pinned IDs.</span>
+      <h3>Automation by lane</h3>
       ${legendHtml()}
     </div>
     ${automation.regError ? `<div class="err-banner">✕ registry unreadable: ${automation.regError}</div>` : ''}
+    ${automation.logErrors.length ? `<div class="err-banner">⚠ event source unreachable: ${automation.logErrors.join(', ')} · showing cached history<button class="retry" onclick="this.disabled=true;refreshAutomationLogs()">⟳ retry</button></div>` : ''}
     <div class="scroll-x"><table class="syncm">
-      <tr><th>Lane</th><th>Workflow</th><th>Status</th><th>DON family</th><th>Repo pin</th></tr>
-      ${regRows}
-    </table></div>
-    <div class="card-head"><span class="desc">Owner account · ${quotaCells || '—'}</span></div>
-  </div>`;
-
-  // ── Card B — author gate (rows = conjuncts, columns = lanes) ──
-  const template = live.length ? gateChecks(live[0].L, live[0].d, regs) : [];
-  const gateRows = template.map((row, ri) => `<tr>
-    <td class="rowlabel">${row.key}<span class="sub mono">${row.chain} · ${row.sub}</span></td>
-    ${perLane.map(p => {
-      if (!p) return '<td>—</td>';
-      const c = p.gate[ri];
-      const inner = chip(c.level, c.value, c.a ? `<span class="mono">${short(c.a)}&thinsp;↗</span>` : null);
-      return `<td>${c.a ? `<a class="chiplink" href="${p.L.explorer}/address/${c.a}" target="_blank" title="${c.a}">${inner}</a>` : inner}</td>`;
-    }).join('')}
-  </tr>`).join('');
-  const compositeRow = `<tr>
-    <td class="rowlabel">would a report be accepted?<span class="sub mono">conjunction · weakest link</span></td>
-    ${perLane.map(p => {
-      if (!p) return '<td>—</td>';
-      const bad = p.gate.find(c => c.level !== 'ok');
-      return `<td>${bad ? chip('crit', 'NO', 'blocked at: ' + bad.key) : chip('ok', 'YES', 'all six conjuncts hold')}</td>`;
-    }).join('')}
-  </tr>`;
-  const gateCard = `<div class="card">
-    <div class="card-head">
-      <h3>Author Gate</h3>
-      <span class="desc">Whether a DON-signed report would be <em>accepted</em>. Predictive, not retrospective — the
-      forwarder absorbs a receiver revert, so a rejection leaves no log to observe.</span>
-    </div>
-    <div class="scroll-x"><table class="ownm">
-      <tr><th>Conjunct</th>${lanes.map(l => `<th>${l.L.name}</th>`).join('')}</tr>
-      ${gateRows}
-      <tr class="group"><td class="gname">Composite</td>${lanes.map(() => '<td></td>').join('')}</tr>
-      ${compositeRow}
+      <tr><th>Lane</th><th>Workflow</th><th>Author gate</th><th>Delivery</th><th>Last accepted report</th></tr>
+      ${laneRows}
     </table></div>
   </div>`;
 
-  // ── Card C — delivery ──
-  const delRows = perLane.map((p, i) => {
-    if (!p) return `<tr><td>${laneWho(lanes[i].L)}</td><td colspan="4">${chip('crit', '✕ RPC error', lanes[i].error)}</td></tr>`;
-    const d = p.d;
-    return `<tr>
-      <td>${laneWho(p.L)}</td>
-      <td>${chip(p.del.level, p.del.label, p.del.note)}</td>
-      <td><span class="num"><div class="m">${p.del.last ? ago(p.del.last) : '—'}</div>
-          <div class="s">${p.del.last ? new Date(p.del.last * 1000).toLocaleString() : 'no CallExecuted'}</div></span></td>
-      <td><span class="num"><div class="m">${p.del.n ?? '—'}</div>
-          <div class="s">${p.del.n == null ? 'history unread' : 'accepted reports'}</div></span></td>
-      <td><span class="num"><div class="m">${d.shouldSync == null ? 'unreadable'
-            : d.shouldSync > 0n ? fmtEth(d.shouldSync, 2) + ' WETH due' : 'nothing due'}</div>
-          <div class="s">trigger last fired ${ago(d.lastExec)}</div></span></td>
-    </tr>`;
-  }).join('');
-  const delCard = `<div class="card">
-    <div class="card-head">
-      <h3>Delivery</h3>
-      <span class="desc">The only on-chain proof the gate passes. A quiet lane is normal — the workflow signs a report
-      only when <span class="mono">shouldSyncAmount()</span> is nonzero.</span>
-    </div>
-    ${automation.logErrors.length ? `<div class="err-banner">✕ explorer unreachable: ${automation.logErrors.join(', ')} · showing cached history<button class="retry" onclick="this.disabled=true;refreshAutomationLogs()">⟳ retry</button></div>` : ''}
-    <div class="scroll-x"><table class="syncm">
-      <tr><th>Lane</th><th>State</th><th>Last accepted report</th><th>All time</th><th>Backlog</th></tr>
-      ${delRows}
-    </table></div>
-  </div>`;
-
-  // ── Card D — control plane history ──
+  // Recent control-plane history.
   const events = LANES.flatMap(L => (automation.logs[L.name] ?? []).map(e => ({ L, ...e })))
     .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
-  const evRows = events.map(e => `<tr>
+  const visibleEvents = events.slice(0, 12);
+  const evRows = visibleEvents.map(e => `<tr>
     <td><span class="num"><div class="m">${ago(e.ts)}</div>
         <div class="s">${e.ts ? new Date(e.ts * 1000).toLocaleString() : 'block ' + e.block}</div></span></td>
     <td><span class="who"><span class="avatar">${e.L.abbr}</span><span class="name">${e.L.name}</span></span></td>
@@ -1098,10 +1473,8 @@ function renderAutomation() {
   const missingLanes = LANES.filter(L => !Array.isArray(automation.logs[L.name])).map(L => L.name);
   const evCard = `<div class="card">
     <div class="card-head">
-      <h3>Control Plane History</h3>
-      <span class="desc">Lifecycle events on ${alink(LANES[0], COMMON_DEPLOYED.creReceiver, 'CREReceiver')}, newest
-      first — who moved the gate, when, and which reports landed. One explorer page per lane, so a lane
-      with more history than that is truncated here.</span>
+      <h3>Recent events</h3>
+      <span class="desc">Latest ${visibleEvents.length} events.</span>
     </div>
     ${automation.logErrors.length || missingLanes.length ? `<div class="err-banner">⚠ incomplete: ${
       [...automation.logErrors, ...missingLanes.map(n => n + ' (not loaded)')].join(', ')} — rows below are cached or partial</div>` : ''}
@@ -1110,33 +1483,17 @@ function renderAutomation() {
       : '<div class="err-banner">no CREReceiver events found</div>'}
   </div>`;
 
-  document.getElementById('automation').innerHTML = hero + regCard + gateCard + delCard + evCard + limitsCard;
+  document.getElementById('automation').innerHTML = hero + laneCard + evCard;
 }
 
-// What the browser structurally cannot see. Stated, so a quiet tab is not mistaken for a proven one.
-const limitsCard = `<div class="card">
-  <div class="card-head"><h3>Not visible from here</h3></div>
-  <div class="limits">
-    <p><strong>DON liveness.</strong> There is no heartbeat. A report is signed only when a sync is due, so an idle
-    DON and a dead one look identical on-chain. The strongest available signal is the <em>due-but-undelivered</em>
-    row above.</p>
-    <p><strong>Registered artifact content.</strong> <span class="mono">binaryUrl</span> and
-    <span class="mono">configUrl</span> are signed-CloudFront URLs that return HTTP 403 to anyone but the DON, so
-    “the registered config really points at our CREReceiver on a 5-minute cron” is not verifiable here.</p>
-    <p><strong>CRE credit balance.</strong> Administrative and dashboard-only during Early Access — no on-chain
-    signal exists. A stalled lane with an armed gate and a funded fee float points at it.</p>
-    <p><strong>Rejected reports.</strong> The Keystone forwarder absorbs a receiver revert rather than bubbling it,
-    so an <span class="mono">InvalidAuthor</span> rejection writes no log anywhere.</p>
-  </div></div>`;
-
 function render(l1, lanes) {
-  const l1Level = l1.error ? 'crit' : worst(l1Checks(l1.d).map(c => c.level));
-  const levels = { [L1.name]: l1Level };
-  lanes.forEach(l => levels[l.L.name] = laneLevel(l));
+  const laneOverviewLevels = lanes.map(l => l.error
+    ? 'crit'
+    : worst([syncState(l.d)[0], floatState(l.d).level]));
 
   const overviewLevel = worst([
     l1.error ? 'crit' : worst(l1BalanceChecks(l1.d).map(c => c.level)),
-    ...lanes.map(l => l.error ? 'crit' : worst([syncState(l.d)[0], floatState(l.d).level])),
+    ...laneOverviewLevels,
   ]);
   const accessLevel = worst([
     l1.error ? 'crit' : worst(l1AccessChecks(l1.d).map(c => c.level)),
@@ -1151,18 +1508,17 @@ function render(l1, lanes) {
 
   // hero numbers
   const live = lanes.filter(l => !l.error);
-  const crits = Object.values(levels).filter(l => l === 'crit').length;
-  const warns = Object.values(levels).filter(l => l === 'warn').length;
-  const healthy = LANES.length - lanes.filter(l => laneLevel(l) === 'crit').length;
+  const crits = laneOverviewLevels.filter(level => level === 'crit').length;
+  const warns = laneOverviewLevels.filter(level => level === 'warn').length;
+  const healthy = LANES.length - crits;
   const totalWeth = live.reduce((s, l) => s + (l.d.poolWeth ?? 0n), 0n);
-  const floats = live.map(l => ({ name: l.L.name, ...floatState(l.d) })).filter(f => f.x != null);
-  const lowFloat = floats.length ? floats.reduce((a, b) => a.x < b.x ? a : b) : null;
+  const synced = syncVolumeStatus();
 
   const hero = `<div class="card hero">
     <div>
-      <div class="overline">Mainnet status</div>
       <h2 class="serif">Sync &amp; custody</h2>
-      <p>L2 pools accumulate WETH; SyncTrigger sends it to L1 for staking via CCIP and wstETH bridges back. Every value is read on-chain.</p>
+      <p>WETH accumulates on L2 and syncs to L1 for staking.</p>
+      ${viewRefresh('main', 'Overview')}
     </div>
     <div class="stat">
       <div class="k">Lanes healthy</div>
@@ -1172,12 +1528,12 @@ function render(l1, lanes) {
     <div class="stat tinted">
       <div class="k">Pool WETH</div>
       <div class="v serif">${fmtEth(totalWeth, 2)}</div>
-      <div class="s">across 4 lanes · awaiting sync</div>
+      <div class="s">across 4 lanes</div>
     </div>
-    <div class="stat ${lowFloat && lowFloat.x < 1 ? 'critical' : 'tinted'}">
-      <div class="k">Lowest fee float</div>
-      <div class="v serif">${lowFloat ? lowFloat.x.toFixed(2) + '×' : '—'}</div>
-      <div class="s">${lowFloat ? lowFloat.name + ' · of getMaxFees(), sync needs ≥ 1×' : 'no data'}</div>
+    <div class="stat ${synced.level}" id="sync-volume">
+      <div class="k" title="Cumulative amount emitted by CustomSender.Sync across all lanes">Synced to L1</div>
+      <div class="v serif${synced.loading ? ' loading' : ''}" role="status" aria-live="polite" aria-busy="${!!synced.loading}">${syncVolumeValue(synced)}</div>
+      <div class="s">${synced.sub}</div>
     </div>
   </div>`;
 
@@ -1197,11 +1553,11 @@ function render(l1, lanes) {
 
   const syncCard = `<div class="card">
     <div class="card-head">
-      <h3>Sync Matrix</h3><span class="desc">Per-lane liveness from SyncTrigger and the oracle pool.</span>
+      <h3>Sync Matrix</h3>
       ${legendHtml()}
     </div>
     <div class="scroll-x"><table class="syncm">
-      <tr><th>Lane</th><th>Sync state</th><th>Pool WETH</th><th>Pool wstETH</th><th>Fee float</th></tr>
+      <tr><th>Lane</th><th>Sync state</th><th>Pool WETH</th><th>Pool wstETH</th><th title="ok ≥ 1.5× · warn ≥ 1× · critical &lt; 1×">Fee float</th></tr>
       ${syncRows}
     </table></div>
   </div>`;
@@ -1241,7 +1597,8 @@ function render(l1, lanes) {
 
   const ownCard = `<div class="card">
     <div class="card-head">
-      <h3>Ownership &amp; Wiring</h3><span class="desc">Every getter vs its target; any drift is critical. ${ICO.contract} contract · ${ICO.safe} Safe · ${ICO.eoa} EOA</span>
+      <h3>Ownership &amp; Wiring</h3><span class="desc">On-chain values vs expected. ${ICO.contract} contract · ${ICO.safe} Safe · ${ICO.eoa} EOA</span>
+      ${viewRefresh('access', 'Access Control')}
     </div>
     ${nDev ? `<div class="err-banner">✕ ${nDev} of ${nChecks} checks deviate from target${reachNote}</div>` : ''}
     <div class="scroll-x">${buildTable(() => true)}</div>
@@ -1257,7 +1614,7 @@ function render(l1, lanes) {
   const l1BalanceCard = `<div class="card">
     <div class="card-head">
       <h3>Ethereum L1 — Shared Receiver Balances</h3>
-      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · balances are transient during a stake; parked funds are an incident.</span>
+      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · parked funds are unexpected.</span>
     </div>${l1BalanceBody}</div>`;
 
   const l1AccessBody = l1.error
@@ -1267,12 +1624,11 @@ function render(l1, lanes) {
   const l1AccessCard = `<div class="card">
     <div class="card-head">
       <h3>Ethereum L1 — Access Control</h3>
-      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · role and owner targets.</span>
+      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
     </div>${l1AccessBody}</div>`;
 
   document.getElementById('main').innerHTML = hero + syncCard + l1BalanceCard;
   document.getElementById('access').innerHTML = ownCard + l1AccessCard;
-  document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 
 const legendHtml = () => `<span class="legend">
@@ -1286,21 +1642,30 @@ const laneWho = L => `<span class="who">
   <span class="sub">${alink(L, L.syncTrigger, 'trigger')} · ${alink(L, L.pool, 'pool')}</span></span></span>`;
 
 // ── Page loop ────────────────────────────────────────────────────────────────
-async function refresh() {
+async function readCoreState() {
   const [l1, ...lanes] = await Promise.all([
     l1Data().then(d => ({ d })).catch(e => ({ error: e.message })),
     ...LANES.map(L => laneData(L).then(d => ({ L, d })).catch(e => ({ L, error: e.message }))),
   ]);
+  return { l1, lanes };
+}
+async function refreshOverviewAccess() {
+  const { l1, lanes } = await readCoreState();
   render(l1, lanes);
+  return lanes;
+}
+async function refreshAutomationState(lanes) {
+  const currentLanes = lanes ?? await Promise.all(LANES.map(L => laneData(L)
+    .then(d => ({ L, d })).catch(e => ({ L, error: e.message }))));
   // The owner set is discovered, not hardcoded: whichever address each lane currently expects as its
   // report author is the one whose registry account matters. Survives the pending Safe migration.
   const owners = [...new Set([AUTO_OWNER,
-    ...lanes.filter(l => !l.error && l.d.creAuthor).map(l => l.d.creAuthor.toLowerCase())])];
+    ...currentLanes.filter(l => !l.error && l.d.creAuthor).map(l => l.d.creAuthor.toLowerCase())])];
   let regs = null, regError = null;
   try { regs = await registryData(owners); } catch (e) { regError = e.message; }
   // Published together: a render that pairs this cycle's lanes with the previous cycle's registry would
   // show a just-changed expectedAuthor as an unlinked author and flash a false gate failure.
-  automation.lanes = lanes;
+  automation.lanes = currentLanes;
   automation.regs = regs;
   automation.regError = regError;
   renderAutomation();
@@ -1314,21 +1679,52 @@ async function refreshAutomationLogs() {
   renderAutomation();
 }
 async function refreshActivity() {
-  const results = await Promise.all(LANES.map(L =>
-    activityData(L)
-      .then(events => { activityCache[L.name] = events; return { L, events }; })
-      .catch(e => ({ L, error: e.message, events: activityCache[L.name] }))));
+  const results = await Promise.all(LANES.map(async L => {
+    const [activity, volume] = await Promise.all([
+      activityData(L)
+        .then(events => { activityCache[L.name] = events; return { events }; })
+        .catch(e => ({ error: e.message, events: activityCache[L.name] })),
+      syncVolumeData(L).then(summary => ({ summary })).catch(() => ({})),
+    ]);
+    return { L, ...activity, sync: volume.summary };
+  }));
   saveActivityCache();
   renderActivity(results);
+  const readable = results.filter(r => r.sync);
+  syncVolume = { readable: readable.length,
+    wei: readable.reduce((sum, r) => sum + r.sync.wei, 0n),
+    count: readable.reduce((sum, r) => sum + r.sync.count, 0) };
+  updateSyncVolumeTile();
 }
-let refreshInFlight = false;
+let refreshAllPromise = null;
 async function refreshAll() {
-  if (refreshInFlight) return;
-  refreshInFlight = true;
+  if (refreshAllPromise) return refreshAllPromise;
+  refreshAllPromise = (async () => {
+    const core = refreshOverviewAccess();
+    await Promise.all([
+      core.then(lanes => refreshAutomationState(lanes)),
+      refreshActivity(),
+      refreshAutomationLogs(),
+    ]);
+  })();
   try {
-    await Promise.all([refresh(), refreshActivity(), refreshAutomationLogs()]);
+    await refreshAllPromise;
   } finally {
-    refreshInFlight = false;
+    refreshAllPromise = null;
+  }
+}
+
+async function refreshView(view) {
+  const affected = view === 'main' || view === 'access' ? ['main', 'access'] : [view];
+  if (affected.some(name => refreshingViews.has(name))) return;
+  affected.forEach(name => { refreshingViews.add(name); updateViewRefresh(name); });
+  try {
+    if (refreshAllPromise) await refreshAllPromise;
+    else if (view === 'activity') await refreshActivity();
+    else if (view === 'automation') await Promise.all([refreshAutomationState(), refreshAutomationLogs()]);
+    else await refreshOverviewAccess();
+  } finally {
+    affected.forEach(name => { refreshingViews.delete(name); updateViewRefresh(name); });
   }
 }
 
@@ -1353,9 +1749,33 @@ function selectTab(tab) {
 
 tabButtons.forEach(b => b.onclick = () => selectTab(b.dataset.tab));
 window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-refresh-view]');
+  if (button) refreshView(button.dataset.refreshView);
+});
 selectTab(location.hash.slice(1));
 
-document.getElementById('refresh').onclick = refreshAll;
+document.getElementById('rpcbtn').onclick = openRpcDialog;
+document.getElementById('rpcsave').onclick = saveRpcDialog;
+document.getElementById('rpccancel').onclick = () => document.getElementById('rpcdlg').close();
+document.getElementById('rpcreset').onclick = () => {
+  document.querySelectorAll('#rpcrows .row').forEach(row => {
+    row.querySelector('input').value = '';
+    row.querySelector('input').classList.remove('bad');
+    row.querySelector('.msg').className = 'msg dim';
+    row.querySelector('.msg').textContent = 'using the built-in public endpoint';
+  });
+};
+// Per-row "Default" clears the field; saving with it empty is what actually drops the override.
+document.getElementById('rpcrows').addEventListener('click', e => {
+  if (!e.target.classList.contains('clear')) return;
+  const row = e.target.closest('.row');
+  row.querySelector('input').value = '';
+  row.querySelector('input').classList.remove('bad');
+  row.querySelector('.msg').className = 'msg dim';
+  row.querySelector('.msg').textContent = 'using the built-in public endpoint';
+});
+applyRpcOverrides(); // before the first read, so a stored override is used from the very first paint
 if (LANES.some(L => activityCache[L.name]))
   renderActivity(LANES.map(L => ({ L, events: activityCache[L.name] })));
 refreshAll();
