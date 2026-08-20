@@ -403,25 +403,28 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 const LANES = [
   { name: 'Optimism', chainId: 10, abbr: 'OP', rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
     bs: 'https://explorer.optimism.io',
+    syncCheckpoint: { block: 155804910, wei: '129542754845784358617', count: 14 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
   { name: 'Arbitrum', chainId: 42161, abbr: 'AR', rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
     bs: 'https://arbitrum.blockscout.com',
+    syncCheckpoint: { block: 496444513, wei: '265035298175104662154', count: 23 },
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
     oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
   { name: 'Base', chainId: 8453, abbr: 'BA', rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
     logsRpc: 'https://base.gateway.tenderly.co', activityFrom: 48000000, senderFrom: 20476091,
-    syncCheckpoint: { block: 50175146, wei: '305269281818334669206', count: 38 },
+    syncCheckpoint: { block: 50209626, wei: '305269281818334669206', count: 38 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x0E37599436974a25dDeEdF795C848d30Af46eaCF', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
   { name: 'Linea', chainId: 59144, abbr: 'LI', rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
     bs: 'https://api-explorer.linea.build',
+    syncCheckpoint: { block: 31767564, wei: '52300000000000000', count: 3 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0x9eF6468C5f37b976E57d52054c693269479A784d',
@@ -803,9 +806,9 @@ const EVT = {
   '0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0':   { label: 'Owner', kind: 'gate' },
 };
 
-const RPC_CONFIRMATIONS = 1800; // ~1 hour on Base; cached cursors never include the chain tip
+const RPC_CONFIRMATIONS = 1800; // cached cursors never include the chain tip
 async function rpcSafeBlock(L) {
-  const latest = Number(BigInt(await rpcRequest(L.logsRpc, 'eth_blockNumber', [])));
+  const latest = Number(BigInt(await rpcRequest(L.logsRpc ?? L.rpc, 'eth_blockNumber', [])));
   return Math.max(0, latest - RPC_CONFIRMATIONS);
 }
 
@@ -1069,14 +1072,29 @@ function saveSyncProgress(L, progress) {
 const syncAmount = log => (log.topics?.[0] ?? '').toLowerCase() === SYNC_TOPIC &&
   /^0x[0-9a-f]{128}$/i.test(log.data ?? '') ? BigInt('0x' + log.data.slice(66, 130)) : null;
 
+// Cumulative CustomSender.Sync totals were verified through these per-lane checkpoint blocks on
+// 2026-08-20. Only the immutable tail after each block is read on load; localStorage advances the
+// cursor after every successful refresh.
+async function syncLogsRange(L, fromBlock, toBlock) {
+  if (L.logsRpc) return rpcRequest(L.logsRpc, 'eth_getLogs', [{
+    fromBlock: '0x' + fromBlock.toString(16), toBlock: '0x' + toBlock.toString(16),
+    address: L.sender, topics: [SYNC_TOPIC],
+  }]);
+  const url = new URL(`${L.bs}/api`);
+  Object.entries({ module: 'logs', action: 'getLogs', fromBlock, toBlock,
+    address: L.sender, topic0: SYNC_TOPIC }).forEach(([key, value]) => url.searchParams.set(key, value));
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const page = await res.json();
+  if (!Array.isArray(page.result)) throw new Error(page.message || 'invalid logs response');
+  return page.result;
+}
+
 async function checkpointedSyncVolumeData(L) {
   const progress = readSyncProgress(L);
   const toBlock = await rpcSafeBlock(L);
   if (toBlock <= progress.block) return { wei: BigInt(progress.wei), count: progress.count };
-  const logs = await rpcRequest(L.logsRpc, 'eth_getLogs', [{
-    fromBlock: '0x' + (progress.block + 1).toString(16), toBlock: '0x' + toBlock.toString(16),
-    address: L.sender, topics: [SYNC_TOPIC],
-  }]);
+  const logs = await syncLogsRange(L, progress.block + 1, toBlock);
   const unique = [...new Map(logs.map(log => [`${log.transactionHash}:${log.logIndex}`, log])).values()];
   const amounts = unique.map(syncAmount).filter(amount => amount != null);
   const next = { block: toBlock,
@@ -1091,6 +1109,13 @@ async function syncVolumeData(L) {
   const logs = await senderLogs(L, SYNC_TOPIC);
   const amounts = logs.map(syncAmount).filter(amount => amount != null);
   return { wei: amounts.reduce((sum, amount) => sum + amount, 0n), count: amounts.length };
+}
+
+function cachedSyncVolume() {
+  const progress = LANES.map(readSyncProgress);
+  return { readable: progress.length, cached: true,
+    wei: progress.reduce((sum, item) => sum + BigInt(item.wei), 0n),
+    count: progress.reduce((sum, item) => sum + item.count, 0) };
 }
 
 async function activityData(L) {
@@ -1123,15 +1148,15 @@ let latestActivity = null;
 let activitySeen = readActivitySeen();
 let activityFailed = false;
 let activityCache = readActivityCache();
-let syncVolume = null;
+let syncVolume = cachedSyncVolume();
 
 function syncVolumeStatus() {
   if (!syncVolume) return { level: 'tinted', loading: true, value: '', sub: 'reading CustomSender history' };
   if (!syncVolume.readable) return { level: 'critical', value: 'unread', sub: 'no lane history readable' };
   const partial = syncVolume.readable < LANES.length;
   return { level: partial ? 'warning' : 'tinted',
-    value: (partial ? '≥ ' : '') + fmtEth(syncVolume.wei, 2),
-    sub: `WETH · ${syncVolume.count} sync${syncVolume.count === 1 ? '' : 's'} · ${syncVolume.readable}/${LANES.length} lanes` };
+    value: (partial || syncVolume.cached ? '≥ ' : '') + fmtEth(syncVolume.wei, 2),
+    sub: `WETH · ${syncVolume.count} sync${syncVolume.count === 1 ? '' : 's'} · ${syncVolume.readable}/${LANES.length} lanes${syncVolume.cached ? ' · cached' : ''}` };
 }
 
 const syncVolumeValue = status => status.loading
@@ -1679,21 +1704,21 @@ async function refreshAutomationLogs() {
   renderAutomation();
 }
 async function refreshActivity() {
-  const results = await Promise.all(LANES.map(async L => {
-    const [activity, volume] = await Promise.all([
-      activityData(L)
-        .then(events => { activityCache[L.name] = events; return { events }; })
-        .catch(e => ({ error: e.message, events: activityCache[L.name] })),
-      syncVolumeData(L).then(summary => ({ summary })).catch(() => ({})),
-    ]);
-    return { L, ...activity, sync: volume.summary };
-  }));
+  const results = await Promise.all(LANES.map(L => activityData(L)
+    .then(events => { activityCache[L.name] = events; return { L, events }; })
+    .catch(e => ({ L, error: e.message, events: activityCache[L.name] }))));
   saveActivityCache();
   renderActivity(results);
-  const readable = results.filter(r => r.sync);
-  syncVolume = { readable: readable.length,
-    wei: readable.reduce((sum, r) => sum + r.sync.wei, 0n),
-    count: readable.reduce((sum, r) => sum + r.sync.count, 0) };
+}
+async function refreshSyncVolume() {
+  const results = await Promise.all(LANES.map(L => syncVolumeData(L)
+    .then(summary => ({ L, summary }))
+    .catch(() => { const saved = readSyncProgress(L); return { L, cached: true,
+      summary: { wei: BigInt(saved.wei), count: saved.count } }; })));
+  const readable = results.filter(r => r.summary);
+  syncVolume = { readable: readable.length, cached: results.some(r => r.cached),
+    wei: readable.reduce((sum, r) => sum + r.summary.wei, 0n),
+    count: readable.reduce((sum, r) => sum + r.summary.count, 0) };
   updateSyncVolumeTile();
 }
 let refreshAllPromise = null;
@@ -1704,6 +1729,7 @@ async function refreshAll() {
     await Promise.all([
       core.then(lanes => refreshAutomationState(lanes)),
       refreshActivity(),
+      refreshSyncVolume(),
       refreshAutomationLogs(),
     ]);
   })();
@@ -1722,6 +1748,7 @@ async function refreshView(view) {
     if (refreshAllPromise) await refreshAllPromise;
     else if (view === 'activity') await refreshActivity();
     else if (view === 'automation') await Promise.all([refreshAutomationState(), refreshAutomationLogs()]);
+    else if (view === 'main') await Promise.all([refreshOverviewAccess(), refreshSyncVolume()]);
     else await refreshOverviewAccess();
   } finally {
     affected.forEach(name => { refreshingViews.delete(name); updateViewRefresh(name); });
