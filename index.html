@@ -133,7 +133,11 @@ main { max-width: 1240px; margin: 0 auto; padding: 26px 28px 40px; }
   color: var(--ink-2); font-family: Inter, system-ui, sans-serif; font-size: 14px;
 }
 .stat .v.loading .spin { width: 20px; height: 20px; }
+.stat .v .unit { color: var(--ink-2); font: 14px system-ui, -apple-system, "Segoe UI", sans-serif; }
+#sync-volume .v:not(.loading) { font-size: 36px; white-space: nowrap; }
 .stat .s { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
+.sync-volume-sub { display: flex; align-items: center; gap: 6px; }
+.sync-volume-sub .spin { width: 10px; height: 10px; border-width: 1px; }
 .stat.tinted { background: var(--tint); }
 .stat.warning { background: var(--warn-bg); }
 .stat.warning .v { color: var(--warn-fg); }
@@ -195,6 +199,27 @@ tr.group a:hover { color: var(--accent); }
 .chip.crit { background: var(--crit-bg); border-color: var(--crit-bd); color: var(--crit-fg); }
 .chip.crit .s { color: #c07a70; }
 
+.l1-card .card-head { align-items: center; padding-bottom: 16px; }
+.l1-card-copy { min-width: 0; }
+.l1-card-copy h3 { margin: 0; white-space: nowrap; }
+.l1-card-copy .desc { display: block; margin-top: 2px; }
+.l1-card-links { margin-left: auto; display: flex; gap: 12px; flex: none; font-size: 12.5px; }
+.l1-card-links a { color: var(--ink-2); text-decoration: none; }
+.l1-card-links a:hover { color: var(--accent); }
+.l1-metric-grid { display: grid; gap: 12px; padding: 0 26px 22px; }
+.l1-balance-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.l1-access-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.l1-metric { border: 1px solid; border-radius: 11px; padding: 14px 16px; }
+.l1-metric.ok { background: var(--ok-bg); border-color: var(--ok-bd); }
+.l1-metric.warn { background: var(--warn-bg); border-color: var(--warn-bd); }
+.l1-metric.crit { background: var(--crit-bg); border-color: var(--crit-bd); }
+.l1-metric-label {
+  margin-bottom: 7px; color: var(--muted); font-size: 10.5px; font-weight: 650;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.l1-metric .chip { display: block; width: auto; padding: 0; border: 0; background: transparent; }
+.l1-metric .chip .m { font-size: 15px; }
+
 .rowlabel { font-weight: 600; white-space: nowrap; }
 .rowlabel .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--muted); }
 
@@ -231,6 +256,12 @@ tr.group a:hover { color: var(--accent); }
 }
 .tag.stake { background: var(--ok-bg); border-color: var(--ok-bd); color: var(--ok-fg); }
 .tag.sync  { background: var(--tint); border-color: var(--ok-bd); color: var(--accent); }
+tr.fresh td { background: var(--tint); }
+tr.fresh td:first-child { box-shadow: inset 3px 0 var(--accent); }
+.card-head .upd { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); font-size: 12px; white-space: nowrap; }
+.card-head .upd .spin { width: 10px; height: 10px; border-width: 1px; }
+.card-head .upd + .view-refresh { margin-left: 0; }
 
 .err-banner { margin: 12px 26px 6px; padding: 12px 16px; border-radius: 10px;
   background: var(--crit-bg); border: 1px solid var(--crit-bd); color: var(--crit-fg); font-size: 13px; font-weight: 600; }
@@ -282,8 +313,14 @@ footer {
   .hero > div:nth-child(2) { border-left: none; }
   .hero h2 { font-size: 26px; }
   .stat .v { font-size: 34px; }
+  #sync-volume .v:not(.loading) { font-size: 34px; }
   .card-head { align-items: flex-start; flex-wrap: wrap; gap: 6px 10px; padding: 14px 16px 6px; }
   .card-head .desc { order: 2; flex-basis: 100%; }
+  .l1-card .card-head { padding-bottom: 14px; }
+  .l1-card-copy { display: block; flex-basis: 100%; }
+  .l1-card-copy .desc { display: block; margin-top: 3px; }
+  .l1-card-links { width: 100%; margin-left: 0; }
+  .l1-metric-grid { grid-template-columns: 1fr; gap: 8px; padding: 0 16px 16px; }
   .legend { margin-left: auto; }
   th, td { padding-left: 10px; padding-right: 10px; }
   th:first-child, td:first-child { padding-left: 16px; }
@@ -710,6 +747,7 @@ function updateViewRefresh(view) {
   const loading = refreshingViews.has(view);
   button.classList.toggle('loading', loading);
   button.disabled = loading;
+  if (view === 'activity') updateActivityUpd();
 }
 
 function ownerCheck(actual, target) {
@@ -1161,15 +1199,22 @@ let latestActivity = null;
 let activitySeen = readActivitySeen();
 let activityFailed = false;
 let activityCache = readActivityCache();
+// Rows newer than this marker render highlighted; it advances when the tab is (re)opened,
+// so the highlight survives auto-refreshes while the user is looking at the table.
+let activityViewBoundary = readActivitySeen();
+let lastActivityResults = null;
+let activityRenderedAt = null;
 let syncVolume = cachedSyncVolume();
+let syncVolumeRefreshing = true;
 
 function syncVolumeStatus() {
   if (!syncVolume) return { level: 'tinted', loading: true, value: '', sub: 'reading CustomSender history' };
   if (!syncVolume.readable) return { level: 'critical', value: 'unread', sub: 'no lane history readable' };
   const partial = syncVolume.readable < LANES.length;
   return { level: partial ? 'warning' : 'tinted',
-    value: (partial || syncVolume.cached ? '≥ ' : '') + fmtEth(syncVolume.wei, 2),
-    sub: `WETH · ${syncVolume.count} sync${syncVolume.count === 1 ? '' : 's'} · ${syncVolume.readable}/${LANES.length} lanes${syncVolume.cached ? ' · cached' : ''}` };
+    refreshing: syncVolumeRefreshing,
+    value: `${partial || syncVolume.cached ? '≥ ' : ''}${fmtEth(syncVolume.wei, 2)} <span class="unit">WETH</span>`,
+    sub: `${syncVolume.count} sync${syncVolume.count === 1 ? '' : 's'}` };
 }
 
 const syncVolumeValue = status => status.loading
@@ -1185,9 +1230,10 @@ function updateSyncVolumeTile() {
   tile.classList.toggle('critical', status.level === 'critical');
   const value = tile.querySelector('.v');
   value.classList.toggle('loading', !!status.loading);
-  value.setAttribute('aria-busy', String(!!status.loading));
+  value.setAttribute('aria-busy', String(!!status.loading || status.refreshing));
   value.innerHTML = syncVolumeValue(status);
-  tile.querySelector('.s').textContent = status.sub;
+  tile.querySelector('.sync-volume-text').textContent = status.sub;
+  tile.querySelector('.sync-volume-sub .spin').hidden = !status.refreshing;
 }
 
 // Last successful per-lane events; instant paint on load, fallback while a source is down.
@@ -1248,7 +1294,10 @@ function renderActivity(results) {
   }
   if (activeTab === 'activity') markActivitySeen();
   else updateActivityTabStatus();
-  const tr = rows.map(e => `<tr>
+  lastActivityResults = results;
+  const isFresh = e => !!activityViewBoundary && (e.ts > activityViewBoundary.ts ||
+    e.ts === activityViewBoundary.ts && !activityViewBoundary.txs.includes(e.tx));
+  const tr = rows.map(e => `<tr${isFresh(e) ? ' class="fresh"' : ''}>
     <td><span class="num"><div class="m">${ago(e.ts)}</div><div class="s">${new Date(e.ts * 1000).toLocaleString()}</div></span></td>
     <td><span class="who"><span class="avatar">${netLogo(e.L)}</span><span class="name">${e.L.name}</span></span></td>
     <td><span class="tag ${e.kind}">${e.label}</span></td>
@@ -1260,6 +1309,7 @@ function renderActivity(results) {
     <div class="card-head">
       <h3>Pool Activity</h3>
       <span class="desc">Latest pool transactions across all lanes.</span>
+      <span class="upd" id="activity-upd" role="status" aria-live="polite"></span>
       ${viewRefresh('activity', 'Pool activity')}
     </div>
     ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
@@ -1267,7 +1317,17 @@ function renderActivity(results) {
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
       ${tr}</table></div>` : failed.length ? '' : '<div class="err-banner">no transfers found</div>'}
   </div>`;
+  updateActivityUpd();
 }
+
+function updateActivityUpd() {
+  const el = document.getElementById('activity-upd');
+  if (!el) return;
+  const busy = !!refreshAllPromise || refreshingViews.has('activity');
+  el.innerHTML = busy ? '<span class="spin" aria-hidden="true"></span>updating…'
+    : activityRenderedAt ? `updated ${ago(Math.floor(activityRenderedAt / 1000))}` : '';
+}
+setInterval(updateActivityUpd, 10_000);
 
 // ── Render ───────────────────────────────────────────────────────────────────
 // ── Automation ───────────────────────────────────────────────────────────────
@@ -1452,7 +1512,7 @@ function renderAutomation() {
     </div>
     <div class="stat tinted">
       <div class="k">Last delivery</div>
-      <div class="v serif" style="font-size:26px">${deliveryRead
+      <div class="v serif">${deliveryRead
         ? (lastDelivery ? ago(lastDelivery) : 'never')
         : '<span style="color:var(--muted)">unread</span>'}</div>
       <div class="s">${deliveryRead ? 'reports run only when sync is due'
@@ -1565,13 +1625,13 @@ function render(l1, lanes) {
     </div>
     <div class="stat tinted">
       <div class="k">Pool WETH</div>
-      <div class="v serif">${fmtEth(totalWeth, 2)}</div>
+      <div class="v serif">${fmtEth(totalWeth, 2)} <span class="unit">WETH</span></div>
       <div class="s">across 4 lanes</div>
     </div>
     <div class="stat ${synced.level}" id="sync-volume">
       <div class="k" title="Cumulative amount emitted by CustomSender.Sync across all lanes">Synced to L1</div>
-      <div class="v serif${synced.loading ? ' loading' : ''}" role="status" aria-live="polite" aria-busy="${!!synced.loading}">${syncVolumeValue(synced)}</div>
-      <div class="s">${synced.sub}</div>
+      <div class="v serif${synced.loading ? ' loading' : ''}" role="status" aria-live="polite" aria-busy="${!!synced.loading || synced.refreshing}">${syncVolumeValue(synced)}</div>
+      <div class="s sync-volume-sub"><span class="sync-volume-text">${synced.sub}</span><span class="spin" aria-hidden="true"${synced.refreshing ? '' : ' hidden'}></span></div>
     </div>
   </div>`;
 
@@ -1647,22 +1707,32 @@ function render(l1, lanes) {
   const l1Balances = l1.error ? [] : l1BalanceChecks(l1.d);
   const l1BalanceBody = l1.error
     ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="scroll-x"><table class="ownm"><tr>${l1Balances.map(c => `<th>${c.key}</th>`).join('')}</tr>
-       <tr>${l1Balances.map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
-  const l1BalanceCard = `<div class="card">
+    : `<div class="l1-metric-grid l1-balance-grid">${l1Balances.map(c => `<div class="l1-metric ${c.level}">
+        <div class="l1-metric-label">${c.key.replace('Receiver ', '')}</div>
+        ${chip(c.level, c.value, c.sub)}
+      </div>`).join('')}</div>`;
+  const l1BalanceCard = `<div class="card l1-card l1-balance-card">
     <div class="card-head">
-      <h3>${netName(L1)} L1 — Shared Receiver Balances</h3>
-      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · parked funds are unexpected.</span>
+      <div class="l1-card-copy">
+        <h3>${netName(L1)}</h3>
+        <span class="desc">Shared receiver balances</span>
+      </div>
+      <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
     </div>${l1BalanceBody}</div>`;
 
   const l1AccessBody = l1.error
     ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="scroll-x"><table class="ownm"><tr>${l1Access.map(c => `<th>${c.key}</th>`).join('')}</tr>
-       <tr>${l1Access.map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
-  const l1AccessCard = `<div class="card">
+    : `<div class="l1-metric-grid l1-access-grid">${l1Access.map(c => `<div class="l1-metric ${c.level}">
+        <div class="l1-metric-label">${c.key}</div>
+        ${chip(c.level, c.value, c.sub)}
+      </div>`).join('')}</div>`;
+  const l1AccessCard = `<div class="card l1-card">
     <div class="card-head">
-      <h3>${netName(L1)} L1 — Access Control</h3>
-      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
+      <div class="l1-card-copy">
+        <h3>${netName(L1)}</h3>
+        <span class="desc">Access control</span>
+      </div>
+      <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
     </div>${l1AccessBody}</div>`;
 
   document.getElementById('main').innerHTML = hero + syncCard + l1BalanceCard;
@@ -1721,9 +1791,12 @@ async function refreshActivity() {
     .then(events => { activityCache[L.name] = events; return { L, events }; })
     .catch(e => ({ L, error: e.message, events: activityCache[L.name] }))));
   saveActivityCache();
+  activityRenderedAt = Date.now();
   renderActivity(results);
 }
 async function refreshSyncVolume() {
+  syncVolumeRefreshing = true;
+  updateSyncVolumeTile();
   const results = await Promise.all(LANES.map(L => syncVolumeData(L)
     .then(summary => ({ L, summary }))
     .catch(() => { const saved = readSyncProgress(L); return { L, cached: true,
@@ -1732,6 +1805,7 @@ async function refreshSyncVolume() {
   syncVolume = { readable: readable.length, cached: results.some(r => r.cached),
     wei: readable.reduce((sum, r) => sum + r.summary.wei, 0n),
     count: readable.reduce((sum, r) => sum + r.summary.count, 0) };
+  syncVolumeRefreshing = false;
   updateSyncVolumeTile();
 }
 let refreshAllPromise = null;
@@ -1746,10 +1820,12 @@ async function refreshAll() {
       refreshAutomationLogs(),
     ]);
   })();
+  updateActivityUpd();
   try {
     await refreshAllPromise;
   } finally {
     refreshAllPromise = null;
+    updateActivityUpd();
   }
 }
 
@@ -1783,7 +1859,11 @@ function selectTab(tab) {
   activeTab = selected.dataset.tab;
   tabButtons.forEach(b => b.classList.toggle('active', b === selected));
   tabButtons.forEach(b => document.getElementById(b.dataset.tab).hidden = b !== selected);
-  if (activeTab === 'activity') markActivitySeen();
+  if (activeTab === 'activity') {
+    activityViewBoundary = activitySeen;   // highlight what arrived since the last visit
+    markActivitySeen();
+    if (lastActivityResults) renderActivity(lastActivityResults);
+  }
   if (location.hash !== '#' + activeTab) history.replaceState(null, '', '#' + activeTab);
 }
 
