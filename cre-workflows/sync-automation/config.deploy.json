@@ -1,0 +1,23 @@
+{
+  "receiverAddress": "0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A",
+  "targetAddress": "0x871a5cddE9813627Ff37A2895A0c9B117A664622",
+  "writeGasLimit": "750000",
+  "lanes": [
+    {
+      "chainSelectorName": "ethereum-mainnet-optimism-1",
+      "schedule": "0 0 * * * *"
+    },
+    {
+      "chainSelectorName": "ethereum-mainnet-arbitrum-1",
+      "schedule": "0 15 * * * *"
+    },
+    {
+      "chainSelectorName": "ethereum-mainnet-base-1",
+      "schedule": "0 30 * * * *"
+    },
+    {
+      "chainSelectorName": "ethereum-mainnet-linea-1",
+      "schedule": "0 45 * * * *"
+    }
+  ]
+}

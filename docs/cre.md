@@ -56,10 +56,9 @@ like a credit outage or a wrong author pin.
 | ------------------------------------------------------------ | -------------------------------------------------------------------- |
 | `src/cre/CREReceiver.sol`                                    | On-chain receiver — decodes reports and calls target contracts       |
 | `src/cre/interfaces/IReceiver.sol`                           | CRE receiver interface                                               |
-| `cre-workflows/sync-automation/main.ts`                      | CRE workflow entry point                                             |
-| `cre-workflows/sync-automation/encoding.ts`                  | Pure encoding/decoding helpers (testable outside WASM)               |
-| `cre-workflows/sync-automation/abi.ts`                       | SyncTrigger ABI definitions                                          |
+| `cre-workflows/sync-automation/main.ts`                      | **The whole workflow, one file** (merged 2026-08-25 from `main`/`lanes`/`encoding`/`abi`): SyncTrigger ABI, the `lanes[]` config contract, the lane plan, the pure encoders, the per-lane handler and the entry. Everything above the handler section is runtime-free and driven directly by `bun test` |
 | `cre-workflows/sync-automation/config.deploy.<network>.json` | Per-network production config, named by that lane's `production-<net>` target |
+| `cre-workflows/sync-automation/config.deploy.json`           | **Consolidated** config for the single four-lane workflow: shared receiver/target/gas + one `lanes[]` entry per lane, hourly and staggered |
 | `cre-workflows/sync-automation/config.simulate.json`         | Local simulation config                                              |
 | `cre-workflows/project.yaml` · `sync-automation/workflow.yaml` | CLI targets: `simulate-settings` + one `production-<net>` per lane  |
 | `script/shared/cre-env.sh`                                   | Derives `CRE_ETH_PRIVATE_KEY` / `CRE_WORKFLOW_OWNER` / RPC names from the canonical vars |

@@ -19,6 +19,26 @@ simulate-settings:
     secrets-path: ""
 
 # ==========================================================================
+# CONSOLIDATED target — ONE registered workflow for all four lanes (direct-staking-sync-test), the layout
+# chosen on 2026-08-18. Its config carries a `lanes[]` array (one cron trigger per lane, hourly and
+# staggered) instead of a single `chainSelectorName`, so the lane is no longer a property of the target.
+#
+# The four `production-<net>` targets below are DELIBERATELY KEPT while the Automation Owner's four
+# per-lane workflows are still registered: `cre workflow pause|delete` resolves the workflow NAME
+# through the target, so retiring them needs their targets to still exist. Remove them only after that
+# retirement is done.
+# The name is one of the inputs to the content-derived workflowId, so renaming this REGISTERS A NEW
+# WORKFLOW rather than renaming the existing record — the old one (if any) has to be retired separately,
+# and every derived pin (`just cre-workflow-hash`, the dashboard's CRE_WORKFLOW_NAME) moves with it.
+production:
+  user-workflow:
+    workflow-name: "direct-staking-sync-test"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.deploy.json"
+    secrets-path: ""
+
+# ==========================================================================
 production-optimism:
   user-workflow:
     workflow-name: "lido-sync-automation-optimism"

@@ -107,6 +107,34 @@ dialog#rpcdlg::backdrop { background: rgba(16,25,21,.34); }
   border: 0; background: none; padding: 7px 4px; color: var(--ink-2); text-decoration: underline;
 }
 
+/* Textarea full width, buttons on their own row beneath it — a tall input with a narrow column of
+   buttons pinned to its right reads as two unrelated controls. */
+#cdtool .cdbox { display: flex; flex-direction: column; gap: 8px; padding: 0 18px 14px; }
+#cdtool textarea {
+  width: 100%; min-width: 0; resize: vertical; box-sizing: border-box; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--page);
+  color: var(--ink); word-break: break-all;
+}
+#cdtool textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#cdtool .cdbtns { display: flex; gap: 8px; justify-content: flex-end; }
+#cdtool .cdsum { padding: 0 18px 12px; font-size: 13px; color: var(--ink-2); }
+#cdtool .cdsum strong { color: var(--ink); }
+#cdtool .cdjson { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--page); color: var(--ink); font-size: 11.5px; line-height: 1.5; word-break: break-all; }
+#cdtool .cdfiles { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 18px 12px; }
+#cdtool .cdfile { position: relative; display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 7px 10px; border: 1px dashed var(--line); border-radius: 9px; background: var(--page); }
+#cdtool .cdfile .lab { font-size: 11.5px; color: var(--ink-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+#cdtool .cdfile .btn { font-size: 11.5px; font-weight: 650; padding: 3px 9px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+#cdtool .cdfile .name { font-size: 11.5px; color: var(--muted); max-width: 220px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+/* Hidden from sight, not from the keyboard: the input still takes focus, and the label shows the ring. */
+#cdtool .cdfile input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+#cdtool .cdfile:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
+#calldata .expbar { margin: 0 0 12px; padding: 9px 14px; border-radius: 10px; font-size: 12.5px;
+  background: var(--warn-bg); border: 1px solid var(--warn-bd); color: var(--warn-fg); }
+
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dot.ok { background: #2aa96e; } .dot.warn { background: #d9a422; } .dot.crit { background: #d64a3a; }
 #rpcstat { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: 13px; }
@@ -355,6 +383,7 @@ footer {
     <button class="tab" data-tab="access">Access Control<span class="tab-dot" aria-hidden="true"></span></button>
     <button class="tab" data-tab="activity">Pool activity<span class="tab-dot" aria-hidden="true"></span></button>
     <button class="tab" data-tab="automation">Automation<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="calldata">🧪 CRE Calldata<span class="tab-dot" aria-hidden="true"></span></button>
   </nav>
   <div class="right">
     <span id="rpcstat"></span>
@@ -384,33 +413,152 @@ footer {
 <main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
 <main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
 <main id="activity" hidden><div class="card"><div class="loader"><span class="spin"></span> loading pool activity…</div></div></main>
-<main id="automation" hidden><div class="card"><div class="loader"><span class="spin"></span> reading the CRE workflow registry…</div></div></main>
+<main id="automation" hidden>
+  <div id="automation-cards"><div class="card"><div class="loader"><span class="spin"></span> reading the CRE workflow registry…</div></div></div>
+</main>
+
+<!-- Its own tab because it is its own tool: it decodes ANY CRE WorkflowRegistry calldata, needs no
+     on-chain read to do it, and is meant to be usable by a signer who has no interest in the rest of
+     this dashboard. It reads the Automation tab's registry data when that happens to be loaded — to
+     name a workflowId it recognises — and says so rather than depending on it. -->
+<main id="calldata" hidden>
+  <!-- Nothing here is re-rendered by the refresh loop, so a periodic refresh cannot wipe a paste that is
+       half-reviewed — the decode runs on input and on a registry read landing, never on a timer. -->
+  <div class="expbar"><strong>🧪 Experimental.</strong> Reads only — decodes, hashes, compares against
+    this repo's pins. Never signs, sends or uploads. A green result agrees with you; it is not authorization.</div>
+
+  <div class="card" id="cdtool">
+    <div class="card-head">
+      <h3>Calldata Explainer</h3>
+      <span class="desc">Paste any CRE <span class="mono">WorkflowRegistry</span> calldata — or a whole Safe
+      <span class="mono">execTransaction</span> — and every field is decoded and checked against this repo's pins.</span>
+    </div>
+    <div class="cdbox">
+      <textarea id="cd-in" spellcheck="false" rows="3" placeholder="0xb377bfc5…"></textarea>
+      <div class="cdbtns">
+        <button type="button" class="refresh" id="cd-go">Decode</button>
+        <button type="button" class="refresh alt" id="cd-clear">Clear</button>
+      </div>
+    </div>
+    <div id="cd-out"></div>
+    <div class="card-head">
+      <h3>Artifacts</h3>
+      <span class="desc">Hashed in this page and compared with the attestation in view — the pasted calldata's, or the
+      registered record's. A match proves these files are the ones <strong>declared</strong> at registration, not that
+      the DON runs them. The compiled binary is not attested: its build is not reproducible.</span>
+    </div>
+    <!-- The native file input renders its button and "no file chosen" text in the BROWSER's language, which
+         puts a stray locale in the middle of an English page. The input is kept (it is what opens the picker
+         and what the change handler reads) but visually hidden behind a label we draw ourselves. -->
+    <div class="cdfiles">
+      <label class="cdfile">
+        <span class="lab">main.ts</span>
+        <span class="btn">Choose file…</span>
+        <span class="name" id="cd-f-src-name">no file selected</span>
+        <input type="file" id="cd-f-src" accept=".ts,text/plain">
+      </label>
+      <label class="cdfile">
+        <span class="lab">config.deploy.json</span>
+        <span class="btn">Choose file…</span>
+        <span class="name" id="cd-f-cfg-name">no file selected</span>
+        <input type="file" id="cd-f-cfg" accept=".json,application/json">
+      </label>
+    </div>
+    <div class="cdbox">
+      <textarea id="cd-src-paste" spellcheck="false" rows="2" placeholder="…or paste main.ts here (byte-exact, trailing newline included)"></textarea>
+    </div>
+    <div id="cd-files-out"></div>
+  </div>
+</main>
 
 <footer>
   <span>◷ Auto-refresh: 60s · read-only</span>
 </footer>
 
 <script>
+// ── sha256, in-page and synchronous ──────────────────────────────────────────
+// Not crypto.subtle: that exists only in a secure context, so a dashboard opened from a file:// path —
+// which is how an operator reads it offline, and exactly when they most want to check an artifact — would
+// silently lose every digest check. This is ~30 lines, has no dependencies, and works everywhere the page
+// does. Verified in-page against the standard vectors (see the self-test below).
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+function sha256Hex(bytes) {
+  const msg = bytes instanceof Uint8Array ? bytes : new TextEncoder().encode(String(bytes));
+  const len = msg.length, bitLen = len * 8;
+  const padded = new Uint8Array(((len + 9 + 63) >> 6) << 6);
+  padded.set(msg); padded[len] = 0x80;
+  const dv = new DataView(padded.buffer);
+  // Length is 64-bit; JS numbers cover the high word for any input a browser can hold.
+  dv.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000));
+  dv.setUint32(padded.length - 4, bitLen >>> 0);
+  const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const w = new Uint32Array(64);
+  const rot = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rot(w[i - 15], 7) ^ rot(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rot(w[i - 2], 17) ^ rot(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rot(e, 6) ^ rot(e, 11) ^ rot(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rot(a, 2) ^ rot(a, 13) ^ rot(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+  }
+  return [...H].map(x => x.toString(16).padStart(8, '0')).join('');
+}
+// Self-test at load: two published vectors plus the empty string. A digest engine that is quietly wrong
+// would turn every check on this page into a confident lie, so it says so instead.
+const SHA256_OK = sha256Hex('') === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+  && sha256Hex('abc') === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
 const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner — CRE workflow owner + author
-const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // Automation Safe — the msig migration target
-const CRE_AUTHOR = AUTO_OWNER; // expected CREReceiver.getExpectedAuthor(): re-pinned from AUTO_SAFE on 2026-08-16.
-  // The Safe is not isOwnerLinked on the L1 WorkflowRegistry, so while the gate pointed at it every
-  // report reverted InvalidAuthor. The Automation tab checks that link rather than trusting this pin.
+const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // LOL Safe (3/5) — the msig the migration
+  // aimed at until 2026-08-24. It is NOT isOwnerLinked on the registry and the org's linked-owner slots
+  // were the binding constraint, so the consolidated workflow goes to CRE_WF_OWNER instead.
+// Owner of the consolidated four-lane workflow: a Safe v1.4.1 with THRESHOLD 1 whose only signer is
+// ST_OWNER below — so the workflow-owner and contract-owner trust domains are ONE key today. Linked
+// on the L1 WorkflowRegistry 2026-08-20 (label `lido-automation-safe-new`). That link, not this pin, is
+// what decides whether the DON will sign as this address; the Automation tab reads it.
+const CRE_WF_OWNER = '0xede1750ac52156e10be2b41d8b8df816d58bafe1';
+// Expected CREReceiver.getExpectedAuthor(). Moved to CRE_WF_OWNER on 2026-08-25, verified on all four
+// lanes before this pin changed — the gate must name the address that OWNS the registered workflow, or
+// every report reverts InvalidAuthor (which is exactly what happened on 2026-08-16, when it pointed at
+// a Safe that was never linked). The Automation tab checks the registry link rather than trusting this
+// constant; the constant only says which answer this dashboard expects to see.
+const CRE_AUTHOR = CRE_WF_OWNER;
 const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger and CREReceiver control owner since Aug 2026
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 const ADMIN_ROLE = '0x' + '0'.repeat(64);
 const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
-const DON_FAMILY = 'zone-a'; // expected creDonFamily for all four workflows
+const DON_FAMILY = 'zone-a'; // creDonFamily — the quota in getMaxWorkflowsPerUserDON is per family
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'Automation Safe', [ST_OWNER]: 'L2 Control Owner',
+  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'LOL Safe (3/5)', [ST_OWNER]: 'L2 Control Owner',
+  [CRE_WF_OWNER]: 'Test Automation Msig',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
 const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
-const SAFES = new Set([LOL, AUTO_SAFE]);
+const SAFES = new Set([LOL, AUTO_SAFE, CRE_WF_OWNER]);
 // Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
 const ICO = {
   eoa: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="EOA"><circle cx="8" cy="4.5" r="3"/><path d="M8 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/></svg>',
@@ -477,9 +625,33 @@ const LANES = [
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0x9eF6468C5f37b976E57d52054c693269479A784d',
     weth: '0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f', wsteth: '0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F' },
-  // creWorkflowName mirrors cre-workflows/sync-automation/workflow.yaml's production-<net> target.
-].map(l => ({ ...l, ...COMMON_DEPLOYED, workflowName: 'lido-sync-automation-' + l.name.toLowerCase() }));
+  // No per-lane workflow name here any more: one registration drives all four lanes, and its name is
+  // CRE_WORKFLOW_NAME, not a property of the lane.
+].map(l => ({ ...l, ...COMMON_DEPLOYED }));
 LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
+
+// ── The consolidated workflow's PARAMETERS ───────────────────────────────────
+// One registered workflow drives all four lanes, so the lane table, the staggered schedules and the
+// write gas limit live in cre-workflows/sync-automation/config.deploy.json instead of in four per-lane
+// registrations. That file is what the DON runs, and no off-chain source can show it back: `configUrl`
+// is signed-CloudFront and answers HTTP 403 to every caller but the DON.
+//
+// Two facts about the registration shape what this block can claim:
+//   • the workflowId is sha256 over the compiled binary AND the config, so the registration DOES commit
+//     to these params — and sha256(config) is reproducible byte-for-byte, which is why the digest below
+//     is recomputed IN THE BROWSER from the verbatim copy rather than trusted as a transcribed constant;
+//   • the binary half is NOT reproducible. Three `cre workflow hash` runs on one machine, same sources,
+//     gave 79ff0429…, 1a0aa094… and f087b180…, hence three different workflowIds. So a registered
+//     workflowId can never be re-derived after the fact: it is an identity here, never a check.
+// Regenerate both constants with `just cre-workflow-hash`, which fails when they drift from the file.
+const CRE_WORKFLOW_NAME = 'direct-staking-sync-test';
+const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b2c87e45ba0ce5ce97d';
+// sha256 of cre-workflows/sync-automation/main.ts — the WHOLE workflow, one file, which is what makes a
+// single source digest mean anything. Published on-chain in the record's `attributes` at registration
+// and re-checkable here against a file the reader supplies. Regenerate with `just cre-workflow-hash`.
+const CRE_SOURCE_SHA256 = '1e61180338f834cfe9e77ac06b1871c6aa47f77c38de6c36f7510249b0df05bb';
+// Byte-exact copy of config.deploy.json — trailing newline included, or the digest will not match.
+const CRE_CONFIG_JSON = "{\n  \"receiverAddress\": \"0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A\",\n  \"targetAddress\": \"0x871a5cddE9813627Ff37A2895A0c9B117A664622\",\n  \"writeGasLimit\": \"750000\",\n  \"lanes\": [\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-optimism-1\",\n      \"schedule\": \"0 0 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-arbitrum-1\",\n      \"schedule\": \"0 15 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-base-1\",\n      \"schedule\": \"0 30 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-linea-1\",\n      \"schedule\": \"0 45 * * * *\"\n    }\n  ]\n}\n";
 
 // ── RPC endpoint overrides ───────────────────────────────────────────────────
 // Per-browser overrides for the endpoints above, so an operator can point the dashboard at a private
@@ -830,16 +1002,65 @@ async function registryData(owners) {
 }
 
 // Tuple fields, by index, so the render code never counts positions.
-const WF = { owner: 1, status: 3, name: 4, tag: 7, donFamily: 9 };
+const WF = { id: 0, owner: 1, createdAt: 2, status: 3, name: 4, tag: 7, attributes: 8, donFamily: 9 };
 
 // rpcBatch turns a PER-CALL revert into null while the batch still resolves, so a non-null `regs` does
 // not mean the enumeration succeeded. "The registry says no such workflow" and "we could not ask the
 // registry" are different claims and only the first may be reported as an absence.
 const regsUsable = regs => regs != null && regs.every(a => a.workflows != null);
-const findWorkflow = (regs, L) => !regsUsable(regs) ? null : regs
-  .flatMap(acct => acct.workflows.map(t => ({ t })))
-  .find(({ t }) => t[WF.name] === L.workflowName) ?? null;
 
+// The consolidated record, found by NAME across every queried owner. It is the ONLY registration this
+// tab reports on: one record now stands for all four lanes, and the superseded per-lane records are
+// not looked up at all — a lane must not be described by a registration that no longer drives it.
+const findConsolidated = regs => !regsUsable(regs) ? null : regs
+  .flatMap(acct => acct.workflows.map(t => ({ t })))
+  .find(({ t }) => t[WF.name] === CRE_WORKFLOW_NAME) ?? null;
+
+// sha256 of the page's own copy of the config, computed rather than asserted: a transcription slip in
+// CRE_CONFIG_SHA256 must not be able to pass as agreement with the chain.
+const creConfigSha = sha256Hex(CRE_CONFIG_JSON);
+const hexOf = b => [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+const hexOfText = t => '0x' + hexOf(new TextEncoder().encode(t));
+// Three outcomes, not two. What the workflowId commits to is sha256 of the config's BYTES, so a
+// re-indented or re-serialised copy of the same parameters is a different artifact even though every
+// value matches — worth saying plainly rather than collapsing into "same" or "different".
+function paramsAgreement(attrsHex, parsed, repoText, repoParsed) {
+  const bytes = String(attrsHex ?? '').toLowerCase() === hexOfText(repoText).toLowerCase();
+  if (bytes) return { level: 'ok', label: 'chain = repo', note: 'the record publishes this repo\'s config.deploy.json, byte for byte' };
+  const semantic = parsed != null && repoParsed != null && JSON.stringify(parsed) === JSON.stringify(repoParsed);
+  if (semantic) return { level: 'warn', label: 'same params, other bytes',
+    note: 'every value matches, but the published bytes are not this file\'s — different sha256, so the registered workflowId commits to a different config artifact' };
+  return { level: 'crit', label: 'chain ≠ repo', note: 'the deployed parameters differ from config.deploy.json' };
+}
+const bytesOfHex = h => Uint8Array.from((h || '').replace(/^0x/, '').match(/../g) ?? [], p => parseInt(p, 16));
+// What the record's `attributes` turned out to be. Three payloads are recognised — the attestation this
+// repo publishes, the older verbatim-config form, and "something else" — because a page that treats an
+// unrecognised payload as absent would report a workflow carrying unknown metadata as carrying none.
+function parseAttributes(hex) {
+  if (!hex || hex === '0x') return { kind: 'empty', bytes: 0 };
+  const bytes = (hex.length - 2) / 2;
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytesOfHex(hex)); }
+  catch { return { kind: 'binary', bytes }; }
+  let json;
+  try { json = JSON.parse(text); } catch { return { kind: 'text', bytes, text }; }
+  if (json && json.v === 'cre-attest/3') return { kind: 'attest', bytes, text, a: json };
+  // A payload announcing itself as an attestation this page cannot check is NOT treated as one: the
+  // fields it carries would be rendered as verified when nothing verified them.
+  if (json && typeof json.v === 'string' && json.v.startsWith('cre-attest/'))
+    return { kind: 'attest-unknown', bytes, text, a: json };
+  if (json && Array.isArray(json.lanes)) return { kind: 'config', bytes, text, config: json };
+  return { kind: 'json', bytes, text, json };
+}
+
+// Two digests, nothing else — the payload carries no summary hash over itself. Such a value would be
+// derivable from the fields beside it, so it could only agree or contradict, and a reader might check
+// IT instead of the two digests that carry the meaning.
+//
+// The compiled binary is deliberately absent too. Two builds of identical sources differ by three bytes
+// (javy bakes entropy into its QuickJS snapshot; SOURCE_DATE_EPOCH does not fix it and no CLI flag pins
+// it), so a published wasm digest could never be reproduced by a reader — it would render as a check
+// while being an assertion, which is the one thing this payload must not do.
 // Text arriving from chain or from an explorer is attacker-controlled — the registry's workflowName is
 // written by the workflow owner, and this repo's own threat model treats that key as compromised.
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
@@ -857,17 +1078,94 @@ const EVT = {
   '0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0':   { label: 'Owner', kind: 'gate' },
 };
 
-const RPC_CONFIRMATIONS = 1800; // cached cursors never include the chain tip
-async function rpcSafeBlock(L) {
-  const latest = Number(BigInt(await rpcRequest(L.logsRpc ?? L.rpc, 'eth_blockNumber', [])));
-  return Math.max(0, latest - RPC_CONFIRMATIONS);
+// `CallExecuted` names the call but carries none of its payload: the WETH a sync moved is emitted one
+// hop away, by CustomSender's own `Sync(address,uint64,bytes32,uint256)` in the SAME transaction. Read
+// it from that log rather than re-deriving it from a pool balance — what moved is a fact OF the
+// transaction, while a balance read afterwards is a different claim about a different moment.
+// SYNC_TOPIC and syncAmount() below are the ones the Overview tile already reads: one decoder for the
+// one event, so a per-sync row and the cumulative total can never disagree about what a Sync says.
+const TX_LOG_CONCURRENCY = 6; // one explorer request per historical sync; kept off the explorer's throttle
+
+// Blockscout v2 returns the emitting address as an object here and as a bare string elsewhere.
+const logAddr = i => (typeof i?.address === 'string' ? i.address : i?.address?.hash ?? i?.address_hash ?? '');
+
+// Anchored on the CustomSender that emitted it: another contract's Sync in the same transaction is a
+// different lane's fact. Returns null when the logs were read and hold no such event.
+const syncWeiOf = (logs, L) => {
+  const log = (logs ?? []).find(i => (i.topics?.[0] ?? '').toLowerCase() === SYNC_TOPIC
+    && logAddr(i).toLowerCase() === L.sender.toLowerCase());
+  const amount = log ? syncAmount(log) : null;
+  return amount == null ? null : amount.toString();
+};
+
+// Three outcomes, three DIFFERENT claims, none allowed to read as another:
+//   e.wei = "<decimal>"  → the Sync log was read; this is the amount it names
+//   e.wei = null         → the tx's logs were read and hold no Sync from this lane's CustomSender —
+//                          an anomaly (the call executed but moved nothing), never shown as `0`
+//   e.amtUnread = true   → the source did not answer; unknown, and it says so rather than blank
+async function attachSyncAmounts(L, rows) {
+  // Amounts are immutable once mined, so a previously read one is re-shown rather than re-fetched;
+  // only a successful read (a string) is reused — a null is retried in case the source was lagging.
+  const known = new Map((automation.logs[L.name] ?? [])
+    .filter(e => typeof e.wei === 'string').map(e => [e.tx, e.wei]));
+  // Selector, not target: an exec against the RETIRED trigger moved WETH just the same, and the amount
+  // is anchored on the CustomSender that emitted it, not on which trigger was called.
+  const syncs = rows.filter(e => e.topic === EXEC_TOPIC && '0x' + (e.topics[2] ?? '').slice(2, 10) === TRIGGER_SYNC_SEL);
+  syncs.forEach(e => { if (known.has(e.tx)) e.wei = known.get(e.tx); });
+  const todo = syncs.filter(e => e.wei === undefined && e.tx);
+  if (!todo.length) return;
+  // A lane with no Blockscout of its own (Base) reads receipts from its log-capable RPC instead — the
+  // same claim by the only route that lane has. An outage here marks the amounts unread; it must not
+  // fail automationLogs and take the lane's whole event history down with it.
+  if (!L.bs) {
+    let receipts = [];
+    try {
+      receipts = await rpcBatchChunks(L.logsRpc,
+        todo.map(e => ({ method: 'eth_getTransactionReceipt', params: [e.tx] })));
+    } catch { todo.forEach(e => { e.amtUnread = true; }); return; }
+    todo.forEach((e, i) => {
+      const r = receipts[i];
+      if (!r || !Array.isArray(r.logs)) { e.amtUnread = true; return; } // unread — NOT "no amount"
+      e.wei = syncWeiOf(r.logs, L);
+    });
+    return;
+  }
+  for (let i = 0; i < todo.length; i += TX_LOG_CONCURRENCY) {
+    await Promise.all(todo.slice(i, i + TX_LOG_CONCURRENCY).map(async e => {
+      let items;
+      try {
+        const res = await fetch(`${L.bs}/api/v2/transactions/${e.tx}/logs`);
+        if (!res.ok) { e.amtUnread = true; return; } // unread — NOT "no amount"
+        items = (await res.json()).items;
+      } catch { e.amtUnread = true; return; }
+      if (!Array.isArray(items)) { e.amtUnread = true; return; }
+      e.wei = syncWeiOf(items, L);
+    }));
+  }
 }
 
+// The confirmation lag belongs to CURSORS, not to views. syncLogsRange advances a cursor saved in
+// localStorage and can never look back, so a log that reorgs out after the cursor passed it is lost
+// from the cumulative total for good — that read must stay behind the reorg-able tip. A view that is
+// re-read in full every refresh has no such exposure: a reorg simply corrects itself on the next pass.
+// On Base (2s blocks, and the only lane read over RPC rather than Blockscout) this window is a full
+// HOUR, so applying it to a view would hide exactly the events worth watching — an author-gate change
+// stayed invisible for an hour on Base while the other three lanes showed it at once.
+const RPC_CONFIRMATIONS = 1800; // a PERSISTED cursor never includes the chain tip
+const rpcBlockNumber = async L => Number(BigInt(await rpcRequest(L.logsRpc ?? L.rpc, 'eth_blockNumber', [])));
+// The ONLY remaining caller is checkpointedSyncVolumeData, which is the only read that advances a
+// persisted cursor. Every other log read below is a full re-read and goes to the tip.
+async function rpcSafeBlock(L) {
+  return Math.max(0, await rpcBlockNumber(L) - RPC_CONFIRMATIONS);
+}
+
+// Reads through the chain tip. Both callers re-read their whole range on every refresh and replace
+// their cache wholesale, so a reorg corrects itself on the next pass — while holding back by
+// RPC_CONFIRMATIONS would blind them for a full window, an HOUR on Base's 2-second blocks. One
+// request, no tip probe: `latest` is resolved by the node.
 async function rpcHistoryLogs(L, address, topics, fromBlock) {
-  const toBlock = await rpcSafeBlock(L);
-  if (toBlock < fromBlock) return [];
   return rpcRequest(L.logsRpc, 'eth_getLogs', [{
-    fromBlock: '0x' + fromBlock.toString(16), toBlock: '0x' + toBlock.toString(16), address, topics,
+    fromBlock: '0x' + fromBlock.toString(16), toBlock: 'latest', address, topics,
   }]);
 }
 
@@ -901,6 +1199,7 @@ async function automationLogs(L) {
     const stamps = new Map(missing.map((n, i) => [n, blocks[i]?.timestamp ? Number(BigInt(blocks[i].timestamp)) : null]));
     rows.forEach(r => { if (r.ts == null) r.ts = stamps.get(r.block) ?? null; });
   }
+  await attachSyncAmounts(L, rows);
   return rows.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
 }
 
@@ -1023,7 +1322,12 @@ async function poolActivityData(L) {
 }
 
 async function rpcPoolActivityData(L) {
-  const toBlock = await rpcSafeBlock(L);
+  // ONE tip read, shared by both queries below. They are separate eth_getLogs calls, so letting each
+  // resolve `latest` for itself would let a transfer fall inside one range and outside the other —
+  // and classifyTx would then read a transaction from half its legs, labelling a fast stake as a bare
+  // "WETH in". A pinned number keeps the pair range-consistent; the confirmation window does not
+  // belong here, since this whole range is re-read and the lane's cache replaced on every refresh.
+  const toBlock = await rpcBlockNumber(L);
   if (toBlock < L.activityFrom) return [];
   const poolTopic = '0x' + '0'.repeat(24) + L.pool.slice(2).toLowerCase();
   const filter = topics => ({ fromBlock: '0x' + L.activityFrom.toString(16),
@@ -1335,7 +1639,30 @@ setInterval(updateActivityUpd, 10_000);
 // throughout the 2026-08-13 → 08-16 window in which the author gate rejected every report. A lane is
 // only as good as its weakest plane, and registration never carries that verdict on its own.
 const AUTOMATION_CACHE_KEY = 'direct-staking-watch.automation-cache';
-const DUE_GRACE_S = 1800; // 6 cron ticks (the workflow runs every 5 min) before "due" reads as "stalled"
+// How long a lane may sit DUE before "waiting for the next tick" becomes "stalled". This is DERIVED
+// from the schedules the workflow actually runs, not fixed: the consolidation moved every lane from a
+// 5-minute cron to one hourly cron, and a 30-minute window against an hourly tick would raise a
+// critical on essentially every healthy sync — a lane goes due at `lastExecution + delay`, which has no
+// relation to its minute-of-hour slot, so a normal wait is up to a full period.
+//
+// Floor and slack are deliberate: never tighter than the old 30 minutes, and always a quarter-hour
+// beyond one full tick period, so RPC lag or a skipped tick is late rather than "undelivered".
+const DUE_GRACE_FLOOR_S = 1800;
+const DUE_GRACE_SLACK_S = 900;
+function dueGraceSeconds(lanes) {
+  const periods = (Array.isArray(lanes) ? lanes : []).map(l => cdCron(l?.schedule).periodSec);
+  // An unreadable schedule must widen the window, never narrow it: a day is the longest period this
+  // page can gloss, and reporting "stalled" off a cron nobody parsed would be a verdict with no basis.
+  if (!periods.length || periods.some(p => p == null)) return Math.max(DUE_GRACE_FLOOR_S, 86400 + DUE_GRACE_SLACK_S);
+  return Math.max(DUE_GRACE_FLOOR_S, Math.max(...periods) + DUE_GRACE_SLACK_S);
+}
+// A cached `wei` is fed to BigInt() by the renderer and localStorage is persistent, attacker-adjacent
+// input: anything but a plain decimal string — or the `null` that means "read, no Sync log" — would
+// throw mid-render and strand the tab. Downgrade an implausible one to "unread", a claim the next
+// refresh re-reads, rather than trusting it or dropping the row that carries it. A row that never
+// carried an amount (any event but a sync) is left exactly as it is.
+const sanitizeWei = e => !('wei' in e) || e.wei === null || (typeof e.wei === 'string' && /^\d+$/.test(e.wei))
+  ? e : { ...e, wei: undefined, amtUnread: true };
 const automation = { regs: null, regError: null, lanes: null, logs: readAutomationCache(), logErrors: [] };
 
 // The cache is persistent attacker-adjacent input: validate its SHAPE, not just that it parsed. A row
@@ -1347,12 +1674,17 @@ function readAutomationCache() {
     if (!cache || typeof cache !== 'object') return {};
     return Object.fromEntries(Object.entries(cache)
       .filter(([name, rows]) => LANES.some(L => L.name === name) && Array.isArray(rows))
-      .map(([name, rows]) => [name, rows.filter(e => e && EVT[e.topic] && Array.isArray(e.topics))]));
+      .map(([name, rows]) => [name, rows.filter(e => e && EVT[e.topic] && Array.isArray(e.topics)).map(sanitizeWei)]));
   } catch { return {}; }
 }
 function saveAutomationCache() {
   try { localStorage.setItem(AUTOMATION_CACHE_KEY, JSON.stringify(automation.logs)); } catch {}
 }
+
+// Which registration governs THIS lane: the one consolidated record, which stands for all four. The
+// superseded per-lane records are deliberately NOT consulted — a lane is reported against the layout
+// that is meant to drive it, and a retired record standing in for it would read as a working lane.
+const laneWorkflow = regs => findConsolidated(regs);
 
 const acctFor = (regs, addr) => (regs ?? []).find(a => addr && a.owner.toLowerCase() === addr.toLowerCase()) ?? null;
 const execEvents = name => (automation.logs[name] ?? []).filter(e => e.topic === EXEC_TOPIC);
@@ -1362,8 +1694,8 @@ const execEvents = name => (automation.logs[name] ?? []).filter(e => e.topic ===
 function gateChecks(L, d, regs) {
   const eq = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
   const read = regsUsable(regs);
-  const wf = findWorkflow(regs, L);
   const author = d.creAuthor;
+  const wf = laneWorkflow(regs);
   const linked = acctFor(regs, author)?.linked;
   const cell = (key, sub, chain, verdict, a) => ({ key, sub, chain, ...verdict, a: a ? a.toLowerCase() : null });
   return [
@@ -1391,7 +1723,7 @@ function gateChecks(L, d, regs) {
 // Registration is a RECORD. It warrants "the DON should run this" and nothing about acceptance or delivery.
 function registrationChecks(L, regs) {
   if (!regsUsable(regs)) return { level: 'warn', rows: null, unread: true };
-  const wf = findWorkflow(regs, L);
+  const wf = laneWorkflow(regs);
   if (!wf) return { level: 'crit', rows: null, unread: false };
   const t = wf.t;
   const status = t[WF.status] === 0n ? { level: 'ok', value: 'ACTIVE' }
@@ -1411,7 +1743,7 @@ function registrationChecks(L, regs) {
 // The idle state is named IDLE, never "delivering". A lane whose last report is weeks old is not
 // delivering anything — it has nothing to deliver, which is a different claim, and collapsing the two
 // would smuggle liveness back in through a label after the card structure took it out.
-function deliveryState(L, d) {
+function deliveryState(L, d, graceS) {
   const execs = execEvents(L.name);
   const last = execs.length ? execs[0].ts : null;
   const now = Math.floor(Date.now() / 1000);
@@ -1428,10 +1760,11 @@ function deliveryState(L, d) {
   // last delivery: shouldSyncAmount() only goes non-zero once the 12h delay has elapsed, so measuring
   // staleness against the last report would make every normal sync window fire this critical.
   const dueSince = d.lastExec != null && d.delay != null ? Number(d.lastExec + d.delay) : null;
-  const overdue = dueSince != null && now - dueSince > DUE_GRACE_S;
+  const overdue = dueSince != null && now - dueSince > graceS;
   if (d.shouldSync > 0n && d.canSync && overdue)
     return { level: 'crit', label: 'DUE, UNDELIVERED', n: execs.length, last,
-      note: `${fmtEth(d.shouldSync, 2)} WETH due for ${ago(dueSince).replace(' ago', '')}, no report` };
+      note: `${fmtEth(d.shouldSync, 2)} WETH due for ${ago(dueSince).replace(' ago', '')} — past the ${
+        Math.round(graceS / 60)} min this cadence allows, no report` };
   if (d.shouldSync > 0n)
     return { level: 'ok', label: 'DUE', n: execs.length, last, note: 'awaiting the next DON tick' };
   if (!execs.length)
@@ -1452,7 +1785,14 @@ function eventDetail(e) {
   const addr = t => t ? '0x' + t.slice(-40) : null;
   // holder() resolves the name from the ADDRESS via NAMES; an unrecognised target stays a short hex
   // string rather than borrowing a label it did not earn.
-  if (e.topic === EXEC_TOPIC) return `${selName(e.topics[2])} on ${holder(addr(e.topics[1]))}`;
+  if (e.topic === EXEC_TOPIC) {
+    const call = `${selName(e.topics[2])} on ${holder(addr(e.topics[1]))}`;
+    // A sync's size is part of what the row reports, so an unread or absent amount is SAID, not blank.
+    if (typeof e.wei === 'string') return `${call} · <strong>${fmtEth(BigInt(e.wei))} WETH</strong>`;
+    if (e.wei === null) return `${call} · <span class="chip warn"><div class="m">⚠ no Sync event</div></span>`;
+    if (e.amtUnread) return `${call} · <span style="color:var(--muted)">amount unread</span>`;
+    return call;
+  }
   if (e.topic === '0xb35b8e3487df8622d32523c450283db1844a7a279925f30df21d27bc116189d7')
     return `${selName(e.topics[2])} on ${holder(addr(e.topics[1]))} → ${decBool(e.data) ? 'allowed' : 'blocked'}`;
   if (e.topic === '0x94b2de810873337ed265c5f8cf98c9cffefa06b8607f9a2f1fbaebdfbcfbef1c')
@@ -1465,11 +1805,27 @@ function renderAutomation() {
   if (!lanes) return; // the log fetch alone cannot draw the planes; first paint comes from refresh()
   const regs = automation.regs;
 
+  // Resolved before anything renders, because the delivery verdict depends on it: the chain's published
+  // params if the record carries them, this repo's copy otherwise. Both the grace window below and the
+  // Deployed Parameters card read this one answer, so they cannot disagree about which cadence is live.
+  const cons = findConsolidated(regs);
+  const attrsHex = cons ? cons.t[WF.attributes] : null;
+  const attrs = parseAttributes(attrsHex);
+  regAttest = attrs.kind === 'attest' ? attrs.a : null;   // what the artifact checker verifies against
+  const repoParams = (() => { try { return JSON.parse(CRE_CONFIG_JSON); } catch { return null; } })();
+  // Only the verbatim-config payload puts parameters on the chain; under an attestation the table is
+  // this repo's copy, vouched for by a digest. Three states, not two, and the label says which.
+  const paramsSrc = (attrs.kind === 'config' ? attrs.config : null) ?? repoParams;
+  const paramsOrigin = attrs.kind === 'config' ? 'chain'
+    : (attrs.kind === 'attest' && attrs.a.config === creConfigSha) ? 'attested' : 'repo';
+  const paramsFromChain = paramsOrigin === 'chain';
+  const graceS = dueGraceSeconds(paramsSrc?.lanes);
+
   const perLane = lanes.map(l => l.error ? null : ({
     L: l.L, d: l.d,
     reg: registrationChecks(l.L, regs),
     gate: gateChecks(l.L, l.d, regs),
-    del: deliveryState(l.L, l.d),
+    del: deliveryState(l.L, l.d, graceS),
   }));
   const armed = perLane.filter(p => p && p.gate.every(c => c.level === 'ok'));
   const active = perLane.filter(p => p && p.reg.rows && p.reg.rows.status.level === 'ok');
@@ -1481,7 +1837,110 @@ function renderAutomation() {
   const gateBlocked = [...new Set(perLane.filter(Boolean)
     .map(p => p.gate.find(c => c.level === 'crit')?.key).filter(Boolean))];
 
+  // ── Card A2 — the parameters the registered workflow runs on ──
+  // Source order is deliberate: whatever the RECORD publishes wins over this repo's copy, because the
+  // question is what is deployed, not what is declared here. The repo copy is the fallback, and it is
+  // labelled as such — a lane table with no chain backing must never read like a chain reading.
+
+  // Row 1 — is there a record at all. "Not registered yet" is the EXPECTED state until the Safe executes
+  // the upsert, so it is stated as a fact and kept out of the tab's status: an unstarted step is not a fault.
+  const recRow = !regsUsable(regs)
+    ? { level: 'warn', html: chip('warn', 'registry unread', 'L1 read failed — record state unknown'), count: true }
+    : !cons
+      ? { level: 'ok', html: chip('', 'not registered yet', `no workflow named ${esc(CRE_WORKFLOW_NAME)} under ${who(CRE_WF_OWNER)}`), count: false }
+      : { level: cons.t[WF.status] === 0n ? 'ok' : 'warn',
+          html: chip(cons.t[WF.status] === 0n ? 'ok' : 'warn',
+            cons.t[WF.status] === 0n ? 'ACTIVE' : cons.t[WF.status] === 1n ? 'PAUSED' : `status ${cons.t[WF.status]}`,
+            `${holder(cons.t[WF.owner])} · registered ${ago(Number(cons.t[WF.createdAt]))}`), count: true };
+
+  // Row 2 — are the params observable on-chain at all, and do they match this page's copy? attributes is
+  // arbitrary owner-written bytes the registry never reads, which is exactly what makes it usable for
+  // publishing the config verbatim — and exactly why a match is an ATTESTATION, not an oracle.
+  const pubRow = !cons ? { level: 'ok', html: chip('', 'n/a', 'nothing registered to publish from'), count: false }
+    : attrs.kind === 'empty'
+      ? { level: 'warn', html: chip('warn', 'attributes empty', 'nothing about the deployed artifacts was published — the table below is this repo\'s copy, unconfirmed'), count: true }
+    : attrs.kind === 'attest'
+      // The attestation publishes DIGESTS, so the lane table below stays the repo's copy — but a copy
+      // whose sha256 the record commits to is a different thing from an unchecked one, and the verdict
+      // says which of the two you are looking at.
+      ? (attrs.a.config === creConfigSha
+          ? { level: 'ok', html: chip('ok', 'config digest attested', 'the record commits to this repo\'s config.deploy.json'), count: true }
+          : { level: 'crit', html: chip('crit', 'attested config ≠ repo', `the record commits to <span class="mono">${esc(String(attrs.a.config ?? '—').slice(0, 16))}…</span>, this repo hashes to <span class="mono">${creConfigSha.slice(0, 16)}…</span>`), count: true })
+    : attrs.kind === 'config'
+      ? (a => ({ level: a.level, html: chip(a.level, a.label, a.note + (a.level === 'ok' ? '' : ' — the table below shows the CHAIN\'s')), count: true }))(
+          paramsAgreement(attrsHex, attrs.config, CRE_CONFIG_JSON, repoParams))
+    : { level: 'crit', html: chip('crit', 'unrecognised payload', `${attrs.bytes} bytes that are neither an attestation nor a config`), count: true };
+
+  // Row 3 — the page's own integrity. Recomputed here so a wrong constant cannot masquerade as agreement.
+  const digRow = !SHA256_OK
+    ? { level: 'crit', html: chip('crit', 'digest engine failed self-test', 'no digest on this page can be trusted'), count: true }
+    : creConfigSha === CRE_CONFIG_SHA256
+      ? { level: 'ok', html: chip('ok', 'sha256 matches pin', `<span class="mono">${CRE_CONFIG_SHA256.slice(0, 16)}…</span>`), count: true }
+      : { level: 'crit', html: chip('crit', 'sha256 ≠ pin', `computed <span class="mono">${esc(creConfigSha.slice(0, 16))}…</span> — regenerate with just cre-workflow-hash`), count: true };
+
+  // Row 3b — the source and binary the record attests to. Only the attestation can answer this: the
+  // config alone never said WHICH code was uploaded, and the artifact store answers 403 to everyone.
+  const srcRow = !cons || attrs.kind !== 'attest'
+    ? { level: 'ok', html: chip('', 'not attested', 'no source digest is published for this record'), count: false }
+    : (() => {
+        const srcOk = attrs.a.source === CRE_SOURCE_SHA256;
+        return { level: srcOk ? 'ok' : 'crit', count: true, html: chip(srcOk ? 'ok' : 'crit',
+          srcOk ? 'source digest attested' : 'attested source ≠ repo',
+          srcOk ? `main.ts <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span> — the compiled binary is not attested (its build is not reproducible)`
+            : `the record commits to <span class="mono">${esc(String(attrs.a.source ?? '—').slice(0, 16))}…</span>, this repo's main.ts hashes to <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span>`) };
+      })();
+
+  // Row 4 — the addresses the params point at. A config that is internally valid but aims at the wrong
+  // receiver would still register, still run, and never deliver: worth its own row, not a footnote.
+  const addrOk = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+  const tgtRow = !paramsSrc ? { level: 'crit', html: chip('crit', 'params unparseable', 'neither chain nor repo yielded a config'), count: true }
+    : addrOk(paramsSrc.receiverAddress, COMMON_DEPLOYED.creReceiver) && addrOk(paramsSrc.targetAddress, COMMON_DEPLOYED.syncTrigger)
+      ? { level: 'ok', html: chip('ok', 'receiver + target pinned', `${short(COMMON_DEPLOYED.creReceiver)} → ${short(COMMON_DEPLOYED.syncTrigger)}`), count: true }
+      : { level: 'crit', html: chip('crit', 'addresses off-pin',
+          `receiver <span class="mono">${esc(short(paramsSrc.receiverAddress))}</span> · target <span class="mono">${esc(short(paramsSrc.targetAddress))}</span>`), count: true };
+
+  // Same renderer the calldata explainer uses, so a lane table cannot say one thing before signing and
+  // another after: one implementation, one set of issues.
+  const laneTab = laneTableHtml(paramsSrc?.lanes);
+  const paramsLevel = worst([recRow, pubRow, digRow, srcRow, tgtRow].filter(r => r.count).map(r => r.level)
+    .concat(cons ? laneTab.issues.map(i => i.level) : []));
+
+  const paramsCard = `<div class="card">
+    <div class="card-head">
+      <h3>Deployed Parameters</h3>
+      <span class="desc">One registration, four lanes — the lane table lives in the workflow's config, not in the
+      registry. The artifact store is 403 to everyone but the DON, so the record's <span class="mono">attributes</span>
+      carry digests of the config and the source instead, and those are checked here against this page's own copies.
+      <strong>What that establishes is a declaration, not execution:</strong> a green row means the config and code shown
+      here are the ones declared when the workflow was registered — it is not evidence that the DON runs them.</span>
+      ${legendHtml()}
+    </div>
+    <div class="scroll-x"><table class="syncm">
+      <tr><th>Question</th><th>Answer</th><th>What it rests on</th></tr>
+      <tr><td class="rowlabel">is it registered?</td><td>${recRow.html}</td>
+          <td class="s">${cons ? `<span class="mono">${short(cons.t[WF.id])}</span> · workflowId is an identity, not a check —
+            the compiled binary it hashes is not reproducible` : `owner ${holder(CRE_WF_OWNER)} · name <span class="mono">${esc(CRE_WORKFLOW_NAME)}</span>`}</td></tr>
+      <tr><td class="rowlabel">are the params attested?</td><td>${pubRow.html}</td>
+          <td class="s">the record's <span class="mono">attributes</span> ↔ config.deploy.json — the same digest sha256 feeds into the workflowId</td></tr>
+      <tr><td class="rowlabel">which source?</td><td>${srcRow.html}</td>
+          <td class="s">only the attestation can say — the uploaded artifacts are 403 to everyone but the DON. Re-hash <span class="mono">main.ts</span> in the 🧪 CRE Calldata tab</td></tr>
+      <tr><td class="rowlabel">does this page show them faithfully?</td><td>${digRow.html}</td>
+          <td class="s">sha256 recomputed in the browser · the same digest the workflowId commits to</td></tr>
+      <tr><td class="rowlabel">do they aim at our contracts?</td><td>${tgtRow.html}</td>
+          <td class="s">receiverAddress → CREReceiver · targetAddress → SyncTrigger</td></tr>
+    </table></div>
+    <div class="card-head"><span class="desc">Lane triggers — <strong>${
+      paramsOrigin === 'chain' ? 'read from the record'
+      : paramsOrigin === 'attested' ? 'this repo\'s copy, and the record commits to its digest'
+      : 'this repo\'s copy, unconfirmed by any chain read'}</strong> ·
+      write gas limit <span class="mono">${esc(paramsSrc?.writeGasLimit ?? '—')}</span></span></div>
+    ${laneTab.html}
+    ${laneTab.issues.map(i => `<div class="err-banner">${i.level === 'crit' ? '✕' : '⚠'} ${i.text}${
+      i.level === 'crit' && laneTab.missing.length ? ` — ${paramsFromChain ? 'the registered config drives fewer lanes than this dashboard tracks' : 'the repo config is short a lane'}` : ''}</div>`).join('')}
+  </div>`;
+
   const level = worst([
+    paramsLevel,
     ...(automation.regError ? ['crit'] : []),
     ...lanes.filter(l => l.error).map(() => 'crit'),
     // An event-source outage means the delivery plane is unverified; a green tab must not be read off a
@@ -1498,10 +1957,13 @@ function renderAutomation() {
       ${viewRefresh('automation', 'Automation')}
     </div>
     <div class="stat">
-      <div class="k">Workflows ACTIVE</div>
+      <!-- LANES, not workflows: under the consolidated layout there is ONE registration behind all four
+           of these, so a tile headed "Workflows ACTIVE" would read as a count of records and be wrong. -->
+      <div class="k">Lanes registered</div>
       <div class="v serif">${regsRead ? `${active.length}<span style="color:var(--muted)">/${LANES.length}</span>`
         : '<span style="color:var(--muted)">?</span>'}</div>
-      <div class="s">${regsRead ? `DON ${DON_FAMILY}` : 'registry unread — count unknown'}</div>
+      <div class="s">${!regsRead ? 'registry unread — count unknown'
+        : `DON ${DON_FAMILY} · ${cons ? 'one record, four lanes' : 'no record governs a lane'}`}</div>
     </div>
     <div class="stat ${gateBlocked.length ? 'critical' : 'tinted'}">
       <div class="k">Author gate armed</div>
@@ -1528,7 +1990,7 @@ function renderAutomation() {
     const registration = !p.reg.rows
       ? (p.reg.unread ? chip('warn', 'UNKNOWN', 'registry unread') : chip('crit', 'MISSING', 'workflow not registered'))
       : regBad ? chip(regBad.level, 'MISCONFIGURED', regBad.value)
-      : chip('ok', 'ACTIVE');
+      : chip('ok', 'ACTIVE', `<span class="mono">${esc(CRE_WORKFLOW_NAME)}</span> · one record, four lanes`);
     const gateBad = p.gate.find(c => c.level !== 'ok');
     const gate = gateBad
       ? chip(gateBad.level, gateBad.level === 'crit' ? 'BLOCKED' : 'UNKNOWN', gateBad.key)
@@ -1581,7 +2043,7 @@ function renderAutomation() {
       : '<div class="err-banner">no CREReceiver events found</div>'}
   </div>`;
 
-  document.getElementById('automation').innerHTML = hero + laneCard + evCard;
+  document.getElementById('automation-cards').innerHTML = hero + laneCard + paramsCard + evCard;
 }
 
 function render(l1, lanes) {
@@ -1749,6 +2211,489 @@ const laneWho = L => `<span class="who">
   <span><span class="name">${L.name}</span><br>
   <span class="sub">${alink(L, L.syncTrigger, 'trigger')} · ${alink(L, L.pool, 'pool')}</span></span></span>`;
 
+// ── Lane triggers: the crons and networks a config actually registers ────────
+// One workflow, four cron triggers, and the only place they exist is the config — which the registry
+// stores as a 403-gated URL. Wherever a copy of that config IS available (published in `attributes`, or
+// this page's own pinned copy), it is worth reading properly rather than echoing: a six-field CRE cron
+// misread as five-field crontab, a duplicated selector, or two lanes landing in the same minute are all
+// silent at registration and only surface as behaviour weeks later.
+const laneOfSelector = sel => LANES.find(L => String(sel ?? '') === `ethereum-mainnet-${L.name.toLowerCase()}-1`) ?? null;
+
+// CRE cron carries a SECONDS field first — six fields, not crontab's five. Reading "0 15 * * * *" with
+// crontab habits gives a different schedule entirely, which is why the field count is a verdict and not
+// a formatting detail.
+function cdCron(schedule) {
+  const f = String(schedule ?? '').trim().split(/\s+/).filter(Boolean);
+  if (f.length === 5) return { level: 'crit', reads: 'five fields — crontab, not CRE', periodSec: null,
+    note: 'CRE takes six fields, seconds first; a five-field expression means something else here', next: [] };
+  if (f.length !== 6) return { level: 'crit', reads: `${f.length} field${f.length === 1 ? '' : 's'}`, periodSec: null,
+    note: 'expected six: sec min hour day month weekday', next: [] };
+  const [sec, min, hour, dom, mon, dow] = f;
+  const pad = n => String(n).padStart(2, '0');
+  const step = spec => (/^\*\/[1-9]\d*$/.test(spec) ? Number(spec.slice(2)) : null);
+  const fixed = spec => (/^\d+$/.test(spec) ? Number(spec) : null);
+  const known = spec => spec === '*' || fixed(spec) !== null || step(spec) !== null;
+  const hits = (spec, v) => spec === '*' || fixed(spec) === v || (step(spec) !== null && v % step(spec) === 0);
+
+  // Only the shapes this system uses are glossed, and the seconds field must be a fixed value — the
+  // scan below walks minutes, so a wildcard second would be described by a search that never looked at
+  // seconds. Anything else is reported as un-glossed rather than guessed at.
+  const s0 = fixed(sec);
+  if (s0 === null || ![min, hour].every(known) || dom !== '*' || mon !== '*' || dow !== '*')
+    return { level: 'warn', reads: 'pattern not glossed here', periodSec: null,
+      note: 'read the six fields directly — this page only spells out the shapes this system uses', next: [] };
+
+  const mStep = step(min), hStep = step(hour), mFix = fixed(min), hFix = fixed(hour);
+  const reads =
+    hour === '*' && min === '*' ? `every minute at :${pad(s0)}`
+    : hour === '*' && mStep ? `every ${mStep} minutes at :${pad(s0)}`
+    : hour === '*' && mFix !== null ? `every hour at :${pad(mFix)}:${pad(s0)}`
+    : hStep && mFix !== null ? `every ${hStep} hours at :${pad(mFix)}:${pad(s0)}`
+    : hFix !== null && mFix !== null ? `once a day at ${pad(hFix)}:${pad(mFix)}:${pad(s0)}`
+    : `sec ${sec} · min ${min} · hour ${hour}`;
+
+  // Next fires by scanning forward minute by minute (bounded to 48h), which handles every shape above
+  // without a per-shape formula. The PERIOD is then read off the gaps rather than assumed — for a step
+  // expression that does not divide the hour, gaps are uneven, so the widest one is the honest answer.
+  const now = new Date();
+  const next = [];
+  let t = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes(), s0));
+  for (let i = 0; i < 2880 && next.length < 4; i++) {
+    if (t > now && hits(hour, t.getUTCHours()) && hits(min, t.getUTCMinutes())) next.push(new Date(t));
+    t = new Date(t.getTime() + 60e3);
+  }
+  const gaps = next.slice(1).map((d, i) => (d - next[i]) / 1000);
+  return { level: 'ok', reads, note: null, next: next.slice(0, 2),
+    periodSec: gaps.length ? Math.max(...gaps) : null };
+}
+
+// Renders the lane table shared by the Deployed Parameters card and the calldata explainer, and returns
+// the issues it found so the caller can fold them into its own verdict instead of re-deriving them.
+function laneTableHtml(lanes) {
+  const list = Array.isArray(lanes) ? lanes : [];
+  const issues = [];
+  const seen = new Set(), minutes = new Map();
+  const rows = list.map((ln, i) => {
+    const sel = String(ln?.chainSelectorName ?? '');
+    const L = laneOfSelector(sel);
+    const c = cdCron(ln?.schedule);
+    if (!L) issues.push({ level: 'crit', text: `lane ${i + 1} names ${esc(sel) || 'no chain'} — not one of the four this system runs` });
+    if (seen.has(sel)) issues.push({ level: 'crit', text: `${esc(sel)} appears twice — two triggers would write the same report to the same chain` });
+    seen.add(sel);
+    if (c.level !== 'ok') issues.push({ level: c.level, text: `${esc(sel) || `lane ${i + 1}`}: ${c.reads}` });
+    const mm = (c.reads?.match(/^every hour at :(\d\d)/) ?? [])[1];
+    if (mm != null) { minutes.set(mm, (minutes.get(mm) ?? 0) + 1); }
+    return `<tr>
+      <td>${L ? laneWho(L) : chip('crit', 'unknown network', esc(sel) || '(empty)')}</td>
+      <td><span class="num"><div class="m mono">${esc(sel) || '—'}</div>
+          <div class="s">${L ? `chain ${L.chainId}` : 'no lane on this dashboard'}</div></span></td>
+      <td><span class="num"><div class="m mono">${esc(String(ln?.schedule ?? '—'))}</div>
+          <div class="s">${c.level === 'ok' ? esc(c.reads) : `<span class="chip ${c.level}"><div class="m">${esc(c.reads)}</div></span>`}</div></span></td>
+      <td class="s">${c.next.length
+        ? `${c.next.map(d => d.toISOString().replace('T', ' ').slice(0, 19) + 'Z').join('<br>')}`
+        : esc(c.note ?? '—')}</td>
+    </tr>`;
+  }).join('');
+  [...minutes].filter(([, n]) => n > 1).forEach(([mm]) =>
+    issues.push({ level: 'warn', text: `two lanes both fire at :${mm} — the stagger that keeps executions apart is gone` }));
+  const missing = LANES.filter(L => !list.some(ln => laneOfSelector(ln?.chainSelectorName) === L));
+  if (list.length && missing.length)
+    issues.push({ level: 'crit', text: `no trigger for ${missing.map(L => L.name).join(', ')}` });
+  return { issues, missing, html: `<div class="scroll-x"><table class="syncm">
+    <tr><th>Network</th><th>Chain selector</th><th>Cron (seconds-first)</th><th>Next fires (UTC)</th></tr>
+    ${rows || '<tr><td colspan="4">no lanes in this config</td></tr>'}
+  </table></div>` };
+}
+
+// ── Calldata explainer — what the multisig is actually about to sign ─────────
+// A Safe signer is shown a destination and a hex blob. The blob alone decides what happens, and
+// nothing in the path spells out what its fields MEAN here: the CRE CLI prints it without commentary,
+// the Safe UI renders bytes, and an explorer at best names the function. So it is decoded in-page and
+// every field is given a VERDICT against the same pins the rest of this tab checks — a decoded value
+// that nobody compares to anything is how a wrong workflowId or an empty attributes field gets signed.
+//
+// Local only: no network write, no signature, nothing leaves the page. The one optional read is an
+// eth_call against the registry to ask whether a workflowId is already taken.
+const REG_FN = {
+  '0xb377bfc5': { name: 'upsertWorkflow',
+    types: ['string', 'string', 'bytes32', 'uint8', 'string', 'string', 'string', 'bytes', 'bool'],
+    args: ['workflowName', 'tag', 'workflowId', 'status', 'donFamily', 'binaryUrl', 'configUrl', 'attributes', 'keepAlive'] },
+  '0xdc101969': { name: 'linkOwner', types: ['uint256', 'bytes32', 'bytes'], args: ['validityTimestamp', 'proof', 'signature'] },
+  '0x39d68c6a': { name: 'unlinkOwner', types: ['address', 'uint256', 'bytes'], args: ['owner', 'validityTimestamp', 'signature'] },
+  '0xe690f332': { name: 'pauseWorkflow', types: ['bytes32'], args: ['workflowId'] },
+  '0x530979d6': { name: 'activateWorkflow', types: ['bytes32', 'string'], args: ['workflowId', 'donFamily'] },
+  '0x695e1340': { name: 'deleteWorkflow', types: ['bytes32'], args: ['workflowId'] },
+  '0xd8b80738': { name: 'batchPauseWorkflows', types: ['bytes32[]'], args: ['workflowIds'] },
+  '0xafbb2401': { name: 'updateWorkflowDONFamily', types: ['bytes32', 'string'], args: ['workflowId', 'newDonFamily'] },
+};
+const SAFE_EXEC_SEL = '0x6a761202';
+const SAFE_EXEC = { name: 'execTransaction',
+  types: ['address', 'uint256', 'bytes', 'uint8', 'uint256', 'uint256', 'uint256', 'address', 'address', 'bytes'],
+  args: ['to', 'value', 'data', 'operation', 'safeTxGas', 'baseGas', 'gasPrice', 'gasToken', 'refundReceiver', 'signatures'] };
+
+// Flat-argument ABI decoder for the shapes above. Deliberately narrow, like decodeTupleArray: it
+// returns null on anything it does not recognise rather than guessing, because a half-decoded blob
+// rendered as a table is worse than a refusal — it invites a signature on fields nobody verified.
+function decodeAbiArgs(hex, types) {
+  const b = (hex || '').replace(/^0x/, '');
+  if (!b.length || b.length % 64) return null;
+  const words = b.length / 64;
+  const w = i => b.slice(i * 64, i * 64 + 64);
+  const u = i => BigInt('0x' + w(i));
+  try {
+    return types.map((t, i) => {
+      if (i >= words) throw new Error('short');
+      if (t === 'bytes32') return '0x' + w(i);
+      if (t === 'address') return '0x' + w(i).slice(24);
+      if (t === 'bool') return u(i) !== 0n;
+      if (t === 'uint8' || t === 'uint256') return u(i);
+      const off = Number(u(i));
+      if (off % 32) throw new Error('unaligned');
+      const at = off / 32;
+      if (at < 0 || at >= words) throw new Error('out of range');
+      const len = Number(u(at));
+      if (t === 'bytes32[]') {
+        if (at + 1 + len > words) throw new Error('short array');
+        return Array.from({ length: len }, (_, k) => '0x' + w(at + 1 + k));
+      }
+      const raw = b.slice((at + 1) * 64, (at + 1) * 64 + len * 2);
+      if (raw.length < len * 2) throw new Error('short dynamic');
+      if (t === 'bytes') return '0x' + raw;
+      // Strict UTF-8: registry strings are owner-written, and a lenient decode would render mojibake
+      // as if it were a workflow name.
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytesOfHex(raw));
+    });
+  } catch { return null; }
+}
+
+// `html: true` marks a value this page composed itself (an icon + label from holder()); everything
+// else is escaped on the way out, because most values here are bytes a signer was handed by someone.
+const cdRow = (field, value, verdict, note, html, destructive) =>
+  ({ field, value, level: verdict, note, html: !!html, destructive: !!destructive });
+// A workflowId is only meaningful against the records this tab already read.
+const cdKnownWorkflow = id => {
+  const regs = automation.regs;
+  if (!regsUsable(regs)) return null;
+  return regs.flatMap(acct => acct.workflows.map(t => ({ acct, t })))
+    .find(({ t }) => (t[WF.id] || '').toLowerCase() === (id || '').toLowerCase()) ?? null;
+};
+
+function cdExplainUpsert(a) {
+  const [name, tag, id, status, don, binUrl, cfgUrl, attrs, keepAlive] = a;
+  const idBare = (id || '').replace(/^0x/, '').toLowerCase();
+  const rows = [];
+
+  // One name is expected here and everything else is a stop, the retired per-lane names included: this
+  // system runs ONE registration now, so re-registering a lane-specific one is a mistake, not a variant.
+  rows.push(cdRow('workflowName', name, name === CRE_WORKFLOW_NAME ? 'ok' : 'crit',
+    name === CRE_WORKFLOW_NAME ? 'the consolidated four-lane workflow'
+      : 'not the name this repo registers'));
+
+  rows.push(cdRow('tag', tag, tag === name ? 'ok' : 'crit',
+    tag === name ? 'matches the name, as the CLI registers it'
+      : 'the record key is keccak(owner, name, tag) — a different tag creates a SEPARATE record'));
+
+  const known = cdKnownWorkflow(id);
+  rows.push(cdRow('workflowId', short(id), known ? 'crit' : 'ok',
+    known ? `already registered as ${esc(known.t[WF.name])} — upsertWorkflow reverts WorkflowIDAlreadyExists on a re-used id`
+      : 'hash of binary + config + owner + name. The binary is not reproducible, so this identifies the artifact rather than proving it'));
+
+  // ACTIVE is a legitimate choice, not a defect, so it is described rather than flagged: registering
+  // ahead of the author cutover costs rejected reports, and whether that is worth avoiding is the
+  // operator's call, made once — not a warning re-raised on every paste.
+  rows.push(cdRow('status', status === 0n ? '0 · ACTIVE' : status === 1n ? '1 · PAUSED' : String(status),
+    status === 0n || status === 1n ? 'ok' : 'crit',
+    status === 0n ? 'runs immediately. Until each lane\'s expectedAuthor points here, every tick is rejected (credits spent, no log)'
+      : status === 1n ? 'registered but not running — reversible with activateWorkflow'
+      : 'not a status this registry defines'));
+
+  rows.push(cdRow('donFamily', don, don === DON_FAMILY ? 'ok' : 'crit',
+    don === DON_FAMILY ? 'the family this owner holds quota on'
+      : `expected ${DON_FAMILY} — and the registry refuses to change a family on update, so this is not fixable in place`));
+
+  [['binaryUrl', binUrl], ['configUrl', cfgUrl]].forEach(([k, url]) => {
+    const onHost = /^https:\/\/storage\.cre\.chain\.link\//.test(String(url ?? ''));
+    const keyed = onHost && String(url).toLowerCase().includes(idBare);
+    rows.push(cdRow(k, url ? String(url).slice(0, 46) + (String(url).length > 46 ? '…' : '') : '(empty)',
+      keyed ? 'ok' : 'crit',
+      keyed ? 'on the CRE host and keyed by this workflowId — one build'
+        : onHost ? 'does NOT contain this workflowId — id and artifact disagree'
+        : 'not on storage.cre.chain.link — the DON would not load this'));
+  });
+
+  // The field this whole card exists for: attributes is the only place the deployed parameters can be
+  // observed at all, because the artifact URLs above are 403 to everyone but the DON.
+  const attrHex = String(attrs ?? '0x');
+  const parsedAttrs = parseAttributes(attrHex);
+  cdAttest = parsedAttrs.kind === 'attest' ? parsedAttrs.a : null;
+  const repoParsed = (() => { try { return JSON.parse(CRE_CONFIG_JSON); } catch { return null; } })();
+  let params = null, attrLevel, attrNote;
+  if (parsedAttrs.kind === 'empty') {
+    attrLevel = 'warn';
+    attrNote = 'EMPTY — nothing about the deployed config or source would be observable. Re-emit with `just cre-attach-params` first';
+  } else if (parsedAttrs.kind === 'attest') {
+    // Two digests, each checked against a file this page can hash. The row reports the weaker of the two
+    // checks; the artifact table below gives the per-file verdicts.
+    const a = parsedAttrs.a;
+    const cfgOk = a.config === creConfigSha;
+    const srcOk = a.source === CRE_SOURCE_SHA256;
+    attrLevel = !cfgOk || !srcOk ? 'crit' : 'ok';
+    attrNote = !cfgOk ? 'attested config digest is NOT this repo\'s — different parameters would be deployed'
+      : !srcOk ? 'attested source digest is NOT this repo\'s main.ts — that is different code'
+      : 'both digests match this repo — re-hash either file below to confirm';
+  } else if (parsedAttrs.kind === 'config') {
+    params = parsedAttrs.config;
+    const agree = paramsAgreement(attrHex, params, CRE_CONFIG_JSON, repoParsed);
+    attrLevel = agree.level;
+    attrNote = agree.level === 'ok' ? `${agree.note} (the older verbatim-config payload)`
+      : `${agree.note} — the lanes below are what this payload would actually publish`;
+  } else if (parsedAttrs.kind === 'attest-unknown') {
+    attrLevel = 'crit';
+    attrNote = `attestation version ${esc(String(parsedAttrs.a.v))} — this page checks cre-attest/3 and cannot verify this payload`;
+  } else {
+    attrLevel = 'crit';
+    attrNote = 'neither a cre-attest payload nor a workflow config — do not sign metadata nobody can read';
+  }
+  rows.push(cdRow('attributes', `${parsedAttrs.bytes} bytes`, attrLevel, attrNote));
+  if (parsedAttrs.kind === 'attest') {
+    const a = parsedAttrs.a;
+    rows.push(cdRow('· attested config', short('0x' + String(a.config ?? '')), a.config === creConfigSha ? 'ok' : 'crit',
+      a.config === creConfigSha ? 'sha256(config.deploy.json) — also an input to the workflowId above' : 'does not match this repo'));
+    rows.push(cdRow('· attested source', short('0x' + String(a.source ?? '')), a.source === CRE_SOURCE_SHA256 ? 'ok' : 'crit',
+      a.source === CRE_SOURCE_SHA256 ? 'sha256(main.ts) — one file, so this covers the whole workflow' : 'does not match this repo\'s main.ts'));
+    // Neutral by design: this row states the limit of the check, it is not a finding about THIS payload.
+    // Given a verdict level it would raise the headline on every clean paste and train the reader to
+    // scroll past the banner.
+    rows.push(cdRow('· what a match proves', 'declaration only', '',
+      'The owner writes these digests, and the uploaded artifacts are 403 to everyone but the DON. A match shows the config and source here are the ones DECLARED at registration — not that the DON executes them.'));
+  }
+
+  rows.push(cdRow('keepAlive', String(keepAlive), keepAlive === false ? 'ok' : 'warn',
+    keepAlive === false ? 'an earlier record under this owner+name is paused as this one registers — replace-in-place'
+      : 'earlier records stay ACTIVE — two workflows would run the same job'));
+
+  // The crons and the networks are the substance of this registration, and they are in the calldata ONLY
+  // when attributes carries the config. When it does not, say where they went rather than rendering an
+  // empty table: "no triggers shown" and "no triggers registered" are opposite claims.
+  // The bytes themselves, decoded. A reader checking a signature should see the exact text that would
+  // land on-chain — 172 characters of UTF-8 JSON — not only this page's verdict about it. Escaped, and
+  // shown for anything that decoded as text, including a payload this page does not recognise.
+  const attrsBlock = parsedAttrs.text
+    ? `<div class="cdsum">attributes, decoded (UTF-8 JSON, ${parsedAttrs.bytes} bytes):
+         <div class="cdjson mono">${esc(parsedAttrs.text)}</div></div>`
+    : parsedAttrs.kind === 'binary'
+      ? `<div class="cdsum">attributes: ${parsedAttrs.bytes} bytes that are not valid UTF-8 — nothing to display as text.</div>`
+      : '';
+
+  let extra;
+  if (!params && parsedAttrs.kind === 'attest' && parsedAttrs.a.config === creConfigSha) {
+    // The payload carries a digest, not the bytes — but it is the digest of the copy this page holds,
+    // so the triggers can be shown, sourced honestly: "the config this attests to", not "the chain's".
+    params = repoParsed;
+  }
+  if (params) {
+    const laneTab = laneTableHtml(params.lanes);
+    if (laneTab.issues.length) {
+      rows.push(cdRow('lane triggers', `${(params.lanes ?? []).length} trigger${(params.lanes ?? []).length === 1 ? '' : 's'}`,
+        worst(laneTab.issues.map(i => i.level)), laneTab.issues.map(i => i.text).join(' · ')));
+    } else {
+      rows.push(cdRow('lane triggers', `${(params.lanes ?? []).length} triggers`, 'ok',
+        'one cron per network, four lanes, staggered'));
+    }
+    extra = attrsBlock + `<div class="cdsum">Triggers this payload registers — ${parsedAttrs.kind === 'attest'
+      ? 'from this repo\'s config.deploy.json, whose digest the payload attests' : 'decoded from the payload itself'} · receiver
+      <span class="mono">${esc(short(params.receiverAddress))}</span> · target
+      <span class="mono">${esc(short(params.targetAddress))}</span> · write gas limit
+      <span class="mono">${esc(String(params.writeGasLimit ?? '—'))}</span></div>${laneTab.html}`;
+  } else {
+    extra = attrsBlock + `<div class="cdsum">⚠ <strong>The crons and networks are not in this calldata.</strong> They live in the 403-gated
+      config artifact, so what this would schedule cannot be read from the bytes you are signing. Re-emit with
+      <span class="mono">just cre-attach-params</span> and paste it here again.</div>`;
+  }
+
+  return { title: `upsertWorkflow — register or replace <strong>${esc(String(name))}</strong>`, rows, extra };
+}
+
+function cdExplain(sel, fn, args) {
+  if (sel === '0xb377bfc5') return cdExplainUpsert(args);
+  const rows = [];
+  const named = id => { const k = cdKnownWorkflow(id); return k ? esc(k.t[WF.name]) : 'not among the records this tab read'; };
+  if (fn.name === 'pauseWorkflow' || fn.name === 'deleteWorkflow') {
+    rows.push(cdRow('workflowId', short(args[0]), cdKnownWorkflow(args[0]) ? 'ok' : 'warn', named(args[0])));
+    rows.push(cdRow('effect', fn.name, fn.name === 'deleteWorkflow' ? 'crit' : 'ok',
+      fn.name === 'deleteWorkflow' ? 'IRREVERSIBLE — re-registering needs a fresh artifact, since a re-used workflowId is rejected'
+        : 'stops execution, frees the ACTIVE slot; reversible with activateWorkflow',
+      false, fn.name === 'deleteWorkflow'));
+  } else if (fn.name === 'activateWorkflow') {
+    rows.push(cdRow('workflowId', short(args[0]), cdKnownWorkflow(args[0]) ? 'ok' : 'warn', named(args[0])));
+    rows.push(cdRow('donFamily', args[1], args[1] === DON_FAMILY ? 'ok' : 'crit',
+      args[1] === DON_FAMILY ? 're-checks the ACTIVE quota on this family' : `expected ${DON_FAMILY}`));
+  } else if (fn.name === 'batchPauseWorkflows') {
+    (args[0] || []).forEach((id, i) => rows.push(cdRow(`workflowIds[${i}]`, short(id), cdKnownWorkflow(id) ? 'ok' : 'warn', named(id))));
+  } else if (fn.name === 'updateWorkflowDONFamily') {
+    rows.push(cdRow('workflowId', short(args[0]), cdKnownWorkflow(args[0]) ? 'ok' : 'warn', named(args[0])));
+    rows.push(cdRow('newDonFamily', args[1], args[1] === DON_FAMILY ? 'ok' : 'crit', 'moves it to another DON family — quota is per family'));
+  } else if (fn.name === 'linkOwner') {
+    rows.push(cdRow('validityTimestamp', new Date(Number(args[0]) * 1000).toLocaleString(),
+      Number(args[0]) * 1000 > Date.now() ? 'ok' : 'crit',
+      Number(args[0]) * 1000 > Date.now() ? 'the attestation is still valid' : 'EXPIRED — the registry would reject this'));
+    rows.push(cdRow('proof', short(args[1]), 'ok', 'single-use — the registry never clears it, so a re-link needs a fresh backend-issued proof'));
+    rows.push(cdRow('signature', `${(String(args[2]).length - 2) / 2} bytes`, 'ok',
+      'Chainlink\'s attestation over the claimed owner — NOT the owner\'s own signature'));
+    rows.push(cdRow('who gets linked', 'msg.sender', 'warn',
+      'links WHOEVER SENDS IT — the wrong sender links the wrong address and spends the proof'));
+  } else if (fn.name === 'unlinkOwner') {
+    rows.push(cdRow('owner', `${holder(args[0])} <span class="mono">${short(args[0])}</span>`, 'crit',
+      'DESTRUCTIVE — deletes every workflow this owner holds and burns the proof permanently', true, true));
+  }
+  return { title: `${fn.name} — ${REG_FN_PROSE[fn.name] ?? 'WorkflowRegistry call'}`, rows, extra: '' };
+}
+const REG_FN_PROSE = {
+  pauseWorkflow: 'stop a registered workflow', activateWorkflow: 'resume a paused workflow',
+  deleteWorkflow: 'erase a registration', batchPauseWorkflows: 'stop several workflows at once',
+  updateWorkflowDONFamily: 'move a workflow to another DON family',
+  linkOwner: 'admit an address as a workflow owner', unlinkOwner: 'remove an owner — and its workflows',
+};
+
+// Safe wrapper: the same bytes are often pasted as a whole execTransaction. Unwrap it, check the parts
+// a signer cannot see (destination, value, and above all `operation`), then explain the inner call.
+function cdExplainSafeExec(args) {
+  const [to, value, data, operation] = args;
+  const rows = [
+    cdRow('to', `${holder(to)} <span class="mono">${short(to)}</span>`,
+      (to || '').toLowerCase() === L1.workflowRegistry.toLowerCase() ? 'ok' : 'crit',
+      (to || '').toLowerCase() === L1.workflowRegistry.toLowerCase() ? 'the L1 WorkflowRegistry this dashboard tracks'
+        : `NOT the WorkflowRegistry (${short(L1.workflowRegistry)}) — this calldata does not mean here what it says`, true),
+    cdRow('value', `${value} wei`, value === 0n ? 'ok' : 'crit', value === 0n ? 'no ETH moves' : 'this call also sends ETH'),
+    cdRow('operation', operation === 0n ? '0 · CALL' : `${operation} · DELEGATECALL`, operation === 0n ? 'ok' : 'crit',
+      operation === 0n ? 'an ordinary call' : 'DELEGATECALL runs foreign code in the Safe\'s storage — never needed for a registry call'),
+  ];
+  return { rows, inner: data };
+}
+
+let cdLast = '';
+// The attestation currently in view: the pasted calldata's if there is one, otherwise the registered
+// record's. Kept apart so a paste cannot silently overwrite what the chain says, and vice versa.
+let cdAttest = null, regAttest = null;
+// Files the reader dropped in, by role, with the digest computed here.
+const cdFiles = { source: null, config: null };
+
+const CD_ROLES = [
+  { key: 'config', label: 'config.deploy.json', field: 'config', pin: () => CRE_CONFIG_SHA256,
+    worth: 'the deployed parameters' },
+  { key: 'source', label: 'main.ts', field: 'source', pin: () => CRE_SOURCE_SHA256,
+    worth: 'the whole workflow, one file' },
+];
+
+function renderArtifactChecks() {
+  const out = document.getElementById('cd-files-out');
+  const a = cdAttest ?? regAttest;
+  const src = cdAttest ? 'the pasted calldata' : regAttest ? 'the registered record' : null;
+  const rows = CD_ROLES.map(r => {
+    const got = cdFiles[r.key];
+    const want = a ? String(a[r.field] ?? '') : r.pin();
+    const wantFrom = a ? `attested by ${src}` : r.pin() ? 'pinned in this page' : null;
+    let verdict, note;
+    if (!got) {
+      verdict = ''; note = want ? `expected <span class="mono">${esc(want.slice(0, 16))}…</span> · ${wantFrom}` : 'nothing to compare against';
+    } else if (!want) {
+      verdict = 'warn'; note = 'no attestation and no pin to compare against';
+    } else if (got.sha === want) {
+      verdict = 'ok'; note = `matches · ${wantFrom}`;
+    } else {
+      verdict = 'crit'; note = `expected <span class="mono">${esc(want.slice(0, 16))}…</span> · ${wantFrom}`;
+    }
+    return `<tr>
+      <td class="rowlabel">${r.label}<span class="sub">${r.worth}</span></td>
+      <td><span class="mono">${got ? got.sha.slice(0, 16) + '…' : '—'}</span></td>
+      <td>${verdict ? chip(verdict, verdict === 'ok' ? 'match' : verdict === 'warn' ? 'no reference' : 'MISMATCH') : chip('', 'not supplied')}</td>
+      <td class="s">${note}</td>
+    </tr>`;
+  }).join('');
+  const header = a
+    ? `<div class="cdsum">Reference: <strong>${src}</strong> · <span class="mono">${esc(String(a.v ?? ''))}</span></div>`
+    : `<div class="cdsum">Reference: this page's own pins — no attestation in view.</div>`;
+  out.innerHTML = header + `<div class="scroll-x"><table class="syncm">
+    <tr><th>Artifact</th><th>sha256 of your file</th><th></th><th>Verdict</th></tr>${rows}</table></div>`;
+}
+
+async function cdTakeFile(key, file) {
+  // The label next to the button is ours as well — the native control's "no file chosen" is drawn by the
+  // browser in the browser's language, so nothing here reads it or relies on it.
+  const nameEl = document.getElementById(key === 'source' ? 'cd-f-src-name' : 'cd-f-cfg-name');
+  if (!file) {
+    cdFiles[key] = null;
+    if (nameEl) nameEl.textContent = 'no file selected';
+    renderArtifactChecks();
+    return;
+  }
+  const buf = new Uint8Array(await file.arrayBuffer());
+  cdFiles[key] = { name: file.name, size: buf.length, sha: sha256Hex(buf) };
+  if (nameEl) nameEl.textContent = `${file.name} · ${buf.length.toLocaleString()} bytes`;
+  renderArtifactChecks();
+}
+function cdRenderRows(title, rows, extra) {
+  const body = rows.map(r => `<tr>
+    <td class="rowlabel">${esc(r.field)}</td>
+    <td><span class="mono">${r.html ? r.value : esc(String(r.value))}</span></td>
+    <td>${chip(r.level, r.level === 'ok' ? 'ok' : r.level === 'warn' ? 'check this' : r.level === 'crit' ? 'stop' : 'note')}</td>
+    <td class="s">${r.note}</td>
+  </tr>`).join('');
+  return `<div class="cdsum">${title}</div>
+    <div class="scroll-x"><table class="syncm">
+      <tr><th>Field</th><th>Value</th><th></th><th>What it means here</th></tr>${body}</table></div>${extra ?? ''}`;
+}
+
+function decodeCalldataInput() {
+  const out = document.getElementById('cd-out');
+  const raw = (document.getElementById('cd-in').value || '').replace(/[\s"',]/g, '');
+  cdLast = raw;
+  if (!raw) { out.innerHTML = ''; return; }
+  if (!/^0x[0-9a-fA-F]*$/.test(raw) || raw.length < 10) {
+    out.innerHTML = `<div class="err-banner">✕ not calldata: expected 0x followed by at least a 4-byte selector</div>`;
+    return;
+  }
+  let html = '', body = raw.slice(10), sel = raw.slice(0, 10).toLowerCase();
+  const verdicts = [];
+  let wrapRows = null;
+  if (sel === SAFE_EXEC_SEL) {
+    const args = decodeAbiArgs(body, SAFE_EXEC.types);
+    if (!args) { out.innerHTML = `<div class="err-banner">✕ execTransaction selector, but the arguments do not decode</div>`; return; }
+    const wrap = cdExplainSafeExec(args);
+    wrapRows = wrap.rows;
+    verdicts.push(...wrap.rows.map(r => r.level));
+    html += cdRenderRows('Safe <strong>execTransaction</strong> — the outer envelope', wrap.rows, '');
+    const inner = String(wrap.inner ?? '0x');
+    if (inner.length < 10) { out.innerHTML = html + `<div class="err-banner">⚠ the inner call is empty</div>`; return; }
+    sel = inner.slice(0, 10).toLowerCase(); body = inner.slice(10);
+  }
+  const fn = REG_FN[sel];
+  if (!fn) {
+    out.innerHTML = html + `<div class="err-banner">✕ unknown selector <span class="mono">${esc(sel)}</span> — not a WorkflowRegistry function this page knows.
+      Do not sign it on the strength of a dashboard that could not read it.</div>`;
+    return;
+  }
+  const args = decodeAbiArgs(body, fn.types);
+  if (!args) {
+    out.innerHTML = html + `<div class="err-banner">✕ selector says <span class="mono">${esc(fn.name)}</span>, but its arguments do not decode — malformed or truncated calldata</div>`;
+    return;
+  }
+  const ex = cdExplain(sel, fn, args);
+  verdicts.push(...ex.rows.map(r => r.level));
+  // The headline is the WEAKEST field, stated first. A signer reading top-to-bottom must not have to
+  // reach row nine to discover that row nine says stop.
+  const critRows = [...(wrapRows ?? []), ...ex.rows].filter(r => r.level === 'crit');
+  const crits = critRows.length, warns = verdicts.filter(v => v === 'warn').length;
+  const byDesign = crits > 0 && critRows.every(r => r.destructive);
+  html = (byDesign ? `<div class="err-banner">✕ irreversible by design — sign only if this is exactly the action you intend</div>`
+    : crits ? `<div class="err-banner">✕ ${crits} field${crits > 1 ? 's' : ''} say${crits > 1 ? '' : 's'} STOP — do not sign this as it stands</div>`
+    : warns ? `<div class="err-banner">⚠ ${warns} field${warns > 1 ? 's' : ''} to confirm deliberately — read the notes before signing</div>`
+    : `<div class="cdsum">✓ Every field matches this page's pins. Where you send it from is still yours to check.</div>`) + html;
+  html += cdRenderRows(ex.title, ex.rows, ex.extra);
+  html += `<div class="cdsum">Send to <strong>${holder(L1.workflowRegistry)}</strong> <span class="mono">${short(L1.workflowRegistry)}</span> on Ethereum mainnet, from the linked owner. This page checked the calldata, not where you send it.</div>`;
+  out.innerHTML = html;
+  renderArtifactChecks();
+}
 // ── Page loop ────────────────────────────────────────────────────────────────
 async function readCoreState() {
   const [l1, ...lanes] = await Promise.all([
@@ -1767,7 +2712,10 @@ async function refreshAutomationState(lanes) {
     .then(d => ({ L, d })).catch(e => ({ L, error: e.message }))));
   // The owner set is discovered, not hardcoded: whichever address each lane currently expects as its
   // report author is the one whose registry account matters. Survives the pending Safe migration.
-  const owners = [...new Set([AUTO_OWNER,
+  // CRE_WF_OWNER is included EXPLICITLY, not discovered: it owns the consolidated registration before
+  // any lane's expectedAuthor points at it, so a purely discovered owner set would be blind to the new
+  // workflow for exactly as long as the migration is mid-flight — the window that most needs watching.
+  const owners = [...new Set([AUTO_OWNER, CRE_WF_OWNER,
     ...currentLanes.filter(l => !l.error && l.d.creAuthor).map(l => l.d.creAuthor.toLowerCase())])];
   let regs = null, regError = null;
   try { regs = await registryData(owners); } catch (e) { regError = e.message; }
@@ -1777,6 +2725,9 @@ async function refreshAutomationState(lanes) {
   automation.regs = regs;
   automation.regError = regError;
   renderAutomation();
+  // Verdicts like "this workflowId is already registered" need `regs`; a paste made while the first
+  // read was still in flight would otherwise keep its weaker answer until the next keystroke.
+  if (cdLast) decodeCalldataInput(); else renderArtifactChecks();
 }
 async function refreshAutomationLogs() {
   const results = await Promise.all(LANES.map(L => automationLogs(L)
@@ -1874,6 +2825,25 @@ document.addEventListener('click', event => {
   if (button) refreshView(button.dataset.refreshView);
 });
 selectTab(location.hash.slice(1));
+
+// Decode as you type: the check is pure local parsing, and a signer who has to press a button to learn
+// what a blob does will read the blob instead.
+document.getElementById('cd-go').onclick = decodeCalldataInput;
+document.getElementById('cd-in').addEventListener('input', decodeCalldataInput);
+document.getElementById('cd-clear').onclick = () => {
+  document.getElementById('cd-in').value = '';
+  decodeCalldataInput();
+};
+[['source', 'cd-f-src'], ['config', 'cd-f-cfg']].forEach(([key, id]) =>
+  document.getElementById(id).addEventListener('change', e => cdTakeFile(key, e.target.files?.[0])));
+// Pasting the source is the same check by another route — for a reviewer reading a diff in a browser
+// rather than holding the file. Byte-exact or it will not match, which is the point.
+document.getElementById('cd-src-paste').addEventListener('input', e => {
+  const text = e.target.value;
+  cdFiles.source = text ? { name: 'pasted text', size: new TextEncoder().encode(text).length, sha: sha256Hex(text) } : null;
+  renderArtifactChecks();
+});
+renderArtifactChecks();
 
 document.getElementById('rpcbtn').onclick = openRpcDialog;
 document.getElementById('rpcsave').onclick = saveRpcDialog;

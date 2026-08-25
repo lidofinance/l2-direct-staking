@@ -17,15 +17,20 @@ import {
   zeroAddress,
   getAddress,
 } from "viem";
-import { SyncTriggerABI } from "./abi";
-import {
+// The workflow is ONE file now (main.ts), and its entry autoruns unless `__CRE_NO_AUTORUN` is set.
+// Static imports hoist above every statement, so the flag would be set too late — hence the dynamic
+// import below. Types come through a type-only import, which is erased and cannot trigger the module.
+(globalThis as { __CRE_NO_AUTORUN?: boolean }).__CRE_NO_AUTORUN = true;
+const { __test__ } = await import("./main");
+const {
+  SyncTriggerABI,
   encodeReportPayload,
   encodeShouldSyncAmountCall,
   decodeShouldSyncAmountResult,
   encodeCanSyncCall,
   decodeCanSyncResult,
   decideSyncAction,
-} from "./encoding";
+} = __test__;
 
 // ─── Test constants ────────────────────────────────────────────────────────
 
