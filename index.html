@@ -134,6 +134,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 26px 28px 40px; }
 }
 .stat .v.loading .spin { width: 20px; height: 20px; }
 .stat .v .unit { color: var(--ink-2); font: 14px system-ui, -apple-system, "Segoe UI", sans-serif; }
+#sync-volume .v:not(.loading) { font-size: 36px; white-space: nowrap; }
 .stat .s { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .sync-volume-sub { display: flex; align-items: center; gap: 6px; }
 .sync-volume-sub .spin { width: 10px; height: 10px; border-width: 1px; }
@@ -197,6 +198,27 @@ tr.group a:hover { color: var(--accent); }
 .chip.warn .s { color: #a5854a; }
 .chip.crit { background: var(--crit-bg); border-color: var(--crit-bd); color: var(--crit-fg); }
 .chip.crit .s { color: #c07a70; }
+
+.l1-card .card-head { align-items: center; padding-bottom: 16px; }
+.l1-card-copy { min-width: 0; }
+.l1-card-copy h3 { margin: 0; white-space: nowrap; }
+.l1-card-copy .desc { display: block; margin-top: 2px; }
+.l1-card-links { margin-left: auto; display: flex; gap: 12px; flex: none; font-size: 12.5px; }
+.l1-card-links a { color: var(--ink-2); text-decoration: none; }
+.l1-card-links a:hover { color: var(--accent); }
+.l1-metric-grid { display: grid; gap: 12px; padding: 0 26px 22px; }
+.l1-balance-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.l1-access-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.l1-metric { border: 1px solid; border-radius: 11px; padding: 14px 16px; }
+.l1-metric.ok { background: var(--ok-bg); border-color: var(--ok-bd); }
+.l1-metric.warn { background: var(--warn-bg); border-color: var(--warn-bd); }
+.l1-metric.crit { background: var(--crit-bg); border-color: var(--crit-bd); }
+.l1-metric-label {
+  margin-bottom: 7px; color: var(--muted); font-size: 10.5px; font-weight: 650;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.l1-metric .chip { display: block; width: auto; padding: 0; border: 0; background: transparent; }
+.l1-metric .chip .m { font-size: 15px; }
 
 .rowlabel { font-weight: 600; white-space: nowrap; }
 .rowlabel .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--muted); }
@@ -291,8 +313,14 @@ footer {
   .hero > div:nth-child(2) { border-left: none; }
   .hero h2 { font-size: 26px; }
   .stat .v { font-size: 34px; }
+  #sync-volume .v:not(.loading) { font-size: 34px; }
   .card-head { align-items: flex-start; flex-wrap: wrap; gap: 6px 10px; padding: 14px 16px 6px; }
   .card-head .desc { order: 2; flex-basis: 100%; }
+  .l1-card .card-head { padding-bottom: 14px; }
+  .l1-card-copy { display: block; flex-basis: 100%; }
+  .l1-card-copy .desc { display: block; margin-top: 3px; }
+  .l1-card-links { width: 100%; margin-left: 0; }
+  .l1-metric-grid { grid-template-columns: 1fr; gap: 8px; padding: 0 16px 16px; }
   .legend { margin-left: auto; }
   th, td { padding-left: 10px; padding-right: 10px; }
   th:first-child, td:first-child { padding-left: 16px; }
@@ -1679,22 +1707,32 @@ function render(l1, lanes) {
   const l1Balances = l1.error ? [] : l1BalanceChecks(l1.d);
   const l1BalanceBody = l1.error
     ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="scroll-x"><table class="ownm"><tr>${l1Balances.map(c => `<th>${c.key}</th>`).join('')}</tr>
-       <tr>${l1Balances.map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
-  const l1BalanceCard = `<div class="card">
+    : `<div class="l1-metric-grid l1-balance-grid">${l1Balances.map(c => `<div class="l1-metric ${c.level}">
+        <div class="l1-metric-label">${c.key.replace('Receiver ', '')}</div>
+        ${chip(c.level, c.value, c.sub)}
+      </div>`).join('')}</div>`;
+  const l1BalanceCard = `<div class="card l1-card l1-balance-card">
     <div class="card-head">
-      <h3>${netName(L1)} L1 — Shared Receiver Balances</h3>
-      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')} · parked funds are unexpected.</span>
+      <div class="l1-card-copy">
+        <h3>${netName(L1)}</h3>
+        <span class="desc">Shared receiver balances</span>
+      </div>
+      <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
     </div>${l1BalanceBody}</div>`;
 
   const l1AccessBody = l1.error
     ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="scroll-x"><table class="ownm"><tr>${l1Access.map(c => `<th>${c.key}</th>`).join('')}</tr>
-       <tr>${l1Access.map(c => `<td>${chip(c.level, c.value, c.sub)}</td>`).join('')}</tr></table></div>`;
-  const l1AccessCard = `<div class="card">
+    : `<div class="l1-metric-grid l1-access-grid">${l1Access.map(c => `<div class="l1-metric ${c.level}">
+        <div class="l1-metric-label">${c.key}</div>
+        ${chip(c.level, c.value, c.sub)}
+      </div>`).join('')}</div>`;
+  const l1AccessCard = `<div class="card l1-card">
     <div class="card-head">
-      <h3>${netName(L1)} L1 — Access Control</h3>
-      <span class="desc">${alink(L1, L1.receiver, 'LidoCustomReceiver')} · ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
+      <div class="l1-card-copy">
+        <h3>${netName(L1)}</h3>
+        <span class="desc">Access control</span>
+      </div>
+      <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
     </div>${l1AccessBody}</div>`;
 
   document.getElementById('main').innerHTML = hero + syncCard + l1BalanceCard;
