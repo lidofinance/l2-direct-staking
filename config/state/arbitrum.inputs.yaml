@@ -3,8 +3,8 @@
 # config/state/l2.common.inputs.yaml ahead of the shared config/state/l2.yaml wiring.
 config:
   # ── CRE WorkflowRegistry metadata ──
-  - &creWorkflowName "lido-sync-automation-arbitrum"
-  - &creWorkflowTag "lido-sync-automation-arbitrum"
+  - &creWorkflowName "direct-staking-sync-test"
+  - &creWorkflowTag "direct-staking-sync-test"
   # ── Lane-specific SyncTrigger limits and fee encodings ──
   - &maxGasLimit 7000000                 # 7M     SyncTrigger.getMaxGasLimit() — Arbitrum FeeQuoter maxPerMsgGasLimit
   # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──

@@ -439,7 +439,7 @@ const initWorkflow = (config: Config) =>
 // toolchain's catch the same promise, so an error is still reported exactly once.
 let running: Promise<void> | null = null;
 
-export async function main(): Promise<void> {
+export function main(): Promise<void> {
   running ??= (async () => {
     const runner = await Runner.newRunner<Config>({ configSchema });
     await runner.run(initWorkflow);

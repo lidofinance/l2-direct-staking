@@ -140,4 +140,10 @@ describe("planLanes", () => {
     ) as Config;
     expect(planLanes(one)).toHaveLength(1);
   });
+
+  test("the checked-in simulation config uses the lanes shape", async () => {
+    const simulation = await Bun.file(new URL("./config.simulate.json", import.meta.url)).json();
+    const parsed = configSchema.parse({ ...simulation, receiverAddress: RECEIVER, targetAddress: TARGET }) as Config;
+    expect(planLanes(parsed)).toHaveLength(1);
+  });
 });

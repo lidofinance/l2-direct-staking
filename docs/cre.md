@@ -1,4 +1,4 @@
-> **View — CRE workflow operations.** Stakeholder: CRE operator (LOL multisig
+> **View — CRE workflow operations.** Stakeholder: CRE operator (workflow-owner Safe
 > signer / ops). Concern: the off-chain workflow lifecycle — setup, deploy,
 > funding & billing, platform levers, and the **canonical** workflow-owner
 > lost-vs-compromised recovery procedure. [`RUNBOOK.md` §Recover](../RUNBOOK.md)
@@ -15,7 +15,7 @@ Pool rebalancing is triggered by a CRE (Chainlink Runtime Environment) TypeScrip
 
 ```
 CRE DON (TypeScript/WASM, off-chain)
-  ├── CronCapability trigger (every 5 minutes)
+  ├── Four CronCapability triggers (hourly, staggered at :00/:15/:30/:45)
   ├── EVMClient.callContract() → SyncTrigger.shouldSyncAmount() (due? amount?) + canSync() (executable?)
   ├── If due && executable:
   │   ├── Encode triggerSync() calldata
@@ -30,7 +30,7 @@ CRE Forwarder (on-chain; verifies signatures, ERC-165-gates the receiver)
           └── CustomSender.sync() → CCIP → L1
 ```
 
-**`writeGasLimit` is measured, not assumed.** `config.deploy.<net>.json` budgets **750 000** gas for the
+**`writeGasLimit` is measured, not assumed.** `config.deploy.json` budgets **750 000** gas for the
 delivered write (the last three lines above). The carrier is
 `test_creWriteGasCarrier` in `test/helpers/PoolUpgradeTests.sol` — reproduce it per lane with
 `forge test --match-contract <Lane>PoolUpgradeTest --match-test test_creWriteGasCarrier -vv`. Measured
@@ -57,10 +57,10 @@ like a credit outage or a wrong author pin.
 | `src/cre/CREReceiver.sol`                                    | On-chain receiver — decodes reports and calls target contracts       |
 | `src/cre/interfaces/IReceiver.sol`                           | CRE receiver interface                                               |
 | `cre-workflows/sync-automation/main.ts`                      | **The whole workflow, one file** (merged 2026-08-25 from `main`/`lanes`/`encoding`/`abi`): SyncTrigger ABI, the `lanes[]` config contract, the lane plan, the pure encoders, the per-lane handler and the entry. Everything above the handler section is runtime-free and driven directly by `bun test` |
-| `cre-workflows/sync-automation/config.deploy.<network>.json` | Per-network production config, named by that lane's `production-<net>` target |
+| `cre-workflows/sync-automation/config.deploy.<network>.json` | Retained per-network configs used only while retiring the old registrations |
 | `cre-workflows/sync-automation/config.deploy.json`           | **Consolidated** config for the single four-lane workflow: shared receiver/target/gas + one `lanes[]` entry per lane, hourly and staggered |
 | `cre-workflows/sync-automation/config.simulate.json`         | Local simulation config                                              |
-| `cre-workflows/project.yaml` · `sync-automation/workflow.yaml` | CLI targets: `simulate-settings` + one `production-<net>` per lane  |
+| `cre-workflows/project.yaml` · `sync-automation/workflow.yaml` | CLI targets: simulation, consolidated production, and retained retirement targets |
 | `script/shared/cre-env.sh`                                   | Derives `CRE_ETH_PRIVATE_KEY` / `CRE_WORKFLOW_OWNER` / RPC names from the canonical vars |
 
 ## Setup
@@ -92,9 +92,12 @@ Run every CLI command through the `just cre …` wrapper, which resolves that bi
 ```sh
 just cre login                  # browser auth; stores its session under $HOME
 just cre account access         # deploy-access / Early-Access status
-NETWORK=optimism just cre account link-key -l lido-automation-owner
 NETWORK=optimism just cre account list-key
 ```
+
+The consolidated Safe is already linked. Do not use this wrapper to link it: `account link-key` signs
+with the uploader EOA, so it would link that EOA rather than the Safe. Confirm the committed Safe with
+`just cre-registry-status`; linking a replacement Safe requires calldata executed by that Safe.
 
 **Environment — derived, not duplicated.** Never set a `CRE_*` variable by hand. The recipes source
 [`script/shared/cre-env.sh`](../script/shared/cre-env.sh), which derives every spelling the CLI and
@@ -102,45 +105,35 @@ NETWORK=optimism just cre account list-key
 
 | CLI / project.yaml wants | derived from | canonical home |
 |---|---|---|
-| `CRE_ETH_PRIVATE_KEY` | `L2_AUTOMATION_OWNER_PRIVATE_KEY` / `_PK` (same order `_envAutomationOwnerPrivateKey()` uses) | root `.env` |
-| `CRE_WORKFLOW_OWNER` | `L2_AUTOMATION_OWNER` | root `.env` |
-| `${L1_RPC_URL}` | `L1_RPC_URL` → `RPC_ETHEREUM_REMOTE` → `RPC_ETHEREUM` (fork proxy last) | `.env.<network>` |
-| `${L2_RPC_URL}` | `L2_RPC_URL` | `.env.<network>` |
+| `CRE_ETH_PRIVATE_KEY` | `L2_AUTOMATION_OWNER_PRIVATE_KEY` / `_PK`; authenticates artifact upload but does not own the unsigned registration | root `.env` |
+| production `workflow-owner-address` | Test Automation Safe literal; the CLI does not interpolate owner fields | `cre-workflows/project.yaml` |
+| `${L1_RPC_URL}` | `L1_RPC_URL` → `RPC_ETHEREUM_REMOTE` → `RPC_ETHEREUM` (fork proxy last) | root `.env` / environment |
+| `${L2_<NET>_RPC_URL}` | explicit alias → `RPC_<NET>_REMOTE` | root `.env` / environment |
 
-Before anything runs, the shim checks that the AO key actually signs as `L2_AUTOMATION_OWNER` — the
-duplicate `CRE_ETH_PRIVATE_KEY` this replaced could silently drift from it on a rotation. `just
-env-doctor` shows the whole resolved picture, including the on-chain `getExpectedAuthor()` comparison.
-The CLI's own `-e/--env` flag is therefore unnecessary (it reads exported variables); pass it yourself
-if you want it to load a file anyway.
+The shim checks the uploader key against `L2_AUTOMATION_OWNER`, exports all four live RPC aliases, and
+never prints their URLs. The production target contains all four L2 RPCs because one workflow creates
+four EVM clients. The old `production-<net>` targets remain only for pausing or deleting the retired
+per-lane registrations.
 
-**Per-lane targets.** `production-optimism` / `-arbitrum` / `-base` / `-linea` in both
-`cre-workflows/project.yaml` (chain-name + RPCs + owner) and `sync-automation/workflow.yaml`
-(`workflow-name: lido-sync-automation-<net>` + its `config.deploy.<net>.json`).
-`deploy-cre-workflow` selects one from `L2_NETWORK`, so the lane cannot be mixed up by a stray
-`--config`, and the four lanes cannot collide on a single registered workflow name under one owner.
-
-**Two prerequisites for `link-key`.** It must be run once per workflow owner before any workflow can
-be registered (`isOwnerLinked` is checked at registration), and it always submits a transaction on
-**Ethereum mainnet** regardless of the workflow's target chain — so the Automation Owner needs mainnet
-ETH for gas, not just L2 gas. `cre account unlink-key` is destructive: it deletes every workflow
-associated with the address.
+Every workflow owner must be linked before registration (`isOwnerLinked` is checked at registration),
+and registry transactions land on **Ethereum mainnet**, so the Safe executor needs mainnet ETH.
+`cre account unlink-key` is destructive: it deletes every workflow associated with the address.
 
 ## Deployment
 
-CREReceiver is deployed per L2 network as part of the canary deploy (`deploy-test` / `runDeployTest`): it is deployed before the `SyncTrigger`, which is then constructed with `forwarder = CREReceiver`, and the receiver's allow-list is seeded with the trigger via `setAllowedCall` once it has code. During the canary the receiver's `expectedAuthor` is pinned to the **Lido Deployer** so the deployer can drive a test sync; `handoff` re-pins it to the **LOL multisig** — the Safe that also owns the CREReceiver, the SyncTrigger, and the CRE workflow, **not** the Lido Deployer EOA (see [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)). Workflow deployment (owned by the LOL Safe) therefore happens **after `handoff`**, once `expectedAuthor` is the Safe:
+CREReceiver is deployed once per L2, but the CRE registration is shared. Deploy only after all four
+receivers point `getExpectedAuthor()` at the Test Automation Safe:
 
-1. Link the owner once: `just cre login` → `just -E .env.<network> cre account link-key -l lido-automation-owner` (mainnet tx; `isOwnerLinked` is checked at registration).
-2. Rewrite `config.deploy.<network>.json` with the deployed addresses — `just -E .env.<network> update-cre-config`.
-3. Register the workflow **owned by the Automation Owner**: `just -E .env.<network> deploy-cre-workflow`. It selects `--target=production-<network>`, derives owner + key from the canonical variables, aborts unless the owner equals the on-chain `CREReceiver.getExpectedAuthor()`, and the AO **signs the `WorkflowRegistry` transaction itself**. For a multi-sig owner instead, set `CRE_DEPLOY_UNSIGNED=true` and execute the emitted calldata from the Safe.
-4. Repeat for each network (Optimism, Arbitrum, Base, Linea) — each gets its own workflow name.
-5. Persist the returned content-derived ID with
-   `just record-cre-workflow-id <network> <workflow-id>`, then verify the registered identity,
-   owner, and `ACTIVE` status with `just -E .env.<network> verify-cre-workflow`.
-
-> ⚠ The narrative below (and in [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)) still describes the
-> **LOL Safe** as workflow owner — superseded by [DOC.md §4.2](../DOC.md#42-diagram-b--ownership--access-control)
-> (Automation Owner). Rewriting it is [S1.12/S1.13](automation-owner-redeploy.md) work, not done here;
-> the recipes and the steps above are authoritative for *how* to deploy.
+1. Confirm the Safe is linked and has quota on `zone-a` with `just cre-registry-status`.
+2. Run `just verify-constants-sync` and `just cre-workflow-hash`. The latter checks the byte-exact
+   `config.deploy.json` and `main.ts` pins used by the dashboard.
+3. Run `just deploy-cre-workflow`. It selects the shared `production` target, requires all four
+   `RPC_<NET>_REMOTE` bindings, checks every receiver's author gate, uploads one build, and emits
+   unsigned `WorkflowRegistry.upsertWorkflow` calldata for the Safe.
+4. Run `just cre-attach-params`, paste the emitted upsert calldata, then paste the rewritten result into
+   the dashboard's CRE Calldata tab. Execute that calldata from the Safe after every field passes.
+5. Record the same workflow ID in each lane with `just record-cre-workflow-id <network> <workflow-id>`,
+   then run `NETWORK=<network> just verify-cre-workflow` for all four lanes.
 
 See [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state) for CREReceiver admin functions.
 
@@ -148,51 +141,43 @@ See [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-fi
 
 Two distinct concerns; the migration scripts touch neither, by design.
 
-- **Owner gas (one-time, negligible).** Every `WorkflowRegistry` transaction (`cre account link-key`, `cre workflow deploy` / `pause` / `activate` / `delete`) lands on **Ethereum mainnet** — sub-cent gas per call. On the signed path the **Automation Owner** pays it and signs, so that EOA needs mainnet ETH (its L2 gas is a separate matter); on the `CRE_DEPLOY_UNSIGNED=true` path the relaying multi-sig signer pays instead and the CLI's key only initialises the RPC client. No L2 balance required either way.
-- **Workflow execution credits (ongoing).** CRE bills DON execution as opaque "CRE credits" tracked on the [CRE dashboard](https://cre.chain.link/workflows), not as a LINK-funded on-chain balance. The CRE CLI exposes **no** `fund` / `deposit` / `withdraw` / `balance` commands. Credits are administered against the **workflow owner's CRE account — i.e. the LOL Safe**, not any EOA. During Early Access (verified April 2026), credit allocation is administrative — coordinate with Chainlink when the dashboard balance approaches the agreed threshold. Re-verify before GA.
+- **Owner gas (one-time, negligible).** Every `WorkflowRegistry` lifecycle transaction lands on Ethereum mainnet. The Test Automation Safe executes the unsigned calldata and pays that gas; the uploader key only authenticates the CLI artifact upload.
+- **Workflow execution credits (ongoing).** CRE bills DON execution as opaque credits tracked on the [CRE dashboard](https://cre.chain.link/workflows), not as an on-chain LINK balance. Credits belong to the Test Automation Safe's CRE account. During Early Access, coordinate allocation with Chainlink and re-verify the model before GA.
 
 Alert on the credit balance per [Monitoring & alerts §4](monitoring.md#4-cre-workflow-health--funding--high).
 
 ## CRE platform levers (workflow lifecycle)
 
-The sync workflow is off-chain WASM on Chainlink's CRE platform; its only on-chain footprint is `WorkflowRegistry 2.0.0` (Ethereum mainnet, `0x4Ac5…E7e5`), which holds no funds. The workflow is **owned by the LOL multisig (Safe)** — registered with `cre workflow deploy --unsigned` and the emitted calldata executed *from the Safe* (ADR-0001). Every lifecycle action is therefore a Safe transaction:
+The sync workflow is off-chain WASM; its only on-chain footprint is `WorkflowRegistry 2.0.0` on Ethereum mainnet (`0x4Ac5…E7e5`). The Test Automation Safe owns the consolidated registration, so every lifecycle action is a Safe transaction:
 
 | Action | Caller | Effect |
 |---|---|---|
-| `cre workflow deploy --unsigned` | LOL Safe (m-of-n) | Compile + emit `WorkflowRegistry` calldata; the Safe executes it (or `upsertWorkflow` on re-deploy with same name) |
-| `cre workflow pause` / `activate` | LOL Safe (m-of-n) | Stop / start DON execution |
-| `cre workflow delete` | LOL Safe (m-of-n) | Retire the workflow |
-| `cre account link-key` / `unlink-key` | LOL Safe (m-of-n) | Associate / disassociate a wallet (owner-gated) |
-| cron tick (every 5 min) | CRE DON | Runs the WASM; signs a report only if `shouldSyncAmount()` (amount/delay) is nonzero AND `canSync()` (float, `SYNC_ROLE`, pool-pause) is true; skips a due-but-blocked tick (`shouldSyncAmount() > 0 && !canSync()`) without a report |
+| `cre workflow deploy --unsigned` | Test Automation Safe | Compile, upload, and emit `WorkflowRegistry` calldata; the Safe executes it |
+| `cre workflow pause` / `activate` | Test Automation Safe | Stop / start DON execution |
+| `cre workflow delete` | Test Automation Safe | Retire the workflow |
+| `cre account link-key` / `unlink-key` | Test Automation Safe | Associate / disassociate the owner; unlinking also deletes its workflows |
+| hourly lane tick | CRE DON | Runs one lane at :00/:15/:30/:45 and writes only when `shouldSyncAmount()` is nonzero and `canSync()` is true |
 
 - The owner's EVM address (the **Safe address**) is propagated into every report as `metadata.workflowOwner` (bytes `[42:62]`); `CREReceiver._extractWorkflowOwner` reads it and, if `expectedAuthor != 0`, the two must match.
 - The report's `workflowName`/`workflowId` are deliberately **not** checked — authentication is `(forwarder, workflowOwner)` only (an owner-scoped label adds no defence against owner compromise, and the argument-less call-lock already bounds the blast radius; see [DOC.md §2.6](../DOC.md#26-credibility--security-of-the-application-layer-contracts)).
 - Updating the WASM under the same owner does **not** change `metadata.workflowOwner`, so `expectedAuthor` keeps accepting reports after a routine code update.
-- **Rotating a Safe *signer*** (`addOwner` / `swapOwner` / `removeOwner`) does **not** change the Safe address, so it needs **no** `setExpectedAuthor` re-pin and **no** redeploy. Only changing the workflow owner *to a different address* would require `setExpectedAuthor` ×4 — and with a Safe owner that is never needed except in the catastrophic whole-Safe-compromise case ([Workflow-owner key](#workflow-owner-key--lost-vs-compromised-consequences--recovery)).
+- Rotating a Safe signer without changing the Safe address needs no `setExpectedAuthor` re-pin and no workflow redeploy. Moving to a different owner address requires a new registration and four author re-pins.
 - CRE-side pause is instant but depends on Chainlink infra; the authoritative kill switches are on-chain — `LOL → CREReceiver.setForwarder(0x…dead)` / `SyncTrigger.setForwarder(0x…dead)`, and the independent `GovExec → CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`. Neither the CRE DON nor the Forwarder is controllable by this project.
 - The pinned CRE Forwarder is the ERC-165-gating, 2-arg-`onReport(bytes,bytes)` "Router" build that `CREReceiver` speaks — **verified on-chain (all 4 lanes)**; re-check read-only with `just verify-cre-forwarder`. ⚠ It reports the *stale* `typeAndVersion` label `"KeystoneForwarder 1.0.0"` (not the legacy 3-arg `onReport(bytes32,address,bytes)` contract) — discriminate on the ABI/EXTCODEHASH, never the version string (see [audit-scope §B](audit-scope.md#b-delivery-integrity--forwarder--erc-165-gate)).
 
 ## Workflow-owner key — lost vs compromised (consequences & recovery)
 
-The CRE workflow owner is the **LOL multisig (Safe)** — the same Safe that owns each `CREReceiver` and is pinned as its `expectedAuthor` ([ADR-0001](adr/0001-cre-workflow-owner-multisig.md), [DOC.md §3.2](../DOC.md#32-owners--actors-and-what-they-hold)). Registering the workflow under the Safe (`cre workflow deploy --unsigned`, calldata executed from the Safe) makes the owner **a stable address whose control is a rotatable signer set**, dissolving the single-EOA "irreplaceable admin" problem the EOA design carried. Two roles stay distinct (A.7):
+The consolidated registration is owned by the Test Automation Safe
+`0xede1750ac52156e10be2b41d8b8df816d58bafe1`. It currently has threshold 1 and one signer, so the Safe
+address is stable but its present signer setup still has a single-key failure mode.
 
-1. **CRE workflow owner = `expectedAuthor` = CREReceiver owner.** All three are the **LOL Safe address**, baked into every signed report as `metadata.workflowOwner` (`[42:62]`). `WorkflowRegistry 2.0.0` (`0x4Ac5…E7e5`) still exposes **no per-workflow ownership-transfer function**, but you no longer need one: control is the Safe's **signer set**, rotatable without touching the registry binding.
-2. **Stage-1 signer / float-funder (the Lido Deployer EOA).** Migration-only, and **not** the workflow owner. Post-migration it holds **zero on-chain power** over Lido contracts; state-mate asserts `hasRole = false` for this hot key everywhere ([DOC.md §6.3](../DOC.md#63-how-the-final-state-is-verified)).
-
-The owner does **not** sign reports — the **DON** signs, and the Safe address only travels as metadata — so an owner incident does not by itself stop an already-`ACTIVE` workflow. Owner authority is workflow *lifecycle* (`deploy` / `pause` / `activate` / `delete` / update-WASM / `link-key`, each now an m-of-n Safe transaction) plus CRE-credit administration ([Funding and billing](#funding-and-billing)). Misuse is bounded to "fire an already-admissible, rate-limited, nullary `triggerSync()`" by the three gates + argument-less call-lock and `SyncTrigger`'s on-chain amount/delay re-check ([DOC.md §2.6](../DOC.md#26-credibility--security-of-the-application-layer-contracts)) — **no fund extraction, no recipient change, no arbitrary calldata.**
-
-### Failure modes at a glance (Safe owner)
-
-| Scenario | What happens | Fix | Authority / urgency |
-|---|---|---|---|
-| **One Safe signer key lost** (below threshold) | Nothing operationally — the Safe still meets quorum; the DON keeps executing the `ACTIVE` workflow; `expectedAuthor` (the Safe address) still matches | `removeOwner` / `swapOwner` inside the Safe — **no redeploy, no `setExpectedAuthor` re-pin** (the Safe address is unchanged) | LOL Safe only; low urgency |
-| **One Safe signer key compromised** (below threshold) | Funds unaffected; attacker holds *one* signer, below quorum, so cannot move the Safe | `swapOwner` / `removeOwner` to evict the signer inside the Safe — no redeploy, no re-pin | LOL Safe only; medium — evict promptly |
-| **Whole Safe compromised** (≥ threshold signers at once) | The same catastrophic event that already loses **every** LOL-held lever (`OraclePool.pause`, `setForwarder`, `setExpectedAuthor`). Funds still bounded by the on-chain gates + GovExec backstop | **Contain** via GovExec `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)` (independent trust domain), then the one-time **"redeploy + re-pin"** primitive under a *new* Safe | GovExec backstop + new Safe; **high** |
-
-The first two rows are the everyday cases and need **no** CRE redeploy and **no** on-chain re-pin — that is the whole point of a Safe owner (a stable address, rotatable signers). Only the third reaches the registry binding, and it coincides with the protocol-wide worst case already accepted everywhere LOL holds power.
-
-**Procedures and rationale (single home — ADR-0001, not duplicated here):**
-
-- **Everyday signer rotation** (signer lost/compromised below threshold) — `swapOwner` / `removeOwner` / `addOwner` inside the Safe; the Safe address is unchanged, so no CRE redeploy and no `setExpectedAuthor` re-pin, and the running workflow is never interrupted. Operator steps: [RUNBOOK → Recover](../RUNBOOK.md).
-- **Whole-Safe compromise + the "redeploy + re-pin" primitive** (R1–R4 with Duty / Gate / Evidence), the GovExec containment backstop, and the **rejected single-EOA alternative** with its full lost-vs-compromised tables and the A.19 / G.5 comparator: **[ADR-0001](adr/0001-cre-workflow-owner-multisig.md)**. Contain first from the independent domain (GovExec `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)`, [§3.4](../DOC.md#34-what-the-project-still-controls-if-chainlink-misbehaves)), then redeploy under a new Safe and re-arm `setExpectedAuthor` last.
-- **Pre-incident hardening** — Safe threshold + diverse signer custody (so losing ≥ threshold at once is implausible), and confirm the Early-Access residuals — especially that the DON embeds the **Safe address** as `metadata.workflowOwner` so `expectedAuthor = Safe` matches: [ADR-0001 "Residuals"](adr/0001-cre-workflow-owner-multisig.md) and RUNBOOK gate G2-author.
+- Losing the signer does not stop an already active DON workflow, but it blocks pause, update, delete,
+  credit administration, and signer rotation.
+- Compromise gives the attacker those lifecycle controls. It does not bypass the receiver's forwarder,
+  author, target, selector, or `SyncTrigger` amount/delay gates.
+- Rotating the signer while the Safe remains controllable keeps the same workflow owner and needs no
+  redeploy or author re-pin.
+- Moving to a new owner requires a linked replacement owner, a new registration, and
+  `setExpectedAuthor(newOwner)` on all four receivers. Use the independent GovExec
+  `CustomSender.revokeRole(SYNC_ROLE, syncTrigger)` containment path before recovery if integrity is in
+  doubt.

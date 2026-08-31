@@ -5,18 +5,15 @@
 # justfile, v1.27.0): per target an `rpcs` group, and optionally an `account` group.
 #
 # `${VAR}` interpolation works in **rpc `url` fields only** — the CLI does not expand it in other
-# settings. So the two values here come from the environment via script/shared/cre-env.sh, which the
+# settings. The values here come from the environment via script/shared/cre-env.sh, which the
 # `just cre …` and `just deploy-cre-workflow` recipes source:
-#   ${L1_RPC_URL}   Ethereum mainnet   — .env.<network>, bound to ${RPC_ETHEREUM_REMOTE}
-#   ${L2_RPC_URL}   this lane's L2     — .env.<network>, bound to ${RPC_<NET>_REMOTE}
+#   ${L1_RPC_URL}              Ethereum mainnet — bound to ${RPC_ETHEREUM_REMOTE}
+#   ${L2_<NET>_RPC_URL}        each L2 lane     — bound to ${RPC_<NET>_REMOTE}
 #
-# The workflow OWNER is deliberately not written here. On the signed path the CLI derives it from
-# `CRE_ETH_PRIVATE_KEY` (exported by cre-env.sh from the root .env Automation Owner key, cross-checked
-# against `L2_AUTOMATION_OWNER` and against the on-chain `CREReceiver.getExpectedAuthor()` before any
-# registration) — so the address stays in ONE place instead of being copied into this committed file.
-# The `CRE_DEPLOY_UNSIGNED=true` (multi-sig owner) route has no key to derive from and therefore needs a
-# LITERAL address added to the target it deploys, `account: { workflow-owner-address: "0x…" }`; the CLI
-# will say so explicitly if it is missing.
+# The consolidated production owner is the linked Test Automation Safe. The CLI cannot interpolate an
+# owner address, so the production target carries that literal and deploy-cre-workflow always emits an
+# unsigned transaction for the Safe. The retained per-lane targets still derive their old EOA owner
+# from CRE_ETH_PRIVATE_KEY when they are used for retirement commands.
 #
 # Two schema notes for whoever bumps the CLI:
 #   • the older `cre-cli: don-family: "zone-a"` block here was REMOVED — v1.27.0 has no `don-family`
@@ -40,11 +37,26 @@ simulate-settings: *default
 test-settings: *default
 
 # ==========================================================================
-# Production: one target PER LANE. The lane's `chain-name` (matching the workflow config's
-# `chainSelectorName`) is the only per-lane literal — URLs and owner are the same interpolations
-# everywhere, so a lane is chosen by `--target=production-<net>`, which `just deploy-cre-workflow`
-# derives from L2_NETWORK. Per-lane targets also give each lane its own workflow-name in
-# sync-automation/workflow.yaml; one shared name would make lane 2 upsert over lane 1's registration.
+# Consolidated production target: the workflow creates one EVM client per `lanes[]` entry, so all four
+# RPCs must be present in one target. cre-env.sh derives these aliases from the root RPC_<NET>_REMOTE
+# bindings before deploy-cre-workflow invokes the CLI.
+production:
+  account:
+    workflow-owner-address: "0xede1750ac52156e10be2b41d8b8df816d58bafe1"
+  rpcs:
+    - chain-name: ethereum-mainnet-optimism-1
+      url: "${L2_OPTIMISM_RPC_URL}"
+    - chain-name: ethereum-mainnet-arbitrum-1
+      url: "${L2_ARBITRUM_RPC_URL}"
+    - chain-name: ethereum-mainnet-base-1
+      url: "${L2_BASE_RPC_URL}"
+    - chain-name: ethereum-mainnet-linea-1
+      url: "${L2_LINEA_RPC_URL}"
+    - chain-name: ethereum-mainnet
+      url: "${L1_RPC_URL}"
+
+# ==========================================================================
+# Retained per-lane targets. They remain available only to pause or delete the old registrations.
 #
 production-optimism:
   rpcs:

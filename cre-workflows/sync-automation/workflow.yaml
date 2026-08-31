@@ -4,10 +4,8 @@
 # The workflow polls SyncTrigger.shouldSyncAmount() + canSync() and, when a sync is both
 # due and executable, encodes a triggerSync() call and delivers it via the CRE Receiver.
 #
-# Targets mirror ../project.yaml: `simulate-settings` plus one `production-<net>` per lane. Each
-# production target names its own workflow AND its own config file, so the lane is fully determined by
-# `--target` (`just deploy-cre-workflow` derives it from L2_NETWORK) — no --config override needed, and
-# the four lanes cannot collide on one registered workflow name under the same owner.
+# Targets mirror ../project.yaml: `simulate-settings`, one consolidated `production` target, and the
+# retained `production-<net>` targets used only to retire the old per-lane registrations.
 
 # ==========================================================================
 simulate-settings:

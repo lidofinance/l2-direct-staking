@@ -657,7 +657,7 @@ verify-constants-sync:
       sol_l2_liq=$(sol_addr      "$sol" LIQUIDITY_OWNER)
       sol_chain_id=$(sol_uint    "$sol" "${upper}_CHAIN_ID")
       sol_l2_selector=$(sol_uint "$sol" "${upper}_CCIP_CHAIN_SELECTOR")
-      cre_workflow_name=$(yq ".[\"production-${net}\"].user-workflow.workflow-name" cre-workflows/sync-automation/workflow.yaml)
+      cre_workflow_name=$(yq '.production.user-workflow.workflow-name' cre-workflows/sync-automation/workflow.yaml)
 
       echo
       echo "[$net] state-mate inputs: l2.common.inputs.yaml + ${sm%.yaml}.inputs.yaml; deployed: ${sm%.yaml}.deployed.yaml"
@@ -679,7 +679,7 @@ verify-constants-sync:
       expect_eq "l2LidoDeployer → LIDO_DEPLOYER (L1 shared)"                     "$sol_deployer"      "$(yml_anchor "$sm" l2LidoDeployer)"
       expect_eq "ethMainnetCcipChainSelector → ETH_CCIP_CHAIN_SELECTOR (L1 shared)" "$sol_eth_selector" "$(yml_anchor "$sm" ethMainnetCcipChainSelector)"
       expect_eq "l1LidoCustomReceiverBytes32 → L1_LIDO_CUSTOM_RECEIVER (L1 shared)" "$sol_l1_recv"   "$(bytes32_to_addr "$(yml_anchor "$sm" l1LidoCustomReceiverBytes32)")"
-      expect_eq "creWorkflowName → workflow.yaml production-${net}"               "$cre_workflow_name" "$(yml_anchor "$sm" creWorkflowName)"
+      expect_eq "creWorkflowName → workflow.yaml production"                      "$cre_workflow_name" "$(yml_anchor "$sm" creWorkflowName)"
       expect_eq "creWorkflowTag → registered workflow tag"                        "$cre_workflow_name" "$(yml_anchor "$sm" creWorkflowTag)"
       expect_eq "creDonFamily → CRE_CLI_DON_FAMILY default"                       "$cre_don_family"    "$(yml_anchor "$sm" creDonFamily)"
       if [[ "$net" == "linea" ]]; then
@@ -765,7 +765,7 @@ verify-constants-sync:
     # the CRE_WRITE_GAS_LIMIT constant — so a JSON bump that skipped the test would silently invalidate the
     # evidence. Pin every lane's JSON to that constant (Solidity-side is canonical, as everywhere here).
     sol_write_gas="$(sol_uint "test/helpers/PoolUpgradeTests.sol" CRE_WRITE_GAS_LIMIT)"
-    for cfg in cre-workflows/sync-automation/config.deploy.*.json cre-workflows/sync-automation/config.simulate.json; do
+    for cfg in cre-workflows/sync-automation/config.deploy.json cre-workflows/sync-automation/config.deploy.*.json cre-workflows/sync-automation/config.simulate.json; do
       [[ -f "$cfg" ]] || continue
       expect_eq "$(basename "$cfg") writeGasLimit → CRE_WRITE_GAS_LIMIT" \
         "$sol_write_gas" "$(jq -r '.writeGasLimit' "$cfg")"
@@ -895,13 +895,13 @@ verify-externals-coverage:
     #                     was deliberately NOT promoted to a MigrationConstants constant (the address
     #                     lives in the root .env beside its signing key). Its cross-check is therefore at
     #                     runtime, not lint time: `just env-doctor` proves anchor == L2_AUTOMATION_OWNER
-    #                     == the address the signing key derives to == on-chain
-    #                     CREReceiver.getExpectedAuthor(), and `deploy-cre-workflow` re-proves the last
-    #                     equality before it can register a workflow. Promote it to a constant (and drop
+    #                     == the address the signing key derives to. Promote it to a constant (and drop
     #                     this entry) if the AO ever becomes a fixed, long-lived address.
+    #   creWorkflowOwner — the Test Automation Safe that owns the consolidated CRE registration;
+    #                     `deploy-cre-workflow` cross-checks it against every CREReceiver author pin.
     #   creWorkflowRegistry — Chainlink's shared Ethereum registry; independently checked on-chain
     #   creWorkflowId — content-derived workflow deployment output (zero is the fail-closed predeploy stub)
-    allow=" l2OraclePool l2SyncTrigger l2CreReceiver RETIRED_l2SyncTrigger RETIRED_l2CreReceiver l2AutomationOwner creWorkflowRegistry creWorkflowId lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
+    allow=" l2OraclePool l2SyncTrigger l2CreReceiver RETIRED_l2SyncTrigger RETIRED_l2CreReceiver l2AutomationOwner creWorkflowOwner creWorkflowRegistry creWorkflowId lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
     # Anchor names cross-checked by a `yml_anchor` row in verify-constants-sync. The justfile is
     # invariant across the loop below, so scan it ONCE here (space-padded for the `case` match)
     # rather than re-grepping it per anchor per net.
@@ -946,7 +946,7 @@ verify-externals-coverage:
     echo "===================================================================="
 
 # Read-only combined state-mate verification for a lane. It checks both the Ethereum WorkflowRegistry
-# record (identity, Automation Owner, ACTIVE) and all L2 contracts from the shared config/state/l2.yaml.
+# record (identity, workflow-owner Safe, ACTIVE) and all L2 contracts from the shared config/state/l2.yaml.
 # The workflow ID is deployed state in config/state/<network>.deployed.yaml — never an env value.
 # Callable by anyone (no private key needed).
 #
@@ -1016,9 +1016,8 @@ record-cre-workflow-id network workflow_id:
 # clearly-labelled DRIFT row — a fact about this repository, not about the automation's health.
 #
 # The registry is ONE Ethereum-mainnet singleton for all four lanes; lanes are matched by workflow
-# name. Owners queried = the pinned Automation Owner plus every distinct live
-# `CREReceiver.getExpectedAuthor()`, so the read keeps working through the pending Safe migration
-# without an edit here.
+# name. Owners queried include both the retired per-lane owner and the consolidated workflow-owner
+# Safe, plus every distinct live `CREReceiver.getExpectedAuthor()`.
 #
 # L1 RPC: RPC_ETHEREUM_REMOTE, else RPC_ETHEREUM, else L1_RPC_URL, else a public endpoint.
 # L2 RPCs (RPC_<NET>[_REMOTE]) are OPTIONAL — without them the author-gate cross-check is skipped,
@@ -1041,6 +1040,7 @@ cre-registry-status:
     REGISTRY="$(just _l2-input-anchor optimism creWorkflowRegistry)"
     DON_FAMILY="$(just _l2-input-anchor optimism creDonFamily)"
     AUTOMATION_OWNER="$(just _l2-input-anchor optimism l2AutomationOwner)"
+    WORKFLOW_OWNER="$(just _l2-input-anchor optimism creWorkflowOwner)"
     CRE_RECEIVER="$(just _l2-input-anchor optimism l2CreReceiver 2>/dev/null || true)"
     [[ -n "$CRE_RECEIVER" ]] || CRE_RECEIVER="$(yq '[.. | select(anchor == "l2CreReceiver")][0]' \
       "$ROOT_DIR/config/state/optimism.deployed.yaml" | tr -d '"')"
@@ -1051,6 +1051,7 @@ cre-registry-status:
     echo "  registry         = $REGISTRY  (Ethereum-mainnet singleton, all 4 lanes)"
     echo "  don family       = $DON_FAMILY"
     echo "  automation owner = $AUTOMATION_OWNER"
+    echo "  workflow owner   = $WORKFLOW_OWNER"
     echo "  CREReceiver      = $CRE_RECEIVER  (same CREATE2 address on every lane)"
     echo "  L1 rpc           = $L1"
     echo
@@ -1066,7 +1067,7 @@ cre-registry-status:
 
     # ── Live expectedAuthor per lane (optional; also grows the owner set) ──
     declare -a AUTHORS
-    OWNERS="$AUTOMATION_OWNER"
+    OWNERS="$AUTOMATION_OWNER $WORKFLOW_OWNER"
     echo "──── author pins (L2) ────"
     for i in "${!NETS[@]}"; do
       net="${NETS[$i]}"; u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
@@ -1099,9 +1100,8 @@ cre-registry-status:
       else
         BAD "$owner  isOwnerLinked = ${linked:-<unreadable>} — the DON will NOT sign as this address"
       fi
-      # The owner signs every registry transaction itself, so DUST is as disabling as zero: no `pause`,
-      # no `delete`. Same 0.001 ETH floor the dashboard's Automation tab applies, so the two views
-      # cannot return opposite verdicts on one balance.
+      # The owner account executes every registry transaction, directly or through its Safe, so DUST
+      # is as disabling as zero: no `pause`, no `delete`. Keep the same 0.001 ETH floor as the dashboard.
       [[ "${eth%% *}" -lt 1000000000000000 ]] 2>/dev/null \
         && WARN "$owner has $(cast from-wei "${eth%% *}") mainnet ETH — too thin to pause/delete its own workflows"
     done
@@ -1955,81 +1955,66 @@ finalize:
     SCRIPT=$(just _l2-script-target "$L2_NETWORK") || exit
     forge script "$SCRIPT" --sig 'runFinalize()' --rpc-url "$L2_RPC_URL" --broadcast
 
-# Deploy the CRE workflow for <network> via the `cre` CLI, OWNED BY THE AUTOMATION OWNER.
-# Run after `update-cre-config` has populated the deploy config with the live SyncTrigger and
-# CREReceiver addresses.
+# Build and upload the consolidated four-lane CRE workflow, then emit unsigned WorkflowRegistry
+# calldata for the Test Automation Safe pinned in project.yaml. One registration drives all four L2s.
 #
-# The workflow owner is the Automation Owner EOA, which signs the WorkflowRegistry transaction itself
-# (DOC.md §4.2) — the key and owner address are derived from the repo's canonical variables by
-# script/shared/cre-env.sh, so no CRE_* value is hand-copied. Set CRE_DEPLOY_UNSIGNED=true to emit raw
-# calldata instead (the route for a Safe/multi-sig owner, which must then execute it).
+# Required env (root .env): all four RPC_<NET>_REMOTE URLs, an Ethereum RPC, and the Automation Owner
+# key the CRE CLI uses to authenticate the artifact upload. Before emitting calldata, the recipe reads
+# CREReceiver.getExpectedAuthor() on every lane and aborts unless all four equal the Safe owner.
 #
-# Required env: L2_NETWORK, L2_RPC_URL, L2_CRE_RECEIVER (.env.<network>) + L2_AUTOMATION_OWNER and its
-#   key (root .env). Before registering, the recipe reads CREReceiver.getExpectedAuthor() on-chain and
-#   ABORTS if it does not equal the workflow owner — so a workflow can never be registered under an
-#   owner that the pinned author gate will reject (which would silently brick every sync).
-#
-# Usage: just -E .env.<network> deploy-cre-workflow
+# Usage: just deploy-cre-workflow
 deploy-cre-workflow:
     #!/usr/bin/env bash
     set -euo pipefail
-    : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
-    : "${L2_RPC_URL:?L2_RPC_URL is required; set it in .env.$L2_NETWORK (used to read CREReceiver.getExpectedAuthor())}"
-    : "${L2_CRE_RECEIVER:?L2_CRE_RECEIVER is required; populate it in .env.$L2_NETWORK from deploy-test output}"
-
-    case "$L2_NETWORK" in
-      optimism|arbitrum|base|linea) ;;
-      *) echo "Unknown L2_NETWORK: $L2_NETWORK" >&2; exit 2 ;;
-    esac
-
     CRE="$(just _cre-bin)"
     command -v cast >/dev/null 2>&1 || { echo "Missing 'cast' (foundry)" >&2; exit 1; }
+    command -v jq >/dev/null 2>&1 || { echo "Missing required command: jq" >&2; exit 1; }
+    command -v yq >/dev/null 2>&1 || { echo "Missing required command: yq" >&2; exit 1; }
 
-    # Derives CRE_ETH_PRIVATE_KEY + CRE_WORKFLOW_OWNER (and cross-checks the key against the address).
+    # The key authenticates the CLI upload. The on-chain owner comes from production.account in
+    # project.yaml because --unsigned puts the Safe, not this EOA, into the workflow ID and registry row.
     source "{{justfile_directory()}}/script/shared/cre-env.sh"
     cre_env_export
+    cre_env_export_all_l2_rpcs
 
-    # Cross-check against the on-chain pin: the workflow owner we are about to register MUST equal the
-    # already-deployed CREReceiver.expectedAuthor, or the author gate rejects every report (silent
-    # sync stall). Compare checksummed forms so case differences don't cause a false mismatch.
-    PINNED="$(cast call "$L2_CRE_RECEIVER" 'getExpectedAuthor()(address)' --rpc-url "$L2_RPC_URL" | tr -d '\r\n')"
-    OWNER_CS="$(cast to-check-sum-address "$CRE_WORKFLOW_OWNER")"
-    PINNED_CS="$(cast to-check-sum-address "$PINNED")"
-    if [[ "$OWNER_CS" != "$PINNED_CS" ]]; then
-      echo "ABORT: CRE_WORKFLOW_OWNER ($OWNER_CS) != on-chain CREReceiver.getExpectedAuthor() ($PINNED_CS)." >&2
-      echo "Registering the workflow under $OWNER_CS would make every report fail the author gate." >&2
-      echo "Fix: set L2_AUTOMATION_OWNER (root .env) to the pinned author, or re-pin via setExpectedAuthor first." >&2
-      exit 1
-    fi
-    echo "Cross-check OK: CRE_WORKFLOW_OWNER == CREReceiver.expectedAuthor ($OWNER_CS)."
-
-    # Per-lane target: chain-name + workflow-name + config-path all live in the target, so the lane can
-    # never be mixed up by a stray --config, and the four lanes cannot collide on one workflow name.
-    TARGET="production-$L2_NETWORK"
-    CONFIG="config.deploy.$L2_NETWORK.json"
+    TARGET="production"
+    CONFIG="config.deploy.json"
     [[ -f "cre-workflows/sync-automation/$CONFIG" ]] \
-      || { echo "Missing cre-workflows/sync-automation/$CONFIG. Run 'just -E .env.$L2_NETWORK update-cre-config' first." >&2; exit 1; }
+      || { echo "Missing cre-workflows/sync-automation/$CONFIG." >&2; exit 1; }
     grep -q '0xYOUR_' "cre-workflows/sync-automation/$CONFIG" \
-      && { echo "Placeholder addresses still in $CONFIG. Run 'just -E .env.$L2_NETWORK update-cre-config' first." >&2; exit 1; } || true
+      && { echo "Placeholder addresses still in $CONFIG." >&2; exit 1; } || true
+
+    WORKFLOW_OWNER="$(yq -r '.production.account.workflow-owner-address' cre-workflows/project.yaml)"
+    RECEIVER="$(jq -er '.receiverAddress' "cre-workflows/sync-automation/$CONFIG")"
+    [[ "$WORKFLOW_OWNER" =~ ^0x[0-9a-fA-F]{40}$ ]] || { echo "Bad production workflow owner: $WORKFLOW_OWNER" >&2; exit 1; }
+    [[ "$RECEIVER" =~ ^0x[0-9a-fA-F]{40}$ ]] || { echo "Bad receiverAddress in $CONFIG: $RECEIVER" >&2; exit 1; }
+    OWNER_CS="$(cast to-check-sum-address "$WORKFLOW_OWNER")"
+
+    for net in optimism arbitrum base linea; do
+      upper="$(printf '%s' "$net" | tr '[:lower:]' '[:upper:]')"
+      rpc_var="L2_${upper}_RPC_URL"
+      rpc="${!rpc_var}"
+      pinned="$(cast call "$RECEIVER" 'getExpectedAuthor()(address)' --rpc-url "$rpc" | tr -d '\r\n')"
+      pinned_cs="$(cast to-check-sum-address "$pinned")"
+      if [[ "$OWNER_CS" != "$pinned_cs" ]]; then
+        echo "ABORT: $net CREReceiver.getExpectedAuthor() is $pinned_cs, production owner is $OWNER_CS." >&2
+        echo "Every report on this lane would fail the author gate." >&2
+        exit 1
+      fi
+      echo "Cross-check OK: $net expectedAuthor == $OWNER_CS."
+    done
 
     # Run from the PROJECT root (cre-workflows/, holding project.yaml) and pass the workflow folder by
     # NAME: the CLI resolves <workflow-folder-path> against the project root it discovers, so `.` from
     # inside sync-automation/ resolves back to cre-workflows/ and it looks for workflow.yaml there.
-    if [[ "${CRE_DEPLOY_UNSIGNED:-false}" == "true" ]]; then
-      echo "Emitting UNSIGNED WorkflowRegistry calldata for owner $CRE_WORKFLOW_OWNER (target $TARGET)."
-      cd cre-workflows && "$CRE" workflow deploy sync-automation --target="$TARGET" --unsigned
-      echo
-      echo "===================================================================="
-      echo "Next: execute the WorkflowRegistry calldata printed above FROM $CRE_WORKFLOW_OWNER."
-      echo "That address becomes the workflow owner == CREReceiver.expectedAuthor."
-    else
-      echo "Registering CRE workflow owned by the Automation Owner $CRE_WORKFLOW_OWNER (target $TARGET, signed)."
-      cd cre-workflows && "$CRE" workflow deploy sync-automation --target="$TARGET"
-      echo
-      echo "===================================================================="
-    fi
-    echo "Then run 'just record-cre-workflow-id $L2_NETWORK <workflow-id>' with the returned ID,"
-    echo "followed by 'just -E .env.$L2_NETWORK verify-cre-workflow'."
+    echo "Emitting UNSIGNED WorkflowRegistry calldata for $OWNER_CS (target $TARGET)."
+    (cd cre-workflows && "$CRE" workflow deploy sync-automation --target="$TARGET" --unsigned)
+    echo
+    echo "===================================================================="
+    echo "The pinned CRE CLI emits empty attributes. Run 'just cre-attach-params', paste the calldata,"
+    echo "and execute the rewritten calldata from $OWNER_CS."
+    echo "Record the returned workflow ID in all four lanes with 'just record-cre-workflow-id <network> <workflow-id>',"
+    echo "then run 'NETWORK=<network> just verify-cre-workflow' for each lane."
     echo "===================================================================="
 
 # L1 admin migration (runs ONCE — shared across all networks). Grants DEFAULT_ADMIN
@@ -4748,6 +4733,89 @@ test-cre:
 test-cre-workflow:
     cd cre-workflows/sync-automation && bun test
 
+# Verify the dashboard's source/config pins and its byte-exact embedded config copy. On drift, print
+# the replacement constants and exit non-zero so a caller cannot mistake stale pins for regenerated ones.
+cre-workflow-hash:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    cd "$ROOT_DIR"
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+
+    sha256_file() {
+      if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+      elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+      else echo "shasum or sha256sum is required" >&2; return 1
+      fi
+    }
+
+    CONFIG="cre-workflows/sync-automation/config.deploy.json"
+    SOURCE="cre-workflows/sync-automation/main.ts"
+    config_sha="$(sha256_file "$CONFIG")"
+    source_sha="$(sha256_file "$SOURCE")"
+    pinned_config="$(sed -n "s/^const CRE_CONFIG_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
+    pinned_source="$(sed -n "s/^const CRE_SOURCE_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
+    embedded_config="$(sed -n 's/^const CRE_CONFIG_JSON = \(.*\);$/\1/p' index.html)"
+    actual_config="$(jq -Rs . "$CONFIG")"
+
+    printf "const CRE_CONFIG_SHA256 = '%s';\n" "$config_sha"
+    printf "const CRE_SOURCE_SHA256 = '%s';\n" "$source_sha"
+
+    rc=0
+    [[ "$pinned_config" == "$config_sha" ]] || { echo "index.html CRE_CONFIG_SHA256 is stale" >&2; rc=1; }
+    [[ "$pinned_source" == "$source_sha" ]] || { echo "index.html CRE_SOURCE_SHA256 is stale" >&2; rc=1; }
+    [[ "$embedded_config" == "$actual_config" ]] || { echo "index.html CRE_CONFIG_JSON is not config.deploy.json byte-for-byte" >&2; rc=1; }
+    exit "$rc"
+
+# CRE CLI v1.27.0 hardcodes empty WorkflowRegistry attributes. Read its unsigned upsert calldata from
+# stdin (or CRE_CALLDATA), replace only attributes with the two repository digests, and print calldata
+# for the Safe. The workflow ID stays unchanged because attributes are not an ID input.
+cre-attach-params:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    cd "$ROOT_DIR"
+    command -v cast >/dev/null 2>&1 || { echo "cast is required" >&2; exit 1; }
+    command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
+    just cre-workflow-hash >/dev/null
+
+    calldata="${CRE_CALLDATA:-}"
+    if [[ -z "$calldata" ]]; then
+      [[ -t 0 ]] && echo "Paste the unsigned upsertWorkflow calldata, then press Return:" >&2
+      IFS= read -r calldata
+    fi
+    calldata="${calldata//[[:space:]]/}"
+    [[ "$calldata" == 0x* ]] || calldata="0x$calldata"
+    [[ "$calldata" =~ ^0xb377bfc5[0-9a-fA-F]+$ ]] \
+      || { echo "Expected raw upsertWorkflow calldata (selector 0xb377bfc5)" >&2; exit 1; }
+
+    sig='upsertWorkflow(string,string,bytes32,uint8,string,string,string,bytes,bool)'
+    decoded="$(cast decode-calldata --json "$sig" "$calldata")"
+    current_attrs="$(printf '%s' "$decoded" | jq -er '.[7] | select(type == "string")')"
+    [[ "$current_attrs" == "0x" ]] \
+      || { echo "Refusing to overwrite non-empty attributes: $current_attrs" >&2; exit 1; }
+
+    name="$(printf '%s' "$decoded" | jq -er '.[0] | select(type == "string")')"
+    tag="$(printf '%s' "$decoded" | jq -er '.[1] | select(type == "string")')"
+    workflow_id="$(printf '%s' "$decoded" | jq -er '.[2] | select(type == "string")')"
+    status="$(printf '%s' "$decoded" | jq -er '.[3] | select(type == "number")')"
+    don="$(printf '%s' "$decoded" | jq -er '.[4] | select(type == "string")')"
+    binary_url="$(printf '%s' "$decoded" | jq -er '.[5] | select(type == "string")')"
+    config_url="$(printf '%s' "$decoded" | jq -er '.[6] | select(type == "string")')"
+    keep_alive="$(printf '%s' "$decoded" | jq -er '.[8] | select(type == "boolean") | tostring')"
+    config_sha="$(sed -n "s/^const CRE_CONFIG_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
+    source_sha="$(sed -n "s/^const CRE_SOURCE_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
+    attrs_json="$(jq -cn --arg config "$config_sha" --arg source "$source_sha" \
+      '{v:"cre-attest/3",config:$config,source:$source}')"
+    attrs_hex="$(cast from-utf8 "$attrs_json")"
+
+    rewritten="$(cast calldata "$sig" "$name" "$tag" "$workflow_id" "$status" "$don" \
+      "$binary_url" "$config_url" "$attrs_hex" "$keep_alive")"
+    roundtrip_attrs="$(cast decode-calldata --json "$sig" "$rewritten" | jq -er '.[7]')"
+    [[ "$roundtrip_attrs" == "$attrs_hex" ]] || { echo "Re-encoded attributes failed round-trip check" >&2; exit 1; }
+    echo "Attached cre-attest/3 config/source digests; paste this calldata into the dashboard before signing." >&2
+    printf '%s\n' "$rewritten"
+
 # Run all CRE tests (Solidity + TypeScript)
 test-cre-all: test-cre test-cre-workflow
 
@@ -4913,6 +4981,8 @@ env-doctor:
     echo "Actor addresses:"
     INFO "DEPLOYER              = ${DEPLOYER:-<unset>}"
     INFO "L2_AUTOMATION_OWNER   = ${L2_AUTOMATION_OWNER:-<unset>}"
+    WORKFLOW_OWNER="$(just _l2-input-anchor optimism creWorkflowOwner 2>/dev/null || true)"
+    INFO "CRE_WORKFLOW_OWNER    = ${WORKFLOW_OWNER:-<unset>}"
     if [[ -n "$AO_KEY" && -n "${L2_AUTOMATION_OWNER:-}" ]]; then
       DERIVED="$(cast wallet address --private-key "$AO_KEY" 2>/dev/null || true)"
       if [[ -z "$DERIVED" ]]; then
@@ -4937,28 +5007,28 @@ env-doctor:
       CID="$(cast chain-id --rpc-url "$L1" 2>/dev/null || echo '?')"
       [[ "$CID" == "1" ]] && OK "chain-id 1" || BAD "chain-id $CID (expected 1) — is this the local fork proxy or a wrong endpoint?"
 
-      # Can the Automation Owner register a workflow at all? Three independent gates, all on the
+      # Can the consolidated workflow-owner Safe register at all? Three independent gates, all on the
       # Chainlink WorkflowRegistry (mainnet, regardless of the lane a workflow drives):
-      #   isOwnerLinked            — `cre account link-key` was executed FROM this address
+      #   isOwnerLinked            — this Safe address has been linked
       #   maxWorkflowsPerUserDON   — a non-zero per-user quota on the DON family we target (deploy access)
-      #   mainnet ETH              — the owner signs the registration transaction itself
+      #   mainnet ETH              — the Safe executes the unsigned registration transaction
       # This does NOT prove the CRE-side org/credit state, which is dashboard-only (docs/cre.md).
-      if [[ "$CID" == "1" && -n "${L2_AUTOMATION_OWNER:-}" ]]; then
+      if [[ "$CID" == "1" && -n "$WORKFLOW_OWNER" ]]; then
         WF_REGISTRY=0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5
         DON_FAMILY="${CRE_DON_FAMILY:-zone-a}"
-        LINKED="$(cast call "$WF_REGISTRY" 'isOwnerLinked(address)(bool)' "$L2_AUTOMATION_OWNER" --rpc-url "$L1" 2>/dev/null || echo '?')"
+        LINKED="$(cast call "$WF_REGISTRY" 'isOwnerLinked(address)(bool)' "$WORKFLOW_OWNER" --rpc-url "$L1" 2>/dev/null || echo '?')"
         [[ "$LINKED" == "true" ]] \
           && OK "WorkflowRegistry: owner linked (isOwnerLinked = true)" \
-          || BAD "WorkflowRegistry: owner NOT linked (isOwnerLinked = $LINKED) — run 'just cre account link-key -l <label>' FROM the Automation Owner key"
-        QUOTA="$(cast call "$WF_REGISTRY" 'getMaxWorkflowsPerUserDON(address,string)(uint32)' "$L2_AUTOMATION_OWNER" "$DON_FAMILY" --rpc-url "$L1" 2>/dev/null || echo '0')"
+          || BAD "WorkflowRegistry: Safe owner NOT linked (isOwnerLinked = $LINKED)"
+        QUOTA="$(cast call "$WF_REGISTRY" 'getMaxWorkflowsPerUserDON(address,string)(uint32)' "$WORKFLOW_OWNER" "$DON_FAMILY" --rpc-url "$L1" 2>/dev/null || echo '0')"
         [[ "${QUOTA%% *}" =~ ^[0-9]+$ && "${QUOTA%% *}" -gt 0 ]] \
           && OK "WorkflowRegistry: deploy quota on DON '$DON_FAMILY' = ${QUOTA%% *} workflow(s)" \
           || BAD "WorkflowRegistry: zero deploy quota on DON '$DON_FAMILY' — request access with 'just cre account access'"
-        AO_WEI="$(cast balance "$L2_AUTOMATION_OWNER" --rpc-url "$L1" 2>/dev/null || echo 0)"
-        [[ "$AO_WEI" -gt 0 ]] 2>/dev/null \
-          && OK "Automation Owner mainnet gas: $(cast from-wei "$AO_WEI") ETH" \
-          || BAD "Automation Owner has 0 mainnet ETH — it signs the WorkflowRegistry transaction itself"
-        REGISTERED="$(cast call "$WF_REGISTRY" 'getWorkflowListByOwner(address,uint256,uint256)' "$L2_AUTOMATION_OWNER" 0 20 --rpc-url "$L1" 2>/dev/null || true)"
+        OWNER_WEI="$(cast balance "$WORKFLOW_OWNER" --rpc-url "$L1" 2>/dev/null || echo 0)"
+        [[ "$OWNER_WEI" -gt 0 ]] 2>/dev/null \
+          && OK "Workflow-owner Safe mainnet gas: $(cast from-wei "$OWNER_WEI") ETH" \
+          || BAD "Workflow-owner Safe has 0 mainnet ETH — fund it before executing registry calldata"
+        REGISTERED="$(cast call "$WF_REGISTRY" 'getWorkflowListByOwner(address,uint256,uint256)' "$WORKFLOW_OWNER" 0 20 --rpc-url "$L1" 2>/dev/null || true)"
         if [[ "$REGISTERED" == 0x*0000000000000000000000000000000000000000000000000000000000000000 && ${#REGISTERED} -le 130 ]]; then
           INFO "WorkflowRegistry: no workflows registered under this owner yet"
         else
@@ -4996,9 +5066,10 @@ env-doctor:
       INFO "receiver ${RECV:-<unset>}"
       # A lane that has not had its automation pair redeployed yet is still legitimately owned by the
       # LOL multisig (docs/automation-owner-redeploy.md S3 is per-lane). That is expected state, not a
-      # misconfiguration — it is reported, not failed. Only an author that is NEITHER the Automation
-      # Owner nor the lane's liquidity owner means something is actually wrong.
+      # misconfiguration — it is reported, not failed. Accept the consolidated Safe, the retired EOA,
+      # or the older liquidity-owner Safe while showing which phase the lane is in.
       ANCHOR_AO="$(anchor "$IN" l2AutomationOwner)"
+      ANCHOR_WF="$(anchor "$IN" creWorkflowOwner)"
       ANCHOR_LOL="$(anchor "$IN" l2LiquidityOwner)"
       if [[ -n "$ANCHOR_AO" && "$ANCHOR_AO" != "null" ]]; then
         if [[ -z "${L2_AUTOMATION_OWNER:-}" || "$(lc "$ANCHOR_AO")" == "$(lc "$L2_AUTOMATION_OWNER")" ]]; then
@@ -5013,12 +5084,14 @@ env-doctor:
         PINNED="$(cast call "$RECV" 'getExpectedAuthor()(address)' --rpc-url "$L2" 2>/dev/null | tr -d '\r\n' || true)"
         if [[ -z "$PINNED" ]]; then
           INFO "on-chain getExpectedAuthor(): unreachable (RPC down or wrong address)"
+        elif [[ -n "$ANCHOR_WF" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_WF")" ]]; then
+          OK "on-chain CREReceiver.getExpectedAuthor() == creWorkflowOwner ($PINNED)"
         elif [[ -n "${L2_AUTOMATION_OWNER:-}" && "$(lc "$PINNED")" == "$(lc "$L2_AUTOMATION_OWNER")" ]]; then
-          OK "on-chain CREReceiver.getExpectedAuthor() == L2_AUTOMATION_OWNER ($PINNED)"
+          INFO "on-chain getExpectedAuthor() = $PINNED (retired per-lane workflow owner)"
         elif [[ -n "$ANCHOR_LOL" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_LOL")" ]]; then
-          INFO "on-chain getExpectedAuthor() = $PINNED (LOL multisig) — lane not yet moved to the Automation Owner; deploy-cre-workflow would abort here by design"
+          INFO "on-chain getExpectedAuthor() = $PINNED (LOL multisig) — lane not yet moved to the consolidated workflow owner; deploy-cre-workflow would abort here by design"
         else
-          BAD "on-chain CREReceiver.getExpectedAuthor() = $PINNED — neither L2_AUTOMATION_OWNER (${L2_AUTOMATION_OWNER:-<unset>}) nor the l2LiquidityOwner anchor (${ANCHOR_LOL:-<absent>})"
+          BAD "on-chain CREReceiver.getExpectedAuthor() = $PINNED — not creWorkflowOwner (${ANCHOR_WF:-<absent>}), retired owner (${L2_AUTOMATION_OWNER:-<unset>}), or l2LiquidityOwner (${ANCHOR_LOL:-<absent>})"
         fi
       fi
       if [[ -n "$WFID" ]]; then

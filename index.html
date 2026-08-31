@@ -530,7 +530,7 @@ const SHA256_OK = sha256Hex('') === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649
   && sha256Hex('abc') === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // l2AutomationOwner — CRE workflow owner + author
+const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // retired per-lane workflow owner; uploader EOA
 const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // LOL Safe (3/5) — the msig the migration
   // aimed at until 2026-08-24. It is NOT isOwnerLinked on the registry and the org's linked-owner slots
   // were the binding constraint, so the consolidated workflow goes to CRE_WF_OWNER instead.
@@ -649,7 +649,7 @@ const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b2c87e45
 // sha256 of cre-workflows/sync-automation/main.ts — the WHOLE workflow, one file, which is what makes a
 // single source digest mean anything. Published on-chain in the record's `attributes` at registration
 // and re-checkable here against a file the reader supplies. Regenerate with `just cre-workflow-hash`.
-const CRE_SOURCE_SHA256 = '1e61180338f834cfe9e77ac06b1871c6aa47f77c38de6c36f7510249b0df05bb';
+const CRE_SOURCE_SHA256 = '539b2a58b5d1cc1192508a989637008d502df02e4a7d887c28f76c9682cbbe1d';
 // Byte-exact copy of config.deploy.json — trailing newline included, or the digest will not match.
 const CRE_CONFIG_JSON = "{\n  \"receiverAddress\": \"0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A\",\n  \"targetAddress\": \"0x871a5cddE9813627Ff37A2895A0c9B117A664622\",\n  \"writeGasLimit\": \"750000\",\n  \"lanes\": [\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-optimism-1\",\n      \"schedule\": \"0 0 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-arbitrum-1\",\n      \"schedule\": \"0 15 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-base-1\",\n      \"schedule\": \"0 30 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-linea-1\",\n      \"schedule\": \"0 45 * * * *\"\n    }\n  ]\n}\n";
 
@@ -1009,12 +1009,12 @@ const WF = { id: 0, owner: 1, createdAt: 2, status: 3, name: 4, tag: 7, attribut
 // registry" are different claims and only the first may be reported as an absence.
 const regsUsable = regs => regs != null && regs.every(a => a.workflows != null);
 
-// The consolidated record, found by NAME across every queried owner. It is the ONLY registration this
-// tab reports on: one record now stands for all four lanes, and the superseded per-lane records are
-// not looked up at all — a lane must not be described by a registration that no longer drives it.
+// The consolidated record, found by OWNER + NAME. Workflow names are owner-scoped, so a same-named
+// record under another queried owner must not drive registration, author-gate, or cadence verdicts.
 const findConsolidated = regs => !regsUsable(regs) ? null : regs
   .flatMap(acct => acct.workflows.map(t => ({ t })))
-  .find(({ t }) => t[WF.name] === CRE_WORKFLOW_NAME) ?? null;
+  .find(({ t }) => String(t[WF.owner]).toLowerCase() === CRE_WF_OWNER.toLowerCase()
+    && t[WF.name] === CRE_WORKFLOW_NAME) ?? null;
 
 // sha256 of the page's own copy of the config, computed rather than asserted: a transcription slip in
 // CRE_CONFIG_SHA256 must not be able to pass as agreement with the chain.
@@ -2378,6 +2378,16 @@ const cdKnownWorkflow = id => {
     .find(({ t }) => (t[WF.id] || '').toLowerCase() === (id || '').toLowerCase()) ?? null;
 };
 
+function cdArtifactUrlStatus(value, idBare, expectedLeaf) {
+  let u;
+  try { u = new URL(String(value ?? '')); } catch { return { onHost: false, keyed: false }; }
+  const parts = u.pathname.split('/');
+  const onHost = u.origin === 'https://storage.cre.chain.link';
+  const keyed = onHost && parts.length === 4 && parts[1] === 'artifacts'
+    && parts[2].toLowerCase() === idBare && parts[3] === expectedLeaf;
+  return { onHost, keyed };
+}
+
 function cdExplainUpsert(a) {
   const [name, tag, id, status, don, binUrl, cfgUrl, attrs, keepAlive] = a;
   const idBare = (id || '').replace(/^0x/, '').toLowerCase();
@@ -2411,13 +2421,12 @@ function cdExplainUpsert(a) {
     don === DON_FAMILY ? 'the family this owner holds quota on'
       : `expected ${DON_FAMILY} — and the registry refuses to change a family on update, so this is not fixable in place`));
 
-  [['binaryUrl', binUrl], ['configUrl', cfgUrl]].forEach(([k, url]) => {
-    const onHost = /^https:\/\/storage\.cre\.chain\.link\//.test(String(url ?? ''));
-    const keyed = onHost && String(url).toLowerCase().includes(idBare);
+  [['binaryUrl', binUrl, 'binary.wasm'], ['configUrl', cfgUrl, 'config']].forEach(([k, url, leaf]) => {
+    const { onHost, keyed } = cdArtifactUrlStatus(url, idBare, leaf);
     rows.push(cdRow(k, url ? String(url).slice(0, 46) + (String(url).length > 46 ? '…' : '') : '(empty)',
       keyed ? 'ok' : 'crit',
-      keyed ? 'on the CRE host and keyed by this workflowId — one build'
-        : onHost ? 'does NOT contain this workflowId — id and artifact disagree'
+      keyed ? `exact /artifacts/<workflowId>/${leaf} path on the CRE host — one build`
+        : onHost ? `expected /artifacts/<workflowId>/${leaf} — URL path and artifact disagree`
         : 'not on storage.cre.chain.link — the DON would not load this'));
   });
 
@@ -2558,15 +2567,29 @@ const REG_FN_PROSE = {
 // Safe wrapper: the same bytes are often pasted as a whole execTransaction. Unwrap it, check the parts
 // a signer cannot see (destination, value, and above all `operation`), then explain the inner call.
 function cdExplainSafeExec(args) {
-  const [to, value, data, operation] = args;
+  const [to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, signatures] = args;
+  const noGasToken = String(gasToken).toLowerCase() === ZERO.toLowerCase();
+  const noRefundReceiver = String(refundReceiver).toLowerCase() === ZERO.toLowerCase();
+  const signatureBytes = Math.max(0, (String(signatures).length - 2) / 2);
   const rows = [
     cdRow('to', `${holder(to)} <span class="mono">${short(to)}</span>`,
       (to || '').toLowerCase() === L1.workflowRegistry.toLowerCase() ? 'ok' : 'crit',
       (to || '').toLowerCase() === L1.workflowRegistry.toLowerCase() ? 'the L1 WorkflowRegistry this dashboard tracks'
         : `NOT the WorkflowRegistry (${short(L1.workflowRegistry)}) — this calldata does not mean here what it says`, true),
     cdRow('value', `${value} wei`, value === 0n ? 'ok' : 'crit', value === 0n ? 'no ETH moves' : 'this call also sends ETH'),
-    cdRow('operation', operation === 0n ? '0 · CALL' : `${operation} · DELEGATECALL`, operation === 0n ? 'ok' : 'crit',
-      operation === 0n ? 'an ordinary call' : 'DELEGATECALL runs foreign code in the Safe\'s storage — never needed for a registry call'),
+    cdRow('operation', operation === 0n ? '0 · CALL' : operation === 1n ? '1 · DELEGATECALL' : `${operation} · INVALID`, operation === 0n ? 'ok' : 'crit',
+      operation === 0n ? 'an ordinary call' : 'only CALL is expected for a registry transaction'),
+    cdRow('safeTxGas', String(safeTxGas), '', 'execution gas cap — the Safe estimates this; this page has no pinned value'),
+    cdRow('baseGas', String(baseGas), baseGas === 0n ? 'ok' : 'crit',
+      baseGas === 0n ? 'no base-gas reimbursement' : 'nonzero reimbursement input — not expected for this transaction'),
+    cdRow('gasPrice', String(gasPrice), gasPrice === 0n ? 'ok' : 'crit',
+      gasPrice === 0n ? 'refund disabled' : 'the Safe may reimburse the executor — not expected here'),
+    cdRow('gasToken', `${holder(gasToken)} ${short(gasToken)}`, noGasToken ? 'ok' : 'crit',
+      noGasToken ? 'native token sentinel; inert while gasPrice is zero' : 'token reimbursement setting — not expected here', true),
+    cdRow('refundReceiver', `${holder(refundReceiver)} ${short(refundReceiver)}`, noRefundReceiver ? 'ok' : 'crit',
+      noRefundReceiver ? 'default refund receiver; inert while gasPrice is zero' : 'attacker-chosen refund receiver — not expected here', true),
+    cdRow('signatures', `${signatureBytes} bytes`, '',
+      'ABI-valid bytes only — the Safe verifies signer ownership and threshold on-chain'),
   ];
   return { rows, inner: data };
 }
@@ -2646,6 +2669,8 @@ function cdRenderRows(title, rows, extra) {
 
 function decodeCalldataInput() {
   const out = document.getElementById('cd-out');
+  cdAttest = null;
+  renderArtifactChecks();
   const raw = (document.getElementById('cd-in').value || '').replace(/[\s"',]/g, '');
   cdLast = raw;
   if (!raw) { out.innerHTML = ''; return; }
@@ -2688,7 +2713,7 @@ function decodeCalldataInput() {
   html = (byDesign ? `<div class="err-banner">✕ irreversible by design — sign only if this is exactly the action you intend</div>`
     : crits ? `<div class="err-banner">✕ ${crits} field${crits > 1 ? 's' : ''} say${crits > 1 ? '' : 's'} STOP — do not sign this as it stands</div>`
     : warns ? `<div class="err-banner">⚠ ${warns} field${warns > 1 ? 's' : ''} to confirm deliberately — read the notes before signing</div>`
-    : `<div class="cdsum">✓ Every field matches this page's pins. Where you send it from is still yours to check.</div>`) + html;
+    : `<div class="cdsum">✓ No checked field conflicts with this page's pins. Where you send it from is still yours to check.</div>`) + html;
   html += cdRenderRows(ex.title, ex.rows, ex.extra);
   html += `<div class="cdsum">Send to <strong>${holder(L1.workflowRegistry)}</strong> <span class="mono">${short(L1.workflowRegistry)}</span> on Ethereum mainnet, from the linked owner. This page checked the calldata, not where you send it.</div>`;
   out.innerHTML = html;

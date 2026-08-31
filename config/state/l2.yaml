@@ -60,7 +60,7 @@ l1:
           args: [*creWorkflowId]
           result:
             workflowId: *creWorkflowId
-            owner: *l2AutomationOwner
+            owner: *creWorkflowOwner
             createdAt: null
             status: 0 # ACTIVE
             workflowName: *creWorkflowName
@@ -215,7 +215,7 @@ l2:
       checks:
         owner: *l2AutomationOwner
         getForwarder: *l2CreForwarder
-        getExpectedAuthor: *l2AutomationOwner # CRE workflow owner = Automation Owner = CREReceiver owner
+        getExpectedAuthor: *creWorkflowOwner # consolidated CRE workflow is registered by the Test Automation Safe
         isCallAllowed:
           - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
             result: true
