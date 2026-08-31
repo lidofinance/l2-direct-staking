@@ -4,10 +4,8 @@
 # The workflow polls SyncTrigger.shouldSyncAmount() + canSync() and, when a sync is both
 # due and executable, encodes a triggerSync() call and delivers it via the CRE Receiver.
 #
-# Targets mirror ../project.yaml: `simulate-settings` plus one `production-<net>` per lane. Each
-# production target names its own workflow AND its own config file, so the lane is fully determined by
-# `--target` (`just deploy-cre-workflow` derives it from L2_NETWORK) — no --config override needed, and
-# the four lanes cannot collide on one registered workflow name under the same owner.
+# Targets mirror ../project.yaml: `simulate-settings`, one consolidated `production` target, and the
+# retained `production-<net>` targets used only to retire the old per-lane registrations.
 
 # ==========================================================================
 simulate-settings:
@@ -16,6 +14,26 @@ simulate-settings:
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.simulate.json"
+    secrets-path: ""
+
+# ==========================================================================
+# CONSOLIDATED target — ONE registered workflow for all four lanes (direct-staking-sync-test), the layout
+# chosen on 2026-08-18. Its config carries a `lanes[]` array (one cron trigger per lane, hourly and
+# staggered) instead of a single `chainSelectorName`, so the lane is no longer a property of the target.
+#
+# The four `production-<net>` targets below are DELIBERATELY KEPT while the Automation Owner's four
+# per-lane workflows are still registered: `cre workflow pause|delete` resolves the workflow NAME
+# through the target, so retiring them needs their targets to still exist. Remove them only after that
+# retirement is done.
+# The name is one of the inputs to the content-derived workflowId, so renaming this REGISTERS A NEW
+# WORKFLOW rather than renaming the existing record — the old one (if any) has to be retired separately,
+# and every derived pin (`just cre-workflow-hash`, the dashboard's CRE_WORKFLOW_NAME) moves with it.
+production:
+  user-workflow:
+    workflow-name: "direct-staking-sync-test"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.deploy.json"
     secrets-path: ""
 
 # ==========================================================================

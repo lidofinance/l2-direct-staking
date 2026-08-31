@@ -25,4 +25,5 @@ externals:
   # neither EOA admin, so the check remains valid without a fork override.
   - &l2LidoDeployer "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
   - &l2AutomationOwner "0xBdF111fec2e818Ad9c76fbBaE46144746AD55773"
+  - &creWorkflowOwner "0xede1750ac52156e10be2b41d8b8df816d58bafe1"
   - &creWorkflowRegistry "0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5"

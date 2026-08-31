@@ -34,8 +34,8 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
 
   | Tier | Where | Holds |
   |---|---|---|
-  | Machine | shell profile, never in the repo | `RPC_<CHAIN>_REMOTE` (upstream), `RPC_<CHAIN>` (local fork proxy) |
-  | Secrets | root `.env` (gitignored) | one key per actor + API tokens — **no RPCs, no CRE_\* aliases** |
+  | Machine | shell profile or root `.env` (gitignored) | `RPC_<CHAIN>_REMOTE` (upstream), `RPC_<CHAIN>` (local fork proxy) |
+  | Secrets | root `.env` (gitignored) | one key per actor + API tokens — **no CRE_\* aliases** |
   | Lane | `.env.<network>` (committed) | `L2_NETWORK`, RPC bindings |
   | Lane deployed state | `config/state/<network>.deployed.yaml` | content-derived workflow ID + deployed L2 addresses |
 

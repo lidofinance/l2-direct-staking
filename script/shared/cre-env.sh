@@ -15,7 +15,7 @@
 # Canonical variables (see RUNBOOK "Env model"):
 #   secrets, root .env         L2_AUTOMATION_OWNER_PRIVATE_KEY (or _PK) · L2_AUTOMATION_OWNER
 #   lane facts, .env.<network> L2_NETWORK · L1_RPC_URL · L2_RPC_URL
-#   machine, shell profile     RPC_ETHEREUM_REMOTE (upstream) · RPC_ETHEREUM (local fork proxy)
+#   machine, shell/root .env   RPC_<CHAIN>_REMOTE (upstream) · RPC_ETHEREUM (local fork proxy)
 
 cre_env_die() {
   echo "cre-env: $*" >&2
@@ -56,11 +56,43 @@ cre_env_load_secrets() {
   return 0
 }
 
+# Load machine-level live RPC bindings from the ignored root .env when `just -E .env.<network>`
+# replaces the normal two-file dotenv list. These canonical values are literal URLs.
+cre_env_load_rpc_bindings() {
+  local dotenv name value
+  dotenv="$(cre_env_root)/.env"
+  [[ -f "$dotenv" ]] || return 0
+  for name in RPC_ETHEREUM_REMOTE RPC_OPTIMISM_REMOTE RPC_ARBITRUM_REMOTE \
+              RPC_BASE_REMOTE RPC_LINEA_REMOTE; do
+    [[ -z "${!name:-}" ]] || continue
+    value="$(grep -m1 "^[[:space:]]*${name}=" "$dotenv" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"'\r' | xargs 2>/dev/null || true)"
+    [[ -n "$value" ]] && export "$name=$value"
+  done
+  return 0
+}
+
+# The consolidated workflow opens clients for every lane in one process. Export the four names used by
+# project.yaml from the canonical machine bindings while honoring an explicit legacy alias.
+cre_env_export_all_l2_rpcs() {
+  local net upper alias remote value
+  cre_env_load_rpc_bindings
+  for net in optimism arbitrum base linea; do
+    upper="$(printf '%s' "$net" | tr '[:lower:]' '[:upper:]')"
+    alias="L2_${upper}_RPC_URL"
+    remote="RPC_${upper}_REMOTE"
+    value="${!alias:-${!remote:-}}"
+    [[ -n "$value" ]] \
+      || cre_env_die "no $net RPC. Set $remote in the root .env (or export $alias)." || return 1
+    export "$alias=$value"
+  done
+}
+
 # Ethereum-mainnet RPC for LIVE reads/writes. Precedence: the explicit repo binding first, then the
 # upstream machine var, and the local fork proxy LAST — it is frequently down and serves a fork, so it
 # must never silently win for a mainnet operation (it stays the default only in the fork/anvil recipes,
 # which set it themselves).
 resolve_l1_rpc() {
+  cre_env_load_rpc_bindings
   local url="${L1_RPC_URL:-${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-}}}"
   [[ -n "$url" ]] || cre_env_die "no Ethereum-mainnet RPC. Set L1_RPC_URL in .env.<network> (bound to \${RPC_ETHEREUM_REMOTE})." || return 1
   printf '%s\n' "$url"
