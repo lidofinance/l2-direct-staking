@@ -246,6 +246,16 @@ tr.group a:hover { color: var(--accent); }
   letter-spacing: .1em; text-transform: uppercase;
 }
 .l1-metric .chip { display: block; width: auto; padding: 0; border: 0; background: transparent; }
+.params-checks {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px; padding: 14px 26px 20px;
+}
+.params-check { min-width: 0; }
+.params-check-label {
+  margin-bottom: 6px; color: var(--muted); font-size: 10.5px; font-weight: 650;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.params-check .chip { display: block; width: auto; }
 .l1-metric .chip .m { font-size: 15px; }
 
 .rowlabel { font-weight: 600; white-space: nowrap; }
@@ -323,6 +333,7 @@ footer {
   .hero { grid-template-columns: 1fr 1fr; }
   .hero > div { border-top: 1px solid var(--line); }
   .hero > div:first-child { border-top: none; }
+  .params-checks { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 600px) {
   .appbar { gap: 8px; padding: 10px 12px; }
@@ -349,6 +360,7 @@ footer {
   .l1-card-copy .desc { display: block; margin-top: 3px; }
   .l1-card-links { width: 100%; margin-left: 0; }
   .l1-metric-grid { grid-template-columns: 1fr; gap: 8px; padding: 0 16px 16px; }
+  .params-checks { grid-template-columns: 1fr; gap: 8px; padding: 10px 16px 16px; }
   .legend { margin-left: auto; }
   th, td { padding-left: 10px; padding-right: 10px; }
   th:first-child, td:first-child { padding-left: 16px; }
@@ -1864,8 +1876,8 @@ function renderAutomation() {
       // whose sha256 the record commits to is a different thing from an unchecked one, and the verdict
       // says which of the two you are looking at.
       ? (attrs.a.config === creConfigSha
-          ? { level: 'ok', html: chip('ok', 'config digest attested', 'the record commits to this repo\'s config.deploy.json'), count: true }
-          : { level: 'crit', html: chip('crit', 'attested config ≠ repo', `the record commits to <span class="mono">${esc(String(attrs.a.config ?? '—').slice(0, 16))}…</span>, this repo hashes to <span class="mono">${creConfigSha.slice(0, 16)}…</span>`), count: true })
+          ? { level: 'ok', html: chip('ok', 'matches repo', 'config.deploy.json'), count: true }
+          : { level: 'crit', html: chip('crit', 'does not match repo', `<span class="mono">${esc(String(attrs.a.config ?? '—').slice(0, 16))}…</span> ≠ <span class="mono">${creConfigSha.slice(0, 16)}…</span>`), count: true })
     : attrs.kind === 'config'
       ? (a => ({ level: a.level, html: chip(a.level, a.label, a.note + (a.level === 'ok' ? '' : ' — the table below shows the CHAIN\'s')), count: true }))(
           paramsAgreement(attrsHex, attrs.config, CRE_CONFIG_JSON, repoParams))
@@ -1875,7 +1887,7 @@ function renderAutomation() {
   const digRow = !SHA256_OK
     ? { level: 'crit', html: chip('crit', 'digest engine failed self-test', 'no digest on this page can be trusted'), count: true }
     : creConfigSha === CRE_CONFIG_SHA256
-      ? { level: 'ok', html: chip('ok', 'sha256 matches pin', `<span class="mono">${CRE_CONFIG_SHA256.slice(0, 16)}…</span>`), count: true }
+      ? { level: 'ok', html: chip('ok', 'matches pin', `<span class="mono">${CRE_CONFIG_SHA256.slice(0, 16)}…</span>`), count: true }
       : { level: 'crit', html: chip('crit', 'sha256 ≠ pin', `computed <span class="mono">${esc(creConfigSha.slice(0, 16))}…</span> — regenerate with just cre-workflow-hash`), count: true };
 
   // Row 3b — the source and binary the record attests to. Only the attestation can answer this: the
@@ -1885,9 +1897,9 @@ function renderAutomation() {
     : (() => {
         const srcOk = attrs.a.source === CRE_SOURCE_SHA256;
         return { level: srcOk ? 'ok' : 'crit', count: true, html: chip(srcOk ? 'ok' : 'crit',
-          srcOk ? 'source digest attested' : 'attested source ≠ repo',
-          srcOk ? `main.ts <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span> — the compiled binary is not attested (its build is not reproducible)`
-            : `the record commits to <span class="mono">${esc(String(attrs.a.source ?? '—').slice(0, 16))}…</span>, this repo's main.ts hashes to <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span>`) };
+          srcOk ? 'matches repo' : 'does not match repo',
+          srcOk ? `main.ts <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span>`
+            : `<span class="mono">${esc(String(attrs.a.source ?? '—').slice(0, 16))}…</span> ≠ <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span>`) };
       })();
 
   // Row 4 — the addresses the params point at. A config that is internally valid but aims at the wrong
@@ -1895,7 +1907,7 @@ function renderAutomation() {
   const addrOk = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
   const tgtRow = !paramsSrc ? { level: 'crit', html: chip('crit', 'params unparseable', 'neither chain nor repo yielded a config'), count: true }
     : addrOk(paramsSrc.receiverAddress, COMMON_DEPLOYED.creReceiver) && addrOk(paramsSrc.targetAddress, COMMON_DEPLOYED.syncTrigger)
-      ? { level: 'ok', html: chip('ok', 'receiver + target pinned', `${short(COMMON_DEPLOYED.creReceiver)} → ${short(COMMON_DEPLOYED.syncTrigger)}`), count: true }
+      ? { level: 'ok', html: chip('ok', 'addresses match', `${short(COMMON_DEPLOYED.creReceiver)} → ${short(COMMON_DEPLOYED.syncTrigger)}`), count: true }
       : { level: 'crit', html: chip('crit', 'addresses off-pin',
           `receiver <span class="mono">${esc(short(paramsSrc.receiverAddress))}</span> · target <span class="mono">${esc(short(paramsSrc.targetAddress))}</span>`), count: true };
 
@@ -1908,32 +1920,20 @@ function renderAutomation() {
   const paramsCard = `<div class="card">
     <div class="card-head">
       <h3>Deployed Parameters</h3>
-      <span class="desc">One registration, four lanes — the lane table lives in the workflow's config, not in the
-      registry. The artifact store is 403 to everyone but the DON, so the record's <span class="mono">attributes</span>
-      carry digests of the config and the source instead, and those are checked here against this page's own copies.
-      <strong>What that establishes is a declaration, not execution:</strong> a green row means the config and code shown
-      here are the ones declared when the workflow was registered — it is not evidence that the DON runs them.</span>
-      ${legendHtml()}
+      <span class="desc">Digests show what was declared, not what the DON runs.</span>
     </div>
-    <div class="scroll-x"><table class="syncm">
-      <tr><th>Question</th><th>Answer</th><th>What it rests on</th></tr>
-      <tr><td class="rowlabel">is it registered?</td><td>${recRow.html}</td>
-          <td class="s">${cons ? `<span class="mono">${short(cons.t[WF.id])}</span> · workflowId is an identity, not a check —
-            the compiled binary it hashes is not reproducible` : `owner ${holder(CRE_WF_OWNER)} · name <span class="mono">${esc(CRE_WORKFLOW_NAME)}</span>`}</td></tr>
-      <tr><td class="rowlabel">are the params attested?</td><td>${pubRow.html}</td>
-          <td class="s">the record's <span class="mono">attributes</span> ↔ config.deploy.json — the same digest sha256 feeds into the workflowId</td></tr>
-      <tr><td class="rowlabel">which source?</td><td>${srcRow.html}</td>
-          <td class="s">only the attestation can say — the uploaded artifacts are 403 to everyone but the DON. Re-hash <span class="mono">main.ts</span> in the 🧪 CRE Calldata tab</td></tr>
-      <tr><td class="rowlabel">does this page show them faithfully?</td><td>${digRow.html}</td>
-          <td class="s">sha256 recomputed in the browser · the same digest the workflowId commits to</td></tr>
-      <tr><td class="rowlabel">do they aim at our contracts?</td><td>${tgtRow.html}</td>
-          <td class="s">receiverAddress → CREReceiver · targetAddress → SyncTrigger</td></tr>
-    </table></div>
-    <div class="card-head"><span class="desc">Lane triggers — <strong>${
-      paramsOrigin === 'chain' ? 'read from the record'
-      : paramsOrigin === 'attested' ? 'this repo\'s copy, and the record commits to its digest'
-      : 'this repo\'s copy, unconfirmed by any chain read'}</strong> ·
-      write gas limit <span class="mono">${esc(paramsSrc?.writeGasLimit ?? '—')}</span></span></div>
+    <div class="params-checks">
+      <div class="params-check"><div class="params-check-label">Registration</div>${recRow.html}</div>
+      <div class="params-check"><div class="params-check-label">Config</div>${pubRow.html}</div>
+      <div class="params-check"><div class="params-check-label">Source</div>${srcRow.html}</div>
+      <div class="params-check"><div class="params-check-label">Config hash</div>${digRow.html}</div>
+      <div class="params-check"><div class="params-check-label">Contracts</div>${tgtRow.html}</div>
+    </div>
+    <div class="card-head"><span class="desc">Lane triggers · <strong>${
+      paramsOrigin === 'chain' ? 'on-chain config'
+      : paramsOrigin === 'attested' ? 'attested repo config'
+      : 'unverified repo config'}</strong> ·
+      gas <span class="mono">${esc(paramsSrc?.writeGasLimit ?? '—')}</span></span></div>
     ${laneTab.html}
     ${laneTab.issues.map(i => `<div class="err-banner">${i.level === 'crit' ? '✕' : '⚠'} ${i.text}${
       i.level === 'crit' && laneTab.missing.length ? ` — ${paramsFromChain ? 'the registered config drives fewer lanes than this dashboard tracks' : 'the repo config is short a lane'}` : ''}</div>`).join('')}
