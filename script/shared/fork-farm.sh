@@ -56,7 +56,7 @@ spawn_fork() {
   local spawn_t=$SECONDS
   : "${FORK_FARM_LOG_DIR:?set FORK_FARM_LOG_DIR before spawn_fork}"
   FORK_URL="http://127.0.0.1:$port"
-  anvil --silent --auto-impersonate -p "$port" -f "$upstream" >"$FORK_FARM_LOG_DIR/$name.log" 2>&1 &
+  anvil --hardfork amsterdam --silent --auto-impersonate -p "$port" -f "$upstream" >"$FORK_FARM_LOG_DIR/$name.log" 2>&1 &
   ANVIL_PIDS="$ANVIL_PIDS $!"
   echo "$name fork: $FORK_URL (upstream $upstream)"
   wait_for_rpc "$FORK_URL" "$name"

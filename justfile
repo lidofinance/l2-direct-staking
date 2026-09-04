@@ -1621,7 +1621,8 @@ _repoint-sync-role-preflight next retired admin:
 # each contract's ACTUAL constructor args from chain via forge's --guess-constructor-args. The canary
 # deploys with deployer-owned infra + test values, so re-deriving args from production constants
 # would NOT match the deployed bytecode — let forge read what was actually deployed. Compiler settings
-# (solc 0.8.34 / evm osaka / default optimizer) come from foundry.toml automatically, so the standard
+# (solc 0.8.34 / evm osaka / Amsterdam runtime / default optimizer) come from foundry.toml automatically,
+# so the standard
 # JSON matches the deployed bytecode by construction — do not set a different FOUNDRY_PROFILE.
 #
 # If a lane's explorer endpoint ever regresses, add: --verifier-url 'https://api.etherscan.io/v2/api'
@@ -5156,19 +5157,19 @@ cre *ARGS:
 # ──────────────────────────────────────────────────────────────────
 
 rpc-start-l1:
-    anvil -p 8545 -f "$L1_RPC_URL"
+    anvil --hardfork amsterdam -p 8545 -f "$L1_RPC_URL"
 
 rpc-start-optimism:
-    anvil -p 8551 -f "$L2_OPTIMISM_RPC_URL"
+    anvil --hardfork amsterdam -p 8551 -f "$L2_OPTIMISM_RPC_URL"
 
 rpc-start-arbitrum:
-    anvil -p 8552 -f "$L2_ARBITRUM_RPC_URL"
+    anvil --hardfork amsterdam -p 8552 -f "$L2_ARBITRUM_RPC_URL"
 
 rpc-start-base:
-    anvil -p 8553 -f "$L2_BASE_RPC_URL"
+    anvil --hardfork amsterdam -p 8553 -f "$L2_BASE_RPC_URL"
 
 rpc-start-linea:
-    anvil -p 8554 -f "$L2_LINEA_RPC_URL"
+    anvil --hardfork amsterdam -p 8554 -f "$L2_LINEA_RPC_URL"
 
 # ──────────────────────────────────────────────────────────────────
 # Arbitrum pool upgrade
