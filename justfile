@@ -3426,6 +3426,10 @@ cre-workflow-hash:
 cre-attach-params:
     @bash "{{justfile_directory()}}/script/commands/cre-attach-params.sh"
 
+# Retry an L1 MessageFailed event: dry-run (default) or send.
+retry-failed-message tx mode='dry-run' message_id='':
+    @bash "{{justfile_directory()}}/script/commands/retry-failed-message.sh" "{{tx}}" "{{mode}}" "{{message_id}}"
+
 # Run all CRE tests (Solidity + TypeScript)
 test-cre-all: test-cre test-cre-workflow
 
