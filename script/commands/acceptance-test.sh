@@ -111,9 +111,6 @@ for i in $(seq 0 $((NET_COUNT - 1))); do
   spawn_fork "${NET_NAMES[$i]}" "${L2_UPSTREAMS[$i]}" "$((BASE_PORT + 1 + i))" "$cooldown"
   fork_url="$FORK_URL"
   L2_FORK_URLS+=("$fork_url")
-  # Snapshot before migration. Reverting in Step 4 keeps the warmed upstream cache.
-  snap="$(cast rpc --rpc-url "$fork_url" evm_snapshot | tr -d '"\r\n')"
-  L2_FORK_SNAPSHOTS+=("$snap")
 done
 echo "All forks ready"
 
@@ -157,6 +154,10 @@ for i in $(seq 0 $((NET_COUNT - 1))); do
   trigger_addr="$(cast to-check-sum-address "$trigger_addr")"
   recv_addr="$(cast to-check-sum-address "$recv_addr")"
   export L2_ORACLE_POOL="$pool_addr" L2_SYNC_TRIGGER="$trigger_addr" L2_CRE_RECEIVER="$recv_addr"
+
+  # Forge suites bind to the deployed canary, before activate/handoff/finalize.
+  snap="$(cast rpc --rpc-url "$fork_url" evm_snapshot | tr -d '"\r\n')"
+  L2_FORK_SNAPSHOTS+=("$snap")
 
   substep "0→1: activate (INITIAL_OWNER repoints pool + grants SYNC_ROLE)"
   (
@@ -252,10 +253,10 @@ substep "L1: running state-mate checks against fork"
 ) || die "L1 state-mate failed"
 echo "L1 state-mate checks passed"
 
-# Step 4: Forge tests rerun migration and need the original state.
+# Step 4: Forge tests bind to Stage-1 canaries and rerun the remaining migration.
 # Revert L2 snapshots while retaining the warmed cache; use the untouched L1 upstream.
 # vm.createFork keeps each suite's changes in memory.
-substep "Reverting L2 forks to pristine snapshots (clean + warm) for forge tests"
+substep "Restoring L2 Stage-1 canary snapshots for forge tests"
 for i in $(seq 0 $((NET_COUNT - 1))); do
   cast rpc --rpc-url "${L2_FORK_URLS[$i]}" evm_revert "${L2_FORK_SNAPSHOTS[$i]}" >/dev/null ||
     die "${NET_NAMES[$i]} evm_revert to snapshot ${L2_FORK_SNAPSHOTS[$i]} failed"
@@ -272,6 +273,9 @@ for i in $(seq 0 $((NET_COUNT - 1))); do
     export L1_RPC_URL="$L1_UPSTREAM"
     export "$l2_env=${L2_FORK_URLS[$i]}"
     export "LOCAL_$l2_env=${L2_FORK_URLS[$i]}"
+    export L2_ORACLE_POOL="${DEPLOYED_POOLS[$i]}"
+    export L2_SYNC_TRIGGER="${DEPLOYED_TRIGGERS[$i]}"
+    export L2_CRE_RECEIVER="${DEPLOYED_RECEIVERS[$i]}"
     export ETH_RPC_TIMEOUT="${ETH_RPC_TIMEOUT:-120}"
     forge test --match-contract "${NET_TESTS[$i]}" -vv
   ) || die "$name forge tests failed"

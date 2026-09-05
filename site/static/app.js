@@ -1298,6 +1298,9 @@ async function blockscoutIndexedBlock() {
 
 async function failedMessageData() {
   const [rpcHead, indexedHead] = await Promise.all([rpcBlockNumber(L1), blockscoutIndexedBlock()]);
+  const maxIndexLag = 64;
+  if (rpcHead - indexedHead > maxIndexLag)
+    throw new Error(`L1 indexer is ${rpcHead - indexedHead} blocks behind RPC (maximum ${maxIndexLag})`);
   const atBlock = Math.min(rpcHead, indexedHead);
   const failedLogs = await l1ReceiverLogs(MESSAGE_FAILED_TOPIC, atBlock);
   const retriedLogs = await l1ReceiverLogs(MESSAGE_RECOVERED_TOPIC, atBlock);
