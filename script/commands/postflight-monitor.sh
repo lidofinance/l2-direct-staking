@@ -29,15 +29,6 @@ TRAP_ALERT_WEI="1000000000000000000" # §2: alert if a balance > 1 ETH(-equiv)
 
 rc=0
 source script/shared/chain-read.sh
-# a>=b (awk doubles — heuristic at wei scale)
-ge() {
-  awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0>=b+0)}'
-}
-
-lt() {
-  awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0< b+0)}'
-}
-
 # Disable colors in pipes and when NO_COLOR is set.
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_RST=$'\033[0m'
@@ -95,7 +86,7 @@ ck_addr() {
 ck_trap() {
   if ! is_uint "$2"; then
     WARN "$1 balance unreadable"
-  elif ge "$2" "$TRAP_ALERT_WEI"; then
+  elif uint_ge "$2" "$TRAP_ALERT_WEI"; then
     ALERT "$1 = $(cast from-wei "$2") (>1 ETH-equiv ⇒ page)"
   else
     OK "$1 = $(cast from-wei "$2")"
@@ -244,10 +235,12 @@ for net in "${NETS[@]}"; do
     SKIP "${name} — inputs file not found: $INF"
     continue
   }
-  url="${!rpc_env:-}"
-  [[ -n "$url" ]] || url="${!l2_env:-}"
+  remote_env="${rpc_env}_REMOTE"
+  url="${!l2_env:-}"
+  [[ -n "$url" ]] || url="${!remote_env:-}"
+  [[ -n "$url" ]] || url="${!rpc_env:-}"
   if [[ -z "$url" ]]; then
-    SKIP "${name} — set ${rpc_env} (or legacy ${l2_env})"
+    SKIP "${name} — set ${l2_env} or ${remote_env} (${rpc_env} is the local fallback)"
     continue
   fi
   if ! chain_id=$(cast chain-id --rpc-url "$url" 2>/dev/null); then
@@ -374,7 +367,7 @@ for net in "${NETS[@]}"; do
       age=$((nowts - le))
       ah=$((age / 3600))
       due_by_pool=0
-      [[ "$poolweth" =~ ^[0-9]+$ && "$SYNCMIN" =~ ^[0-9]+$ ]] && ge "$poolweth" "$SYNCMIN" && due_by_pool=1
+      [[ "$poolweth" =~ ^[0-9]+$ && "$SYNCMIN" =~ ^[0-9]+$ ]] && uint_ge "$poolweth" "$SYNCMIN" && due_by_pool=1
       if ((ah > 24)) && ((due_by_pool == 1)); then
         WARN "§3 last sync ${ah}h ago while pool WETH ≥ min — investigate stall"
       else
@@ -404,9 +397,9 @@ for net in "${NETS[@]}"; do
     mf="$(rd "$url" "$TRIG" 'getMaxFees()(uint256)')"
     if [[ "$flo" =~ ^[0-9]+$ && "$mf" =~ ^[0-9]+$ && "$mf" != "0" ]]; then
       ratio="$(awk -v f="$flo" -v m="$mf" 'BEGIN{printf "%.2f", f/m}')"
-      if lt "$flo" "$mf"; then
+      if ! uint_ge "$flo" "$mf"; then
         ALERT "§5 float ${ratio}× getMaxFees (< 1× = next sync reverts, lane stalls): $(cast from-wei "$flo") / $(cast from-wei "$mf") ETH"
-      elif lt "$flo" "$(awk -v m="$mf" 'BEGIN{printf "%.0f", 2*m}')"; then
+      elif ! uint_ge "$flo" "$(uint_double "$mf")"; then
         WARN "§5 float ${ratio}× getMaxFees (< 2× — top up): $(cast from-wei "$flo") / $(cast from-wei "$mf") ETH"
       else
         OK "§5 float ${ratio}× getMaxFees ($(cast from-wei "$flo") ETH)"

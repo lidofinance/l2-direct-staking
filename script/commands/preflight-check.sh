@@ -3,6 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 source script/shared/cre-env.sh
+source script/shared/chain-read.sh
 : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
 # L2 RPC comes from L2_RPC_URL, defined by the selected .env.<network> overlay.
 : "${L2_RPC_URL:?Set L2_RPC_URL in .env.$L2_NETWORK}"
@@ -326,11 +327,6 @@ if ! [[ "$MIN_WEI" =~ ^[0-9]+$ ]]; then
   MIN_ETH=0.01
   MIN_WEI=10000000000000000
 fi
-# Approximate wei comparison for warnings; the separate string test detects zero exactly.
-ge() {
-  awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0>=b+0)}'
-}
-
 SIGNERS_CHECKED=
 check_signer() {
   # $1 label   $2 private-key (may be empty)   $3 address override (may be empty)
@@ -360,7 +356,7 @@ check_signer() {
   eth=$(cast from-wei "$bal" 2>/dev/null || echo "?")
   if [[ "$bal" == "0" ]]; then
     warn "$label $addr has 0 ETH — it CANNOT pay gas; fund it before broadcasting this stage"
-  elif ge "$bal" "$MIN_WEI"; then
+  elif uint_ge "$bal" "$MIN_WEI"; then
     pass "$label $addr funded = $eth ETH (>= $MIN_ETH ETH buffer)"
   else
     warn "$label $addr balance = $eth ETH is below the $MIN_ETH ETH buffer — top up before broadcasting this stage"
