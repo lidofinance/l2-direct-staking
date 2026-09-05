@@ -18,6 +18,27 @@ The operator procedure is in **[`RUNBOOK.md`](../RUNBOOK.md)**. This table is on
 
 # Tests
 
+## Command scripts
+
+Long shell recipes live in `script/commands/`; reusable functions live in
+`script/shared/`. Keep using the existing `just` commands so dotenv loading stays
+consistent. Direct `bash script/commands/<command>.sh` calls use the exported environment.
+
+Use multiline functions and conditionals, two-space indentation, and one operation
+per line. Comments should explain constraints, especially RPC precedence and transaction guards.
+
+`just cre-workflow-hash` checks dashboard pins against the source files.
+`just cre-attach-params` hashes the source files directly and does not depend on
+dashboard pins.
+
+`just retry-failed-message <L1-tx> [dry-run|send] [message-id]` checks the receiver's
+`MessageFailed` event and stored hash, then simulates the retry. The default
+`dry-run` prints calldata without sending. Export `RETRY_PRIVATE_KEY` to simulate
+from its address and sign in `send` mode. Without a key, `dry-run` uses `ETH_FROM`
+or the zero address. `send` requires the key, simulates, then broadcasts.
+Both modes send zero ETH; the sending account needs L1 gas. Supply `message-id`
+when the receipt contains multiple failures. Already handled messages are rejected.
+
 ## Pool upgrade tests (fork-based)
 
 - Shared harness:
