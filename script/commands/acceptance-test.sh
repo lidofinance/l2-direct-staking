@@ -67,7 +67,7 @@ address_from_key() {
 
 # ── Step 0: Preflight ──────────────────────────────────────────
 step "Step 0: Preflight checks"
-for cmd in forge cast anvil node yarn; do
+for cmd in forge cast anvil node yarn jq yq; do
   command -v "$cmd" >/dev/null 2>&1 || die "Missing: $cmd"
 done
 

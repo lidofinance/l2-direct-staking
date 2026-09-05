@@ -165,7 +165,8 @@ if [[ "$SEED" == "0" ]]; then
 else
   ge "$sig_wst" "$SEED" || die "signer wstETH $sig_wst < seed $SEED — acquire a little wstETH on $L2_NETWORK first (or SMOKE_SEED_WSTETH=0 to stake against existing pool liquidity)"
   if [[ -n "$expected_out" ]]; then
-    ge "$SEED" "$expected_out" || die "seed $SEED < expected output $expected_out — raise SMOKE_SEED_WSTETH (swap would revert OraclePoolInsufficientTokenOut)"
+    post_seed_reserve="$(echo "$pool_wst0 + $SEED" | bc)"
+    ge "$post_seed_reserve" "$expected_out" || die "pool reserve after seed $post_seed_reserve < expected output $expected_out — raise SMOKE_SEED_WSTETH (swap would revert OraclePoolInsufficientTokenOut)"
   fi
 fi
 if [[ "$STAKE_TOKEN" == native ]]; then

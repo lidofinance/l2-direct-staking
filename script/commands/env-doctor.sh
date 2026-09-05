@@ -131,9 +131,17 @@ for net in "${LANES[@]}"; do
     RECV="${L2_CRE_RECEIVER:-}"
     TRIG="${L2_SYNC_TRIGGER:-}"
   else
-    # No dotenv overlay for this lane in-process: read the file, expanding ${RPC_*} from the shell.
+    # Expand only a complete ${RPC_*} binding; never evaluate dotenv values as shell code.
     L2="$(grep -m1 '^L2_RPC_URL=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
-    L2="$(eval printf '%s' "\"${L2}\"" 2>/dev/null || true)"
+    L2="${L2%\"}"
+    L2="${L2#\"}"
+    L2="${L2%\'}"
+    L2="${L2#\'}"
+    rpc_binding='^\$\{(RPC_[A-Za-z0-9_]+)\}$'
+    if [[ "$L2" =~ $rpc_binding ]]; then
+      rpc_var="${BASH_REMATCH[1]}"
+      L2="${!rpc_var:-}"
+    fi
     RECV="$(grep -m1 '^L2_CRE_RECEIVER=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
     TRIG="$(grep -m1 '^L2_SYNC_TRIGGER=' "$ROOT_DIR/.env.$net" 2>/dev/null | cut -d= -f2- || true)"
     INFO "(read from .env.$net — run with NETWORK=$net for the fully loaded overlay)"
