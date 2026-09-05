@@ -1298,11 +1298,13 @@ async function failedMessageData() {
   const lifecycle = [...retriedLogs, ...recoveredLogs].map(parseFailedLifecycleLog);
   if (decoded.some(message => !message) || lifecycle.some(event => !event))
     throw new Error('unrecognized receiver event');
+  if (decoded.some(message => message.timestamp == null))
+    throw new Error('receiver event timestamp unavailable');
   const messages = [...new Map(decoded.filter(message => message.timestamp >= FAILURES_SINCE)
     .map(message => [message.messageId, message])).values()];
   const hashes = await rpcBatch(L1.rpc, messages.map(message => ({ method: 'eth_call', params: [{
     to: L1.receiver, data: SEL.failedMessageHash + message.messageId.slice(2),
-  }, 'latest'] })));
+  }, '0x' + atBlock.toString(16)] })));
   if (hashes.some(hash => !/^0x[0-9a-f]{64}$/i.test(hash ?? '')))
     throw new Error('failed-message state unreadable');
   return messages.map((message, i) => {
