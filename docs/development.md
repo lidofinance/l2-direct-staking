@@ -18,6 +18,20 @@ The operator procedure is in **[`RUNBOOK.md`](../RUNBOOK.md)**. This table is on
 
 # Tests
 
+## Command scripts
+
+Long shell recipes live in `script/commands/`; reusable functions live in
+`script/shared/`. Keep using the existing `just` commands so dotenv loading stays
+consistent. Direct `bash script/commands/<command>.sh` calls use the exported environment.
+
+Use multiline functions and conditionals, two-space indentation, and one operation
+per line. Comments should explain constraints, especially RPC precedence and transaction guards.
+
+Run `just test-scripts` for local command tests (Node.js, Bash, `cast`, and `jq`;
+no RPC or real credentials). `just cre-workflow-hash` checks dashboard pins against
+the source files. `just cre-attach-params` hashes the source files directly and does
+not depend on dashboard pins.
+
 ## Pool upgrade tests (fork-based)
 
 - Shared harness:
