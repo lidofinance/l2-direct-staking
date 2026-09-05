@@ -125,7 +125,7 @@ p_out="$(parse_num "$(cast call "$POOL" 'TOKEN_OUT()(address)' --rpc-url "$L2_RP
 p_sender="$(parse_num "$(cast call "$POOL" 'SENDER()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
 p_paused="$(parse_num "$(cast call "$POOL" 'paused()(bool)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
 p_fee="$(parse_num "$(cast call "$POOL" 'getFee()(uint96)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
-is_uint "$p_fee" || p_fee=0
+is_uint "$p_fee" || die "could not read pool.getFee(); refusing to stake"
 eqa "$p_in" "$WETH" || die "pool.TOKEN_IN()=$p_in != l2Weth $WETH"
 eqa "$p_out" "$WSTETH" || die "pool.TOKEN_OUT()=$p_out != l2Wsteth $WSTETH"
 eqa "$p_sender" "$SENDER" || die "pool.SENDER()=$p_sender != $SENDER"

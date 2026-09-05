@@ -147,8 +147,10 @@ L1_RPC="${L1_RPC_URL:-${RPC_ETHEREUM_REMOTE:-${RPC_ETHEREUM:-}}}"
 L1_IN="${ROOT_DIR}/config/state/ethereum.inputs.yaml"
 if [[ -z "$L1_RPC" ]]; then
   SKIP "L1 pass — set L1_RPC_URL in .env.<network> (or RPC_ETHEREUM_REMOTE)"
-elif ! cast chain-id --rpc-url "$L1_RPC" >/dev/null 2>&1; then
+elif ! chain_id=$(cast chain-id --rpc-url "$L1_RPC" 2>/dev/null); then
   SKIP "L1 pass — RPC not reachable: $L1_RPC"
+elif [[ "$chain_id" != 1 ]]; then
+  ALERT "L1 pass — RPC chain-id $chain_id, expected 1; skipping"
 else
   # L1 receiver decoded from the bytes32 anchor in the common L2 inputs; DAO agent + wstETH
   # come from the independently verified L1 inputs (one yq pass).
@@ -223,6 +225,12 @@ fi
 # ════════════════════════ L2 lanes (×4) ════════════════════════
 NETS=(optimism arbitrum base linea)
 for net in "${NETS[@]}"; do
+  case "$net" in
+    optimism) expected_chain_id=10 ;;
+    arbitrum) expected_chain_id=42161 ;;
+    base) expected_chain_id=8453 ;;
+    linea) expected_chain_id=59144 ;;
+  esac
   u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
   name="${u:0:1}${net:1}"
   rpc_env="RPC_$u"
@@ -241,8 +249,12 @@ for net in "${NETS[@]}"; do
     SKIP "${name} — set ${rpc_env} (or legacy ${l2_env})"
     continue
   fi
-  if ! cast chain-id --rpc-url "$url" >/dev/null 2>&1; then
+  if ! chain_id=$(cast chain-id --rpc-url "$url" 2>/dev/null); then
     SKIP "${name} — ${rpc_env} not reachable: ${url}"
+    continue
+  fi
+  if [[ "$chain_id" != "$expected_chain_id" ]]; then
+    ALERT "${name} — RPC chain-id $chain_id, expected $expected_chain_id; skipping"
     continue
   fi
   FB="$(blocks_back "$url" || true)" # one block-window probe per lane, reused by the §4 + §3 event scans

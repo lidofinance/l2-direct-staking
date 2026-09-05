@@ -905,7 +905,7 @@ function parseSlowStakeLog(L, log) {
     kind: 'stake', label: 'Slow stake', amount: `${fmtAmt(amount)} WETH → L1`, cp: user };
 }
 
-async function blockscoutAddressLogs(base, address, topic) {
+async function blockscoutAddressLogs(base, address, topic, { limit = Infinity, since = null, accept = () => true } = {}) {
   const rows = [];
   const normalizedTopic = topic.toLowerCase();
   let nextPage = {};
@@ -917,22 +917,30 @@ async function blockscoutAddressLogs(base, address, topic) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const page = await res.json();
     if (!Array.isArray(page.items)) throw new Error('invalid logs response');
-    rows.push(...page.items
+    const logs = page.items
       .filter(item => (item.topics?.[0] ?? '').toLowerCase() === normalizedTopic)
       .map(item => ({
       topics: item.topics, data: item.data,
       blockNumber: item.block_number, logIndex: item.index,
       transactionHash: item.transaction_hash,
       timeStamp: item.block_timestamp ? Math.floor(Date.parse(item.block_timestamp) / 1000) : null,
-    })));
+    }));
+    for (const log of logs) {
+      if (since != null) {
+        if (!Number.isFinite(log.timeStamp)) throw new Error('receiver event timestamp unavailable');
+        if (log.timeStamp < since) return rows;
+      }
+      if (accept(log)) rows.push(log);
+      if (rows.length >= limit) return rows;
+    }
     nextPage = page.next_page_params;
   }
   if (nextPage) throw new Error('log history exceeds 5,000 rows');
   return rows;
 }
 
-async function senderLogs(L, topic) {
-  if (L.v2Logs) return blockscoutAddressLogs(L.bs, L.sender, topic);
+async function senderLogs(L, topic, options) {
+  if (L.v2Logs) return blockscoutAddressLogs(L.bs, L.sender, topic, options);
   if (L.logsRpc && !L.bs) {
     const logs = await rpcHistoryLogs(L, L.sender, [topic], L.senderFrom);
     const blockNumbers = [...new Set(logs.map(log => Number(BigInt(log.blockNumber))))];
@@ -953,7 +961,7 @@ async function senderLogs(L, topic) {
 }
 
 async function slowStakeData(L) {
-  const logs = await senderLogs(L, SLOW_STAKE_TOPIC);
+  const logs = await senderLogs(L, SLOW_STAKE_TOPIC, { limit: 50, accept: log => !!parseSlowStakeLog(L, log) });
   return logs.map(log => parseSlowStakeLog(L, log)).filter(Boolean);
 }
 
@@ -1276,7 +1284,7 @@ function parseFailedLifecycleLog(log) {
 }
 
 async function l1ReceiverLogs(topic, toBlock) {
-  return (await blockscoutAddressLogs(L1.bs, L1.receiver, topic))
+  return (await blockscoutAddressLogs(L1.bs, L1.receiver, topic, { since: FAILURES_SINCE }))
     .filter(log => log.blockNumber <= toBlock);
 }
 
