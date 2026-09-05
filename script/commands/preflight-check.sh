@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+source script/shared/cre-env.sh
 : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
 # L2 RPC comes from L2_RPC_URL, defined by the selected .env.<network> overlay.
 : "${L2_RPC_URL:?Set L2_RPC_URL in .env.$L2_NETWORK}"
@@ -118,7 +119,7 @@ has_code() {
 
 hdr "===================================================================="
 hdr "L2 PREFLIGHT CHECK: $L2_NETWORK"
-echo "  RPC URL:            $L2_RPC_URL"
+echo "  RPC URL:            $(cre_env_host "$L2_RPC_URL")"
 echo "  Expected chain-id:  $EXPECTED_CHAIN_ID"
 echo "  CustomSender:       $SENDER"
 echo "  Old oracle pool:    $POOL"

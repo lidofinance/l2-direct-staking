@@ -75,7 +75,7 @@ L1_UPSTREAM="${RPC_ETHEREUM:-${L1_RPC_URL:-}}"
 [[ -n "$L1_UPSTREAM" ]] || die "Set RPC_ETHEREUM"
 chain_id=$(cast chain-id --rpc-url "$L1_UPSTREAM") || die "L1 RPC not reachable"
 [[ "$chain_id" == 1 ]] || die "L1 RPC chain-id $chain_id, expected 1"
-echo "L1: $L1_UPSTREAM"
+echo "L1: $(cre_env_host "$L1_UPSTREAM")"
 
 # Collect and validate L2 RPCs (prefer RPC_<NET>, fall back to the legacy L2_<NET>_RPC_URL).
 L2_UPSTREAMS=()
@@ -88,7 +88,7 @@ for i in $(seq 0 $((NET_COUNT - 1))); do
   chain_id=$(cast chain-id --rpc-url "$rpc_val") || die "${NET_NAMES[$i]} RPC not reachable"
   [[ "$chain_id" == "${NET_CHAIN_IDS[$i]}" ]] || die "${NET_NAMES[$i]} RPC chain-id $chain_id, expected ${NET_CHAIN_IDS[$i]}"
   L2_UPSTREAMS+=("$rpc_val")
-  echo "${NET_NAMES[$i]}: $rpc_val"
+  echo "${NET_NAMES[$i]}: $(cre_env_host "$rpc_val")"
 done
 echo "All RPCs OK"
 

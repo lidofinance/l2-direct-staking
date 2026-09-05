@@ -2,6 +2,7 @@
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+source script/shared/cre-env.sh
 
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 for c in yq cast jq; do
@@ -148,7 +149,7 @@ L1_IN="${ROOT_DIR}/config/state/ethereum.inputs.yaml"
 if [[ -z "$L1_RPC" ]]; then
   SKIP "L1 pass — set L1_RPC_URL in .env.<network> (or RPC_ETHEREUM_REMOTE)"
 elif ! chain_id=$(cast chain-id --rpc-url "$L1_RPC" 2>/dev/null); then
-  SKIP "L1 pass — RPC not reachable: $L1_RPC"
+  SKIP "L1 pass — RPC not reachable: $(cre_env_host "$L1_RPC")"
 elif [[ "$chain_id" != 1 ]]; then
   ALERT "L1 pass — RPC chain-id $chain_id, expected 1; skipping"
 else
@@ -250,7 +251,7 @@ for net in "${NETS[@]}"; do
     continue
   fi
   if ! chain_id=$(cast chain-id --rpc-url "$url" 2>/dev/null); then
-    SKIP "${name} — ${rpc_env} not reachable: ${url}"
+    SKIP "${name} — ${rpc_env} not reachable: $(cre_env_host "$url")"
     continue
   fi
   if [[ "$chain_id" != "$expected_chain_id" ]]; then

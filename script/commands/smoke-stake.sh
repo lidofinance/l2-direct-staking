@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+source script/shared/cre-env.sh
 : "${L2_NETWORK:?L2_NETWORK is required; set it in .env.<network> (one of: optimism|arbitrum|base|linea)}"
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 for c in yq cast jq bc; do
@@ -76,7 +77,7 @@ else
 fi
 echo "===================================================================="
 echo "SMOKE-STAKE (live canary): $L2_NETWORK    [$MODE]"
-echo "  RPC URL:        $L2_RPC_URL"
+echo "  RPC URL:        $(cre_env_host "$L2_RPC_URL")"
 echo "  Signer:         $SIGNER"
 echo "  New OraclePool: $POOL"
 echo "  CustomSender:   $SENDER"
@@ -153,6 +154,7 @@ if is_addr "$oracle"; then
 fi
 echo "      INFO signer wstETH=$sig_wst wei (~ $(cast from-wei "$sig_wst")); native ETH=$sig_eth wei (~ $(cast from-wei "$sig_eth"))"
 if [[ -n "$expected_out" ]]; then
+  ge "$expected_out" "$MIN_OUT" || die "minimum output $MIN_OUT exceeds expected output $expected_out"
   echo "      INFO oracle=$oracle price=$price -> expected out ~ $expected_out wei (~ $(cast from-wei "$expected_out") wstETH)"
 else
   echo "      WARN oracle price unreadable; expected-output check skipped (verification still uses the measured delta)"

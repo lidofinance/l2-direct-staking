@@ -120,7 +120,7 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 
 const LANES = [
   { name: 'Optimism', chainId: 10, logo: LOGOS.optimism, rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
-    bs: 'https://explorer.optimism.io', ccipSelector: '3734403246176062136',
+    bs: 'https://explorer.optimism.io', v2Logs: true, ccipSelector: '3734403246176062136',
     syncCheckpoint: { block: 155804910, wei: '129542754845784358617', count: 14 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
@@ -142,7 +142,7 @@ const LANES = [
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
   { name: 'Linea', chainId: 59144, logo: LOGOS.linea, rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
-    bs: 'https://api-explorer.linea.build', ccipSelector: '4627098889531055414',
+    bs: 'https://api-explorer.linea.build', v2Logs: true, ccipSelector: '4627098889531055414',
     syncCheckpoint: { block: 31767564, wei: '52300000000000000', count: 3 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
@@ -2578,7 +2578,11 @@ function setTabStatus(tab, status) {
 function selectTab(tab) {
   const selected = tabButtons.find(b => b.dataset.tab === tab) ?? tabButtons[0];
   activeTab = selected.dataset.tab;
-  tabButtons.forEach(b => b.classList.toggle('active', b === selected));
+  tabButtons.forEach(b => {
+    b.classList.toggle('active', b === selected);
+    b.setAttribute('aria-pressed', String(b === selected));
+    b.setAttribute('aria-controls', b.dataset.tab);
+  });
   tabButtons.forEach(b => document.getElementById(b.dataset.tab).hidden = b !== selected);
   if (activeTab === 'activity') {
     activityViewBoundary = activitySeen;   // highlight what arrived since the last visit
