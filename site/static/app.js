@@ -940,7 +940,18 @@ async function blockscoutAddressLogs(base, address, topic, { limit = Infinity, s
 }
 
 async function senderLogs(L, topic, options) {
-  if (L.v2Logs) return blockscoutAddressLogs(L.bs, L.sender, topic, options);
+  if (L.v2Logs) {
+    const logs = await blockscoutAddressLogs(L.bs, L.sender, topic, options);
+    const missing = [...new Set(logs.filter(log => !Number.isFinite(log.timeStamp)).map(log => log.blockNumber))];
+    if (missing.length) {
+      const blocks = await rpcBatch(L.rpc, missing.map(n =>
+        ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })));
+      const stamps = new Map(missing.map((n, i) => [n, logQuantity(blocks[i]?.timestamp)]));
+      logs.forEach(log => { if (!Number.isFinite(log.timeStamp)) log.timeStamp = stamps.get(log.blockNumber); });
+      if (logs.some(log => !Number.isFinite(log.timeStamp))) throw new Error('sender log timestamp unavailable');
+    }
+    return logs;
+  }
   if (L.logsRpc && !L.bs) {
     const logs = await rpcHistoryLogs(L, L.sender, [topic], L.senderFrom);
     const blockNumbers = [...new Set(logs.map(log => Number(BigInt(log.blockNumber))))];

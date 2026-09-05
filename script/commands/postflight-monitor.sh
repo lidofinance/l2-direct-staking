@@ -86,7 +86,7 @@ ck_addr() {
 ck_trap() {
   if ! is_uint "$2"; then
     WARN "$1 balance unreadable"
-  elif uint_ge "$2" "$TRAP_ALERT_WEI"; then
+  elif ! uint_ge "$TRAP_ALERT_WEI" "$2"; then
     ALERT "$1 = $(cast from-wei "$2") (>1 ETH-equiv ⇒ page)"
   else
     OK "$1 = $(cast from-wei "$2")"
