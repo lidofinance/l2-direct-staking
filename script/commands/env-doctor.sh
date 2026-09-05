@@ -101,7 +101,9 @@ if L1="$(resolve_l1_rpc 2>/dev/null)"; then
       OK "WorkflowRegistry: deploy quota on DON '$DON_FAMILY' = ${QUOTA%% *} workflow(s)" ||
       BAD "WorkflowRegistry: zero deploy quota on DON '$DON_FAMILY' — request access with 'just cre account access'"
     OWNER_WEI="$(cast balance "$WORKFLOW_OWNER" --rpc-url "$L1" 2>/dev/null || echo 0)"
-    [[ "$OWNER_WEI" -gt 0 ]] 2>/dev/null &&
+    OWNER_WEI="${OWNER_WEI%%[*}"
+    OWNER_WEI="${OWNER_WEI%% *}"
+    [[ "$OWNER_WEI" =~ ^[0-9]+$ && "$OWNER_WEI" =~ [1-9] ]] &&
       OK "Workflow-owner Safe mainnet gas: $(cast from-wei "$OWNER_WEI") ETH" ||
       BAD "Workflow-owner Safe has 0 mainnet ETH — fund it before executing registry calldata"
     REGISTERED="$(cast call "$WF_REGISTRY" 'getWorkflowListByOwner(address,uint256,uint256)' "$WORKFLOW_OWNER" 0 20 --rpc-url "$L1" 2>/dev/null || true)"

@@ -241,7 +241,9 @@ step "[6/7] CHECK configured maxGasLimit ceiling vs live CCIP maxPerMsgGasLimit"
 abi_word_dec() {
   local raw="${1#0x}" n="$2" w
   w="${raw:$(((n - 1) * 64)):64}"
-  [[ ${#w} -eq 64 ]] && cast --to-dec "0x$w"
+  if [[ "$w" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    cast --to-dec "0x$w" 2>/dev/null || true
+  fi
 }
 # Source the lane-specific cap and shared destination selector from their state-mate inputs.
 sm_inputs="config/state/${L2_NETWORK}.inputs.yaml"
