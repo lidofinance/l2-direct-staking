@@ -4753,18 +4753,18 @@ cre-workflow-hash:
     SOURCE="cre-workflows/sync-automation/main.ts"
     config_sha="$(sha256_file "$CONFIG")"
     source_sha="$(sha256_file "$SOURCE")"
-    pinned_config="$(sed -n "s/^const CRE_CONFIG_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
-    pinned_source="$(sed -n "s/^const CRE_SOURCE_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
-    embedded_config="$(sed -n 's/^const CRE_CONFIG_JSON = \(.*\);$/\1/p' index.html)"
+    pinned_config="$(sed -n "s/^const CRE_CONFIG_SHA256 = '\([0-9a-f]*\)';$/\1/p" site/static/app.js)"
+    pinned_source="$(sed -n "s/^const CRE_SOURCE_SHA256 = '\([0-9a-f]*\)';$/\1/p" site/static/app.js)"
+    embedded_config="$(sed -n 's/^const CRE_CONFIG_JSON = \(.*\);$/\1/p' site/static/app.js)"
     actual_config="$(jq -Rs . "$CONFIG")"
 
     printf "const CRE_CONFIG_SHA256 = '%s';\n" "$config_sha"
     printf "const CRE_SOURCE_SHA256 = '%s';\n" "$source_sha"
 
     rc=0
-    [[ "$pinned_config" == "$config_sha" ]] || { echo "index.html CRE_CONFIG_SHA256 is stale" >&2; rc=1; }
-    [[ "$pinned_source" == "$source_sha" ]] || { echo "index.html CRE_SOURCE_SHA256 is stale" >&2; rc=1; }
-    [[ "$embedded_config" == "$actual_config" ]] || { echo "index.html CRE_CONFIG_JSON is not config.deploy.json byte-for-byte" >&2; rc=1; }
+    [[ "$pinned_config" == "$config_sha" ]] || { echo "site/static/app.js CRE_CONFIG_SHA256 is stale" >&2; rc=1; }
+    [[ "$pinned_source" == "$source_sha" ]] || { echo "site/static/app.js CRE_SOURCE_SHA256 is stale" >&2; rc=1; }
+    [[ "$embedded_config" == "$actual_config" ]] || { echo "site/static/app.js CRE_CONFIG_JSON is not config.deploy.json byte-for-byte" >&2; rc=1; }
     exit "$rc"
 
 # CRE CLI v1.27.0 hardcodes empty WorkflowRegistry attributes. Read its unsigned upsert calldata from
@@ -4803,8 +4803,8 @@ cre-attach-params:
     binary_url="$(printf '%s' "$decoded" | jq -er '.[5] | select(type == "string")')"
     config_url="$(printf '%s' "$decoded" | jq -er '.[6] | select(type == "string")')"
     keep_alive="$(printf '%s' "$decoded" | jq -er '.[8] | select(type == "boolean") | tostring')"
-    config_sha="$(sed -n "s/^const CRE_CONFIG_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
-    source_sha="$(sed -n "s/^const CRE_SOURCE_SHA256 = '\([0-9a-f]*\)';$/\1/p" index.html)"
+    config_sha="$(sed -n "s/^const CRE_CONFIG_SHA256 = '\([0-9a-f]*\)';$/\1/p" site/static/app.js)"
+    source_sha="$(sed -n "s/^const CRE_SOURCE_SHA256 = '\([0-9a-f]*\)';$/\1/p" site/static/app.js)"
     attrs_json="$(jq -cn --arg config "$config_sha" --arg source "$source_sha" \
       '{v:"cre-attest/3",config:$config,source:$source}')"
     attrs_hex="$(cast from-utf8 "$attrs_json")"
