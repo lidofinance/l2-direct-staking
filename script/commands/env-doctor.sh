@@ -107,7 +107,9 @@ if L1="$(resolve_l1_rpc 2>/dev/null)"; then
       OK "Workflow-owner Safe mainnet gas: $(cast from-wei "$OWNER_WEI") ETH" ||
       BAD "Workflow-owner Safe has 0 mainnet ETH — fund it before executing registry calldata"
     REGISTERED="$(cast call "$WF_REGISTRY" 'getWorkflowListByOwner(address,uint256,uint256)' "$WORKFLOW_OWNER" 0 20 --rpc-url "$L1" 2>/dev/null || true)"
-    if [[ "$REGISTERED" == 0x*0000000000000000000000000000000000000000000000000000000000000000 && ${#REGISTERED} -le 130 ]]; then
+    if [[ ! "$REGISTERED" =~ ^0x[0-9a-fA-F]+$ || ${#REGISTERED} -lt 130 ]]; then
+      BAD "WorkflowRegistry: could not read workflow list"
+    elif [[ "$REGISTERED" == 0x*0000000000000000000000000000000000000000000000000000000000000000 && ${#REGISTERED} -le 130 ]]; then
       INFO "WorkflowRegistry: no workflows registered under this owner yet"
     else
       INFO "WorkflowRegistry: workflow(s) already registered under this owner (getWorkflowListByOwner non-empty)"
@@ -141,6 +143,18 @@ for net in "${LANES[@]}"; do
     WFID="$(yq '.. | select(anchor == "creWorkflowId")' "$CRE_DEP" 2>/dev/null | tr -d '"' | head -n1)"
   fi
   INFO "L2 RPC   $(cre_env_host "$L2")"
+  case "$net" in
+    optimism) expected_chain_id=10 ;;
+    arbitrum) expected_chain_id=42161 ;;
+    base) expected_chain_id=8453 ;;
+    linea) expected_chain_id=59144 ;;
+    *) BAD "Unknown lane: $net"; continue ;;
+  esac
+  CID="$(cast chain-id --rpc-url "$L2" 2>/dev/null || true)"
+  if [[ "$CID" != "$expected_chain_id" ]]; then
+    BAD "$net RPC chain-id ${CID:-unreadable}, expected $expected_chain_id"
+    continue
+  fi
   INFO "trigger  ${TRIG:-<unset>}"
   INFO "receiver ${RECV:-<unset>}"
   # Ownership migration is per-lane. Recognize the Safe, retired EOA, and LOL owner

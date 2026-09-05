@@ -20,6 +20,7 @@ ZERO_ROLE="0x0000000000000000000000000000000000000000000000000000000000000000"
 
 # Network count and per-network config (parallel arrays, bash 3 compatible)
 NET_NAMES=(optimism arbitrum base linea)
+NET_CHAIN_IDS=(10 42161 8453 59144)
 NET_RPC_ENVS=(RPC_OPTIMISM RPC_ARBITRUM RPC_BASE RPC_LINEA)
 # Legacy env-var names, consulted as fallbacks when the RPC_<NET> var is unset.
 NET_RPC_ENVS_LEGACY=(L2_OPTIMISM_RPC_URL L2_ARBITRUM_RPC_URL L2_BASE_RPC_URL L2_LINEA_RPC_URL)
@@ -36,7 +37,7 @@ NET_TESTS=("OptimismPoolUpgradeTest|OptimismCREIntegrationTest"
 NET_LOLS=(0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6 0xFc832dA3D688352C0aB1A32136c7fABbB16d66E6)
 NET_COUNT=${#NET_NAMES[@]}
 
-for arr_name in NET_RPC_ENVS NET_RPC_ENVS_LEGACY NET_GOVS NET_SCRIPTS NET_TESTS NET_LOLS; do
+for arr_name in NET_CHAIN_IDS NET_RPC_ENVS NET_RPC_ENVS_LEGACY NET_GOVS NET_SCRIPTS NET_TESTS NET_LOLS; do
   eval "arr_len=\${#${arr_name}[@]}"
   [[ "$arr_len" -eq "$NET_COUNT" ]] || die "Array $arr_name has $arr_len elements, expected $NET_COUNT"
 done
@@ -72,7 +73,8 @@ done
 
 L1_UPSTREAM="${RPC_ETHEREUM:-${L1_RPC_URL:-}}"
 [[ -n "$L1_UPSTREAM" ]] || die "Set RPC_ETHEREUM"
-cast chain-id --rpc-url "$L1_UPSTREAM" >/dev/null 2>&1 || die "L1 RPC not reachable: $L1_UPSTREAM"
+chain_id=$(cast chain-id --rpc-url "$L1_UPSTREAM") || die "L1 RPC not reachable"
+[[ "$chain_id" == 1 ]] || die "L1 RPC chain-id $chain_id, expected 1"
 echo "L1: $L1_UPSTREAM"
 
 # Collect and validate L2 RPCs (prefer RPC_<NET>, fall back to the legacy L2_<NET>_RPC_URL).
@@ -83,7 +85,8 @@ for i in $(seq 0 $((NET_COUNT - 1))); do
   rpc_val="${!rpc_env:-}"
   [[ -n "$rpc_val" ]] || rpc_val="${!rpc_env_legacy:-}"
   [[ -n "$rpc_val" ]] || die "Set $rpc_env"
-  cast chain-id --rpc-url "$rpc_val" >/dev/null 2>&1 || die "${NET_NAMES[$i]} RPC not reachable: $rpc_val"
+  chain_id=$(cast chain-id --rpc-url "$rpc_val") || die "${NET_NAMES[$i]} RPC not reachable"
+  [[ "$chain_id" == "${NET_CHAIN_IDS[$i]}" ]] || die "${NET_NAMES[$i]} RPC chain-id $chain_id, expected ${NET_CHAIN_IDS[$i]}"
   L2_UPSTREAMS+=("$rpc_val")
   echo "${NET_NAMES[$i]}: $rpc_val"
 done

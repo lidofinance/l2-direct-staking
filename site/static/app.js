@@ -1342,7 +1342,7 @@ function renderShuttles(messages, error) {
   const recovered = messages.filter(message => message.state === 'recovered');
   const ordered = [...messages].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0) ||
     b.block - a.block || b.logIndex - a.logIndex);
-  setTabStatus('shuttle', unknown.length ? 'crit' : active.length ? 'warn' : null);
+  setTabStatus('shuttle', unknown.length || active.length ? 'crit' : null);
   const rows = ordered.map(message => {
     const lane = LANE_BY_CCIP_SELECTOR.get(message.sourceSelector);
     const source = lane ? laneWho(lane) : `<span class="mono">${message.sourceSelector}</span>`;
@@ -1350,7 +1350,7 @@ function renderShuttles(messages, error) {
       ? lane ? alink(lane, message.recipient) : `<span class="mono">${short(message.recipient)}</span>` : '—';
     const requested = message.amount == null ? '<div class="m">Malformed</div><div class="s">payload &lt; 52 bytes</div>'
       : `<div class="m">${fmtAmt(message.amount)} requested</div><div class="s">${message.tokens.length} token ${message.tokens.length === 1 ? 'entry' : 'entries'}</div>`;
-    const state = message.state === 'active' ? chip('warn', 'Stored on L1', 'retry / recover')
+    const state = message.state === 'active' ? chip('crit', 'Stored on L1', 'retry / recover')
       : message.state === 'retried' ? chip('ok', 'Retry sent', 'L1 cleared')
       : message.state === 'recovered' ? chip('warn', 'Tokens recovered', 'off Shuttle')
       : chip('crit', 'Unknown', 'hash = 0; no event');

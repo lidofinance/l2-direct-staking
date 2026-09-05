@@ -131,6 +131,18 @@ trap 'rm -rf "$outdir"' EXIT
 for net in "${NETS[@]}"; do
   rpc="$(rpc_for "$net")"
   {
+    case "$net" in
+      ethereum) expected_chain_id=1 ;;
+      optimism) expected_chain_id=10 ;;
+      arbitrum) expected_chain_id=42161 ;;
+      base) expected_chain_id=8453 ;;
+      linea) expected_chain_id=59144 ;;
+    esac
+    chain_id=$(cast chain-id --rpc-url "$rpc" 2>/dev/null) || exit 1
+    if [[ "$chain_id" != "$expected_chain_id" ]]; then
+      echo "balances: $net RPC chain-id $chain_id, expected $expected_chain_id" >&2
+      exit 1
+    fi
     cast block-number --rpc-url "$rpc" >"$outdir/$net.block" 2>/dev/null || true
     if [[ "$net" == ethereum ]]; then
       collect_ethereum "$rpc"
