@@ -66,7 +66,7 @@ address_from_key() {
 
 # ── Step 0: Preflight ──────────────────────────────────────────
 step "Step 0: Preflight checks"
-for cmd in forge cast anvil node; do
+for cmd in forge cast anvil node yarn; do
   command -v "$cmd" >/dev/null 2>&1 || die "Missing: $cmd"
 done
 
@@ -204,7 +204,7 @@ step "Step 3: State-mate verification"
 STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
 if [[ ! -d "$STATE_MATE_DIR/node_modules" ]]; then
   echo "Installing state-mate dependencies"
-  (cd "$STATE_MATE_DIR" && yarn install --immutable 2>/dev/null || npm install) || die "Failed to install state-mate dependencies"
+  (cd "$STATE_MATE_DIR" && yarn install --immutable) || die "Failed to install state-mate dependencies"
 fi
 
 for i in $(seq 0 $((NET_COUNT - 1))); do
