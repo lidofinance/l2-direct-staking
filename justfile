@@ -3411,10 +3411,6 @@ test-cre:
 test-cre-workflow:
     cd cre-workflows/sync-automation && bun test
 
-# Local command tests: no RPC or real credentials.
-test-scripts:
-    node --test script/tests/*.test.cjs
-
 # Verify the dashboard's source/config pins and its byte-exact embedded config copy. On drift, print
 # the replacement constants and exit non-zero so a caller cannot mistake stale pins for regenerated ones.
 cre-workflow-hash:

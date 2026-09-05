@@ -27,10 +27,9 @@ consistent. Direct `bash script/commands/<command>.sh` calls use the exported en
 Use multiline functions and conditionals, two-space indentation, and one operation
 per line. Comments should explain constraints, especially RPC precedence and transaction guards.
 
-Run `just test-scripts` for local command tests (Node.js, Bash, `cast`, and `jq`;
-no RPC or real credentials). `just cre-workflow-hash` checks dashboard pins against
-the source files. `just cre-attach-params` hashes the source files directly and does
-not depend on dashboard pins.
+`just cre-workflow-hash` checks dashboard pins against the source files.
+`just cre-attach-params` hashes the source files directly and does not depend on
+dashboard pins.
 
 `just retry-failed-message <L1-tx> [dry-run|send] [message-id]` checks the receiver's
 `MessageFailed` event and stored hash, then simulates the retry. The default
