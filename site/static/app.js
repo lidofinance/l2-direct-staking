@@ -1289,9 +1289,9 @@ async function l1ReceiverLogs(topic, toBlock) {
 }
 
 async function blockscoutIndexedBlock() {
-  const res = await rpcFetch(`${L1.bs}/api/v2/stats`);
+  const res = await rpcFetch(`${L1.bs}/api/v2/blocks?type=block`);
   if (!res.ok) throw new Error(`index status HTTP ${res.status}`);
-  const indexedBlock = logQuantity((await res.json()).total_blocks);
+  const indexedBlock = logQuantity((await res.json()).items?.[0]?.height);
   if (indexedBlock == null) throw new Error('indexed block unreadable');
   return indexedBlock;
 }
