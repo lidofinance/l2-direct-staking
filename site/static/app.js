@@ -120,21 +120,21 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 
 const LANES = [
   { name: 'Optimism', chainId: 10, logo: LOGOS.optimism, rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
-    bs: 'https://explorer.optimism.io', v2Logs: true, ccipSelector: '3734403246176062136',
+    bs: 'https://explorer.optimism.io', v2Logs: true, receiptsRpc: 'https://mainnet.optimism.io', ccipSelector: '3734403246176062136',
     syncCheckpoint: { block: 155804910, wei: '129542754845784358617', count: 14 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
   { name: 'Arbitrum', chainId: 42161, logo: LOGOS.arbitrum, rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
-    bs: 'https://arbitrum.blockscout.com', v2Logs: true, ccipSelector: '4949039107694359620',
+    bs: 'https://arbitrum.blockscout.com', v2Logs: true, receiptsRpc: 'https://arb1.arbitrum.io/rpc', ccipSelector: '4949039107694359620',
     syncCheckpoint: { block: 496444513, wei: '265035298175104662154', count: 23 },
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
     oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
   { name: 'Base', chainId: 8453, logo: LOGOS.base, rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
-    bs: 'https://base.blockscout.com', v2Logs: true, activityFrom: 48000000,
+    logsRpc: 'https://mainnet.base.org', receiptsRpc: 'https://mainnet.base.org', activityFrom: 48000000,
     senderFrom: 20476091, ccipSelector: '15971525489660198786',
     syncCheckpoint: { block: 50209626, wei: '305269281818334669206', count: 38 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
@@ -189,6 +189,7 @@ const netLogo = n => `<img src="${n.logo}" alt="" aria-hidden="true">`;
 const netName = n => `<span class="net-name">${netLogo(n)}<b>${n.name}</b></span>`;
 const RPC_STORE = 'dsw.rpc.v1';
 const RPC_DEFAULTS = Object.fromEntries(NETS.map(n => [n.name, n.rpc]));
+const LOG_RPC_DEFAULTS = Object.fromEntries(NETS.filter(n => n.logsRpc).map(n => [n.name, n.logsRpc]));
 
 function loadRpcOverrides() {
   try {
@@ -200,7 +201,10 @@ function loadRpcOverrides() {
   } catch { return {}; } // unparseable or storage blocked → defaults, never a hard failure
 }
 function applyRpcOverrides(o = loadRpcOverrides()) {
-  NETS.forEach(n => n.rpc = o[n.name] || RPC_DEFAULTS[n.name]);
+  NETS.forEach(n => {
+    n.rpc = o[n.name] || RPC_DEFAULTS[n.name];
+    if (LOG_RPC_DEFAULTS[n.name]) n.logsRpc = o[n.name] || LOG_RPC_DEFAULTS[n.name];
+  });
   const n = Object.keys(o).length;
   const badge = document.querySelector('#rpcbtn .badge');
   if (badge) badge.remove();
@@ -358,21 +362,25 @@ const decU = h => h ? BigInt(h) : null;
 const rpcQueues = new Map();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function rpcFetch(url, init) {
+  url = String(url);
+  const origin = new URL(url).origin;
+  const paced = [L1, ...LANES].some(L => L.bs === origin) ||
+    origin === 'https://base.gateway.tenderly.co' || origin === 'https://mainnet.base.org';
   const request = async () => {
     let res;
     for (let attempt = 0; attempt < 3; attempt++) {
       res = await fetch(url, init);
       if (res.status !== 429) {
-        if (url.includes('base.gateway.tenderly.co')) await wait(1000);
+        if (paced) await wait(origin === 'https://mainnet.base.org' ? 500 : 1000);
         return res;
       }
       await wait(500 * 2 ** attempt);
     }
     return res;
   };
-  if (!url.includes('base.gateway.tenderly.co')) return request();
-  const queued = (rpcQueues.get(url) ?? Promise.resolve()).then(request, request);
-  rpcQueues.set(url, queued.then(() => undefined, () => undefined));
+  if (!paced) return request();
+  const queued = (rpcQueues.get(origin) ?? Promise.resolve()).then(request, request);
+  rpcQueues.set(origin, queued.then(() => undefined, () => undefined));
   return queued;
 }
 
@@ -610,7 +618,6 @@ const EVT = {
 // transaction, while a balance read afterwards is a different claim about a different moment.
 // SYNC_TOPIC and syncAmount() below are the ones the Overview tile already reads: one decoder for the
 // one event, so a per-sync row and the cumulative total can never disagree about what a Sync says.
-const TX_LOG_CONCURRENCY = 6; // one explorer request per historical sync; kept off the explorer's throttle
 
 // Blockscout v2 returns the emitting address as an object here and as a bare string elsewhere.
 const logAddr = i => (typeof i?.address === 'string' ? i.address : i?.address?.hash ?? i?.address_hash ?? '');
@@ -640,59 +647,73 @@ async function attachSyncAmounts(L, rows) {
   syncs.forEach(e => { if (known.has(e.tx)) e.wei = known.get(e.tx); });
   const todo = syncs.filter(e => e.wei === undefined && e.tx);
   if (!todo.length) return;
-  // A lane with no Blockscout of its own (Base) reads receipts from its log-capable RPC instead — the
-  // same claim by the only route that lane has. An outage here marks the amounts unread; it must not
-  // fail automationLogs and take the lane's whole event history down with it.
-  if (!L.bs) {
-    let receipts = [];
-    try {
-      receipts = await rpcBatchChunks(L.logsRpc,
-        todo.map(e => ({ method: 'eth_getTransactionReceipt', params: [e.tx] })));
-    } catch { todo.forEach(e => { e.amtUnread = true; }); return; }
-    todo.forEach((e, i) => {
-      const r = receipts[i];
-      if (!r || !Array.isArray(r.logs)) { e.amtUnread = true; return; } // unread — NOT "no amount"
-      e.wei = syncWeiOf(r.logs, L);
-    });
-    return;
-  }
-  for (let i = 0; i < todo.length; i += TX_LOG_CONCURRENCY) {
-    await Promise.all(todo.slice(i, i + TX_LOG_CONCURRENCY).map(async e => {
-      let items;
-      try {
-        const res = await fetch(`${L.bs}/api/v2/transactions/${e.tx}/logs`);
-        if (!res.ok) { e.amtUnread = true; return; } // unread — NOT "no amount"
-        items = (await res.json()).items;
-      } catch { e.amtUnread = true; return; }
-      if (!Array.isArray(items)) { e.amtUnread = true; return; }
-      e.wei = syncWeiOf(items, L);
-    }));
-  }
+  // Receipts contain the complete transaction logs without separate explorer requests.
+  let receipts = [];
+  try {
+    const receiptRpc = L.rpc === RPC_DEFAULTS[L.name] ? (L.receiptsRpc ?? L.rpc) : L.rpc;
+    receipts = await rpcBatchChunks(receiptRpc,
+      todo.map(e => ({ method: 'eth_getTransactionReceipt', params: [e.tx] })));
+  } catch { todo.forEach(e => { e.amtUnread = true; }); return; }
+  todo.forEach((e, i) => {
+    const r = receipts[i];
+    if (!r || !Array.isArray(r.logs)) { e.amtUnread = true; return; }
+    e.wei = syncWeiOf(r.logs, L);
+  });
 }
 
-// The confirmation lag belongs to CURSORS, not to views. syncLogsRange advances a cursor saved in
-// localStorage and can never look back, so a log that reorgs out after the cursor passed it is lost
-// from the cumulative total for good — that read must stay behind the reorg-able tip. A view that is
-// re-read in full every refresh has no such exposure: a reorg simply corrects itself on the next pass.
-// On Base (2s blocks, and the only lane read over RPC rather than Blockscout) this window is a full
-// HOUR, so applying it to a view would hide exactly the events worth watching — an author-gate change
-// stayed invisible for an hour on Base while the other three lanes showed it at once.
-const RPC_CONFIRMATIONS = 1800; // a PERSISTED cursor never includes the chain tip
+// Persist older blocks; reread the reorg window through the live tip for event views.
+const RPC_CONFIRMATIONS = 1800;
 const rpcBlockNumber = async L => Number(BigInt(await rpcRequest(L.logsRpc ?? L.rpc, 'eth_blockNumber', [])));
-// The ONLY remaining caller is checkpointedSyncVolumeData, which is the only read that advances a
-// persisted cursor. Every other log read below is a full re-read and goes to the tip.
+// Cumulative totals advance only behind the reorg window.
 async function rpcSafeBlock(L) {
   return Math.max(0, await rpcBlockNumber(L) - RPC_CONFIRMATIONS);
 }
 
-// Reads through the chain tip. Both callers re-read their whole range on every refresh and replace
-// their cache wholesale, so a reorg corrects itself on the next pass — while holding back by
-// RPC_CONFIRMATIONS would blind them for a full window, an HOUR on Base's 2-second blocks. One
-// request, no tip probe: `latest` is resolved by the node.
-async function rpcHistoryLogs(L, address, topics, fromBlock) {
-  return rpcRequest(L.logsRpc, 'eth_getLogs', [{
-    fromBlock: '0x' + fromBlock.toString(16), toBlock: 'latest', address, topics,
-  }]);
+const logRangeCache = new Map();
+
+async function rpcHistoryLogs(L, address, topics, fromBlock, toBlock = null, { limit = Infinity, accept = () => true } = {}) {
+  const url = L.logsRpc;
+  toBlock ??= await rpcBlockNumber(L);
+  const result = [];
+  const ranges = [];
+  for (let first = fromBlock; first <= toBlock; first += 10000)
+    ranges.push([first, Math.min(first + 9999, toBlock)]);
+  if (Number.isFinite(limit)) ranges.reverse();
+  for (let i = 0; i < ranges.length; i += 4) {
+    const pages = ranges.slice(i, i + 4).map(([first, last]) => {
+      const key = 'dsw.logs.v1:' + JSON.stringify([L.chainId, url, address, topics, first, last]);
+      // Cache only ranges behind the reorg window; read the live tail every time.
+      const stable = last <= toBlock - RPC_CONFIRMATIONS;
+      let logs;
+      if (stable) {
+        logs = logRangeCache.get(key);
+        if (!logs) try {
+          const saved = JSON.parse(localStorage.getItem(key));
+          if (Array.isArray(saved)) { logs = saved; logRangeCache.set(key, saved); }
+        } catch {}
+      }
+      return { first, last, key, stable, logs };
+    });
+    const missing = pages.filter(page => !page.logs);
+    const fetched = await rpcBatch(url, missing.map(page => ({ method: 'eth_getLogs', params: [{
+      fromBlock: '0x' + page.first.toString(16), toBlock: '0x' + page.last.toString(16), address, topics,
+    }] })));
+    missing.forEach((page, j) => {
+      if (!Array.isArray(fetched[j])) throw new Error('invalid logs response');
+      page.logs = fetched[j];
+      if (page.stable) {
+        logRangeCache.set(page.key, page.logs);
+        try { localStorage.setItem(page.key, JSON.stringify(page.logs)); } catch {}
+      }
+    });
+    result.push(...pages.flatMap(page => page.logs).filter(accept));
+    if (Number.isFinite(limit)) {
+      result.sort((a, b) => Number(BigInt(b.blockNumber) - BigInt(a.blockNumber)) ||
+        Number(BigInt(b.logIndex) - BigInt(a.logIndex)));
+      if (result.length >= limit) return result.slice(0, limit);
+    }
+  }
+  return result;
 }
 
 async function automationLogs(L) {
@@ -705,7 +726,7 @@ async function automationLogs(L) {
       data: i.data, block: Number(BigInt(i.blockNumber)), tx: i.transactionHash, ts: null,
     }));
   } else {
-    const res = await fetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
+    const res = await rpcFetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const page = await res.json();
     rows = (page.items ?? [])
@@ -826,8 +847,9 @@ async function poolActivityData(L) {
   let nextPage = {};
   while (nextPage && byTx.size < 50) {
     const url = new URL(base);
+    url.searchParams.set('type', 'ERC-20');
     Object.entries(nextPage).forEach(([key, value]) => url.searchParams.set(key, value));
-    const res = await fetch(url);
+    const res = await rpcFetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const page = await res.json();
     for (const t of page.items ?? []) {
@@ -847,19 +869,13 @@ async function poolActivityData(L) {
 }
 
 async function rpcPoolActivityData(L) {
-  // ONE tip read, shared by both queries below. They are separate eth_getLogs calls, so letting each
-  // resolve `latest` for itself would let a transfer fall inside one range and outside the other —
-  // and classifyTx would then read a transaction from half its legs, labelling a fast stake as a bare
-  // "WETH in". A pinned number keeps the pair range-consistent; the confirmation window does not
-  // belong here, since this whole range is re-read and the lane's cache replaced on every refresh.
+  // Pin both transfer directions to one tip so classification sees every leg of a transaction.
   const toBlock = await rpcBlockNumber(L);
   if (toBlock < L.activityFrom) return [];
   const poolTopic = '0x' + '0'.repeat(24) + L.pool.slice(2).toLowerCase();
-  const filter = topics => ({ fromBlock: '0x' + L.activityFrom.toString(16),
-    toBlock: '0x' + toBlock.toString(16), address: [L.weth, L.wsteth], topics });
   const [outbound, inbound] = await Promise.all([
-    rpcRequest(L.logsRpc, 'eth_getLogs', [filter([TRANSFER_TOPIC, poolTopic])]),
-    rpcRequest(L.logsRpc, 'eth_getLogs', [filter([TRANSFER_TOPIC, null, poolTopic])]),
+    rpcHistoryLogs(L, [L.weth, L.wsteth], [TRANSFER_TOPIC, poolTopic], L.activityFrom, toBlock),
+    rpcHistoryLogs(L, [L.weth, L.wsteth], [TRANSFER_TOPIC, null, poolTopic], L.activityFrom, toBlock),
   ]);
   const byTx = new Map();
   const seen = new Set();
@@ -905,7 +921,7 @@ function parseSlowStakeLog(L, log) {
     kind: 'stake', label: 'Slow stake', amount: `${fmtAmt(amount)} WETH → L1`, cp: user };
 }
 
-async function blockscoutAddressLogs(base, address, topic, { limit = Infinity, since = null, accept = () => true } = {}) {
+async function blockscoutAddressLogs(base, address, topic, { limit = Infinity, since = null, fromBlock = 0, accept = () => true } = {}) {
   const rows = [];
   const normalizedTopic = topic.toLowerCase();
   let nextPage = {};
@@ -926,6 +942,7 @@ async function blockscoutAddressLogs(base, address, topic, { limit = Infinity, s
       timeStamp: item.block_timestamp ? Math.floor(Date.parse(item.block_timestamp) / 1000) : null,
     }));
     for (const log of logs) {
+      if (log.blockNumber < fromBlock) return rows;
       if (since != null) {
         if (!Number.isFinite(log.timeStamp)) throw new Error('receiver event timestamp unavailable');
         if (log.timeStamp < since) return rows;
@@ -953,7 +970,7 @@ async function senderLogs(L, topic, options) {
     return logs;
   }
   if (L.logsRpc && !L.bs) {
-    const logs = await rpcHistoryLogs(L, L.sender, [topic], L.senderFrom);
+    const logs = await rpcHistoryLogs(L, L.sender, [topic], L.senderFrom, null, options);
     const blockNumbers = [...new Set(logs.map(log => Number(BigInt(log.blockNumber))))];
     const blocks = blockNumbers.length ? await rpcBatchChunks(L.logsRpc, blockNumbers.map(n =>
       ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] }))) : [];
@@ -1004,10 +1021,9 @@ const syncAmount = log => (log.topics?.[0] ?? '').toLowerCase() === SYNC_TOPIC &
 // 2026-08-20. Only the immutable tail after each block is read on load; localStorage advances the
 // cursor after every successful refresh.
 async function syncLogsRange(L, fromBlock, toBlock) {
-  if (L.logsRpc) return rpcRequest(L.logsRpc, 'eth_getLogs', [{
-    fromBlock: '0x' + fromBlock.toString(16), toBlock: '0x' + toBlock.toString(16),
-    address: L.sender, topics: [SYNC_TOPIC],
-  }]);
+  if (L.v2Logs) return (await blockscoutAddressLogs(L.bs, L.sender, SYNC_TOPIC, { fromBlock }))
+    .filter(log => log.blockNumber <= toBlock);
+  if (L.logsRpc) return rpcHistoryLogs(L, L.sender, [SYNC_TOPIC], fromBlock, toBlock);
   const url = new URL(`${L.bs}/api`);
   Object.entries({ module: 'logs', action: 'getLogs', fromBlock, toBlock,
     address: L.sender, topic0: SYNC_TOPIC }).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -1156,6 +1172,7 @@ function markActivitySeen() {
 
 function renderActivity(results) {
   const failed = results.filter(r => r.error).map(r => `${r.L.name} (${r.error})`);
+  const pending = results.filter(r => r.pending).map(r => r.L.name);
   const stale = results.some(r => r.error && r.events);
   const rows = results.filter(r => r.events)
     .flatMap(r => r.events.map(e => ({ L: r.L, ...e })))
@@ -1190,9 +1207,10 @@ function renderActivity(results) {
       ${viewRefresh('activity', 'Pool activity')}
     </div>
     ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
+    ${pending.length ? `<div class="loader"><span class="spin"></span> Loading ${pending.join(', ')} history…</div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
-      ${tr}</table></div>` : failed.length ? '' : '<div class="err-banner">no transfers found</div>'}
+      ${tr}</table></div>` : failed.length || pending.length ? '' : '<div class="err-banner">no transfers found</div>'}
   </div>`;
   updateActivityUpd();
 }
@@ -1200,7 +1218,7 @@ function renderActivity(results) {
 function updateActivityUpd() {
   const el = document.getElementById('activity-upd');
   if (!el) return;
-  const busy = !!refreshAllPromise || refreshingViews.has('activity');
+  const busy = !!refreshAllPromise || refreshingViews.has('activity') || lastActivityResults?.some(r => r.pending);
   el.innerHTML = busy ? '<span class="spin" aria-hidden="true"></span>updating…'
     : activityRenderedAt ? `updated ${ago(Math.floor(activityRenderedAt / 1000))}` : '';
 }
@@ -2510,18 +2528,27 @@ async function refreshAutomationState(lanes) {
 }
 async function refreshAutomationLogs() {
   const results = await Promise.all(LANES.map(L => automationLogs(L)
-    .then(events => { automation.logs[L.name] = events; return { L }; })
+    .then(events => { automation.logs[L.name] = events; renderAutomation(); return { L }; })
     .catch(e => ({ L, error: e.message }))));
   saveAutomationCache();
   automation.logErrors = results.filter(r => r.error).map(r => `${r.L.name} (${r.error})`);
   renderAutomation();
 }
 async function refreshActivity() {
-  const results = await Promise.all(LANES.map(L => activityData(L)
-    .then(events => { activityCache[L.name] = events; return { L, events }; })
-    .catch(e => ({ L, error: e.message, events: activityCache[L.name] }))));
+  const results = LANES.map(L => ({ L, pending: true, events: activityCache[L.name] }));
+  renderActivity(results);
+  await Promise.all(LANES.map(async (L, i) => {
+    try {
+      const events = await activityData(L);
+      activityCache[L.name] = events;
+      results[i] = { L, events };
+    } catch (e) {
+      results[i] = { L, error: e.message, events: activityCache[L.name] };
+    }
+    renderActivity(results);
+  }));
   saveActivityCache();
-  activityRenderedAt = Date.now();
+  if (results.every(r => !r.error)) activityRenderedAt = Date.now();
   renderActivity(results);
 }
 async function refreshSyncVolume() {
