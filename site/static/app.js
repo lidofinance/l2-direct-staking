@@ -1,493 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Direct Staking Watch</title>
-<style>
-:root {
-  color-scheme: light;
-  --page: #f6f5f0;
-  --surface: #ffffff;
-  --tint: #eef7f1;
-  --ink: #10201a;
-  --ink-2: #4c5a53;
-  --muted: #8a938d;
-  --line: #e6e4dc;
-  --line-soft: #eeece5;
-  --accent: #0e7a56;
-  --dark: #101915;
-  --ok-bg: #e9f5ee;   --ok-bd: #cbe7d6;   --ok-fg: #0b6b45;
-  --warn-bg: #fdf3dc; --warn-bd: #f2dfb0; --warn-fg: #8a6100;
-  --crit-bg: #fbebe9; --crit-bd: #f2cdc8; --crit-fg: #b3261e;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0; background: var(--page); color: var(--ink);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  background-image:
-    linear-gradient(var(--line-soft) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-.serif { font-family: "Iowan Old Style", "Palatino", Georgia, serif; }
-
-/* ── App bar ── */
-.appbar {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--surface); border-bottom: 1px solid var(--line);
-  padding: 12px 28px;
-}
-.logo {
-  width: 36px; height: 36px; border-radius: 9px; background: var(--dark);
-  color: #fff; display: grid; place-items: center; font-size: 16px; flex: none;
-}
-.appbar h1 { font-size: 16px; margin: 0; }
-.appbar .right { margin-left: auto; display: flex; align-items: center; gap: 14px; flex: none; }
-.view-refresh {
-  width: 28px; height: 28px; padding: 6px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer;
-  display: grid; place-items: center; flex: none;
-}
-.view-refresh:hover { border-color: var(--muted); color: var(--ink); }
-.view-refresh:disabled { cursor: wait; opacity: .7; }
-.view-refresh svg { width: 14px; height: 14px; }
-.view-refresh.loading svg { animation: spin .8s linear infinite; }
-.card-head .view-refresh { margin-left: auto; }
-button.refresh {
-  font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 9px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
-}
-button.refresh:hover { border-color: var(--muted); }
-button.refresh.alt { font-weight: 500; padding: 8px 12px; }
-button.refresh.alt .badge {
-  margin-left: 6px; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
-  background: var(--warn-bg); border: 1px solid var(--warn-bd); color: var(--warn-fg);
-}
-
-/* ── RPC settings dialog ── */
-dialog#rpcdlg {
-  border: 1px solid var(--line); border-radius: 14px; padding: 0; max-width: 680px; width: calc(100% - 32px);
-  background: var(--surface); color: var(--ink); font: inherit; box-shadow: 0 18px 50px rgba(16,32,26,.18);
-}
-dialog#rpcdlg::backdrop { background: rgba(16,25,21,.34); }
-#rpcdlg .head { padding: 18px 22px 12px; border-bottom: 1px solid var(--line-soft); }
-#rpcdlg .head h2 { margin: 0 0 4px; font-size: 16px; }
-#rpcdlg .head p { margin: 0; color: var(--ink-2); font-size: 12.5px; }
-#rpcdlg .rows { padding: 8px 22px 4px; max-height: 52vh; overflow-y: auto; }
-#rpcdlg .row { padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
-#rpcdlg .row:last-child { border-bottom: 0; }
-#rpcdlg .row .lab { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
-#rpcdlg .row .lab .net-name { font-size: 13px; }
-#rpcdlg .row .lab > span:not(.net-name) { color: var(--muted); font-size: 11.5px; }
-#rpcdlg .row .ctl { display: flex; gap: 8px; }
-#rpcdlg input {
-  flex: 1; min-width: 0; font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
-  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--ink);
-}
-#rpcdlg input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-#rpcdlg input.bad { border-color: var(--crit-bd); background: var(--crit-bg); }
-#rpcdlg .row .msg { margin-top: 5px; font-size: 11.5px; min-height: 0; }
-#rpcdlg .row .msg.bad { color: var(--crit-fg); }
-#rpcdlg .row .msg.good { color: var(--ok-fg); }
-#rpcdlg .row .msg.dim { color: var(--muted); }
-#rpcdlg .foot {
-  display: flex; align-items: center; gap: 10px; padding: 14px 22px;
-  border-top: 1px solid var(--line-soft); background: var(--page); border-radius: 0 0 14px 14px;
-}
-#rpcdlg .foot .spacer { margin-left: auto; }
-#rpcdlg button {
-  font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
-}
-#rpcdlg button:hover:not(:disabled) { border-color: var(--muted); }
-#rpcdlg button.primary { background: var(--dark); border-color: var(--dark); color: #fff; font-weight: 600; }
-#rpcdlg button:disabled { opacity: .55; cursor: default; }
-#rpcdlg button.link {
-  border: 0; background: none; padding: 7px 4px; color: var(--ink-2); text-decoration: underline;
-}
-
-/* Textarea full width, buttons on their own row beneath it — a tall input with a narrow column of
-   buttons pinned to its right reads as two unrelated controls. */
-#cdtool .cdbox { display: flex; flex-direction: column; gap: 8px; padding: 0 18px 14px; }
-#cdtool textarea {
-  width: 100%; min-width: 0; resize: vertical; box-sizing: border-box; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-  padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--page);
-  color: var(--ink); word-break: break-all;
-}
-#cdtool textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-#cdtool .cdbtns { display: flex; gap: 8px; justify-content: flex-end; }
-#cdtool .cdsum { padding: 0 18px 12px; font-size: 13px; color: var(--ink-2); }
-#cdtool .cdsum strong { color: var(--ink); }
-#cdtool .cdjson { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px;
-  background: var(--page); color: var(--ink); font-size: 11.5px; line-height: 1.5; word-break: break-all; }
-#cdtool .cdfiles { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 18px 12px; }
-#cdtool .cdfile { position: relative; display: flex; align-items: center; gap: 8px; cursor: pointer;
-  padding: 7px 10px; border: 1px dashed var(--line); border-radius: 9px; background: var(--page); }
-#cdtool .cdfile .lab { font-size: 11.5px; color: var(--ink-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-#cdtool .cdfile .btn { font-size: 11.5px; font-weight: 650; padding: 3px 9px; border-radius: 7px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
-#cdtool .cdfile .name { font-size: 11.5px; color: var(--muted); max-width: 220px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-/* Hidden from sight, not from the keyboard: the input still takes focus, and the label shows the ring. */
-#cdtool .cdfile input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
-#cdtool .cdfile:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
-#calldata .expbar { margin: 0 0 12px; padding: 9px 14px; border-radius: 10px; font-size: 12.5px;
-  background: var(--warn-bg); border: 1px solid var(--warn-bd); color: var(--warn-fg); }
-
-.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
-.dot.ok { background: #2aa96e; } .dot.warn { background: #d9a422; } .dot.crit { background: #d64a3a; }
-#rpcstat { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: 13px; }
-
-/* ── Layout ── */
-main { max-width: 1240px; margin: 0 auto; padding: 26px 28px 40px; }
-.card {
-  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(16,32,26,.04);
-  margin-bottom: 22px; overflow: hidden;
-}
-
-/* ── Hero ── */
-.hero { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; }
-.hero > div { padding: 22px 26px; border-left: 1px solid var(--line); }
-.hero > div:first-child { border-left: none; position: relative; }
-.hero .view-refresh { position: absolute; top: 14px; right: 14px; }
-.hero h2 { font-size: 30px; margin: 6px 0 8px; font-weight: 600; }
-.hero p { margin: 0; color: var(--ink-2); font-size: 13px; max-width: 46ch; }
-.stat .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2); font-weight: 600; }
-.stat .v { font-size: 40px; line-height: 1.15; margin-top: 8px; }
-.stat .v.loading {
-  min-height: 46px; display: flex; align-items: center; gap: 10px;
-  color: var(--ink-2); font-family: Inter, system-ui, sans-serif; font-size: 14px;
-}
-.stat .v.loading .spin { width: 20px; height: 20px; }
-.stat .v .unit { color: var(--ink-2); font: 14px system-ui, -apple-system, "Segoe UI", sans-serif; }
-#sync-volume .v:not(.loading) { font-size: 36px; white-space: nowrap; }
-.stat .s { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
-.sync-volume-sub { display: flex; align-items: center; gap: 6px; }
-.sync-volume-sub .spin { width: 10px; height: 10px; border-width: 1px; }
-.stat.tinted { background: var(--tint); }
-.stat.warning { background: var(--warn-bg); }
-.stat.warning .v { color: var(--warn-fg); }
-.stat.critical { background: var(--crit-bg); }
-.stat.critical .v { color: var(--crit-fg); }
-
-/* ── Matrix ── */
-.card-head { display: flex; align-items: baseline; gap: 10px; padding: 18px 26px 4px; }
-.card-head h3 { margin: 0; font-size: 16px; }
-.card-head .desc { color: var(--muted); font-size: 12.5px; }
-.legend { margin-left: auto; display: flex; gap: 16px; font-size: 12px; color: var(--ink-2); align-items: center; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-table { border-collapse: collapse; width: 100%; }
-th {
-  text-align: left; font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
-  color: var(--muted); font-weight: 600; padding: 14px 12px 8px; border-bottom: 1px solid var(--line);
-}
-td { padding: 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
-tr:last-child td { border-bottom: none; }
-th:first-child, td:first-child { padding-left: 26px; }
-th:last-child, td:last-child { padding-right: 26px; }
-
-.who { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
-.avatar {
-  width: 34px; height: 34px; border-radius: 9px; flex: none;
-  border: 1px solid var(--line); background: var(--page);
-  display: grid; place-items: center; padding: 4px; overflow: hidden;
-}
-.avatar img { width: 100%; height: 100%; object-fit: contain; border-radius: 5px; }
-.net-name { display: inline-flex; align-items: center; gap: 7px; color: inherit; font-size: inherit; }
-.net-name img { width: 18px; height: 18px; object-fit: contain; border-radius: 4px; flex: none; }
-.who .name { font-weight: 650; }
-.who .sub, .mono { font-size: 12px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.who a { color: var(--muted); text-decoration: none; }
-.who a:hover { color: var(--accent); }
-
-.chip {
-  display: inline-block; border-radius: 9px; padding: 6px 10px; border: 1px solid;
-  font-variant-numeric: tabular-nums;
-}
-.syncm .chip, .ownm .chip { width: 182px; }
-.chip .m, .chip .s { overflow: hidden; text-overflow: ellipsis; }
-a.chiplink { text-decoration: none; }
-a.chiplink:hover .chip { border-color: var(--accent); }
-.num { font-variant-numeric: tabular-nums; }
-.num .m { font-weight: 650; font-size: 15px; white-space: nowrap; }
-.num .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; margin-top: 1px; }
-tr.group td { background: #fafaf8; border-bottom: 1px solid var(--line); padding: 8px 12px; font-size: 12px; }
-tr.group .gname { font-weight: 700; font-size: 12.5px; }
-tr.group a, .who a { text-decoration: none; }
-tr.group a { color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; }
-tr.group a:hover { color: var(--accent); }
-.chip .m { font-weight: 650; font-size: 13px; white-space: nowrap; }
-.chip .s { font-size: 11.5px; margin-top: 1px; white-space: nowrap; }
-.chip.ok   { background: var(--ok-bg);   border-color: var(--ok-bd);   color: var(--ok-fg); }
-.chip.ok .s { color: #4c8068; }
-.chip.warn { background: var(--warn-bg); border-color: var(--warn-bd); color: var(--warn-fg); }
-.chip.warn .s { color: #a5854a; }
-.chip.crit { background: var(--crit-bg); border-color: var(--crit-bd); color: var(--crit-fg); }
-.chip.crit .s { color: #c07a70; }
-
-.l1-card .card-head { align-items: center; padding-bottom: 16px; }
-.l1-card-copy { min-width: 0; }
-.l1-card-copy h3 { margin: 0; white-space: nowrap; }
-.l1-card-copy .desc { display: block; margin-top: 2px; }
-.l1-card-links { margin-left: auto; display: flex; gap: 12px; flex: none; font-size: 12.5px; }
-.l1-card-links a { color: var(--ink-2); text-decoration: none; }
-.l1-card-links a:hover { color: var(--accent); }
-.l1-metric-grid { display: grid; gap: 12px; padding: 0 26px 22px; }
-.l1-balance-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.l1-access-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.l1-metric { border: 1px solid; border-radius: 11px; padding: 14px 16px; }
-.l1-metric.ok { background: var(--ok-bg); border-color: var(--ok-bd); }
-.l1-metric.warn { background: var(--warn-bg); border-color: var(--warn-bd); }
-.l1-metric.crit { background: var(--crit-bg); border-color: var(--crit-bd); }
-.l1-metric-label {
-  margin-bottom: 7px; color: var(--muted); font-size: 10.5px; font-weight: 650;
-  letter-spacing: .1em; text-transform: uppercase;
-}
-.l1-metric .chip { display: block; width: auto; padding: 0; border: 0; background: transparent; }
-.params-checks {
-  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px; padding: 14px 26px 20px;
-}
-.params-check { min-width: 0; }
-.params-check-label {
-  margin-bottom: 6px; color: var(--muted); font-size: 10.5px; font-weight: 650;
-  letter-spacing: .08em; text-transform: uppercase;
-}
-.params-check .chip { display: block; width: auto; }
-.l1-metric .chip .m { font-size: 15px; }
-
-.rowlabel { font-weight: 600; white-space: nowrap; }
-.rowlabel .sub { display: block; font-weight: 400; font-size: 11.5px; color: var(--muted); }
-
-/* ── Tabs ── */
-.tabs { display: flex; gap: 8px; margin-left: 26px; }
-.tab {
-  font: inherit; font-weight: 600; font-size: 13px; padding: 8px 16px; border-radius: 9px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer;
-  display: inline-flex; align-items: center; gap: 8px;
-}
-.tab:not(.active):hover { border-color: var(--muted); }
-.tab.active { background: var(--dark); border-color: var(--dark); color: #fff; }
-.tab-dot { display: none; width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.tab[data-status="new"] .tab-dot { display: block; background: #2aa96e; }
-.tab[data-status="warn"] .tab-dot { display: block; background: #d9a422; }
-.tab[data-status="crit"] .tab-dot { display: block; background: #d64a3a; }
-
-/* ── Loader ── */
-.loader { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 64px 0; color: var(--muted); font-size: 13px; }
-.spin {
-  width: 18px; height: 18px; border-radius: 50%; flex: none;
-  border: 2px solid var(--line); border-top-color: var(--accent);
-  animation: spin .8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .spin, .view-refresh.loading svg { animation: none; }
-}
-
-/* ── Activity tags ── */
-.tag {
-  display: inline-block; border-radius: 9px; padding: 5px 10px; border: 1px solid var(--line);
-  background: var(--page); color: var(--ink-2); font-weight: 600; font-size: 12.5px; white-space: nowrap;
-}
-.tag.stake { background: var(--ok-bg); border-color: var(--ok-bd); color: var(--ok-fg); }
-.tag.sync  { background: var(--tint); border-color: var(--ok-bd); color: var(--accent); }
-tr.fresh td { background: var(--tint); }
-tr.fresh td:first-child { box-shadow: inset 3px 0 var(--accent); }
-.card-head .upd { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
-  color: var(--muted); font-size: 12px; white-space: nowrap; }
-.card-head .upd .spin { width: 10px; height: 10px; border-width: 1px; }
-.card-head .upd + .view-refresh { margin-left: 0; }
-
-.err-banner { margin: 12px 26px 6px; padding: 12px 16px; border-radius: 10px;
-  background: var(--crit-bg); border: 1px solid var(--crit-bd); color: var(--crit-fg); font-size: 13px; font-weight: 600; }
-.err-banner .retry { margin-left: 10px; padding: 3px 10px; border-radius: 8px; cursor: pointer;
-  border: 1px solid var(--crit-bd); background: transparent; color: var(--crit-fg); font: inherit; font-size: 12px; }
-.err-banner .retry:disabled { opacity: .5; cursor: default; }
-.chip .mono { color: inherit; font-size: inherit; }
-.hico { vertical-align: -1px; margin: 0 1px; }
-
-footer {
-  max-width: 1240px; margin: 0 auto; padding: 0 28px 40px;
-  display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
-  color: var(--muted); font-size: 12px;
-}
-.scroll-x {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-}
-/* Value we can display but not resolve — never styled as a link, so it promises nothing. */
-.inert { color: var(--muted); border-bottom: 1px dotted var(--line); cursor: help; }
-.limits { padding: 6px 26px 20px; color: var(--ink-2); font-size: 13px; }
-.limits p { margin: 6px 0; max-width: 92ch; }
-.limits strong { color: var(--ink); }
-@media (max-width: 1120px) {
-  .appbar { flex-wrap: wrap; }
-  .tabs { order: 3; width: 100%; min-width: 0; margin-left: 0; overflow-x: auto; }
-  .tab { flex: none; }
-}
-@media (max-width: 980px) {
-  .hero { grid-template-columns: 1fr 1fr; }
-  .hero > div { border-top: 1px solid var(--line); }
-  .hero > div:first-child { border-top: none; }
-  .params-checks { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 600px) {
-  .appbar { gap: 8px; padding: 10px 12px; }
-  .appbar .right { width: auto; margin-left: auto; gap: 8px; justify-content: flex-end; }
-  #rpcbtn { width: 36px; height: 36px; padding: 0; font-size: 0; display: grid; place-items: center; }
-  #rpcbtn::before { content: "⚙"; font-size: 16px; }
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; overflow: visible; }
-  .tab { justify-content: center; min-width: 0; min-height: 44px; padding: 9px 8px; }
-  .view-refresh { width: 36px; height: 36px; padding: 9px; }
-  .view-refresh svg { width: 16px; height: 16px; }
-  main { padding: 12px; }
-  footer { padding: 0 12px 24px; }
-  .card { margin-bottom: 14px; border-radius: 12px; }
-  .hero > div { padding: 18px; }
-  .hero > div:first-child, .hero > div:last-child { grid-column: 1 / -1; border-left: none; }
-  .hero > div:nth-child(2) { border-left: none; }
-  .hero h2 { font-size: 26px; }
-  .stat .v { font-size: 34px; }
-  #sync-volume .v:not(.loading) { font-size: 34px; }
-  .card-head { align-items: flex-start; flex-wrap: wrap; gap: 6px 10px; padding: 14px 16px 6px; }
-  .card-head .desc { order: 2; flex-basis: 100%; }
-  .l1-card .card-head { padding-bottom: 14px; }
-  .l1-card-copy { display: block; flex-basis: 100%; }
-  .l1-card-copy .desc { display: block; margin-top: 3px; }
-  .l1-card-links { width: 100%; margin-left: 0; }
-  .l1-metric-grid { grid-template-columns: 1fr; gap: 8px; padding: 0 16px 16px; }
-  .params-checks { grid-template-columns: 1fr; gap: 8px; padding: 10px 16px 16px; }
-  .legend { margin-left: auto; }
-  th, td { padding-left: 10px; padding-right: 10px; }
-  th:first-child, td:first-child { padding-left: 16px; }
-  th:last-child, td:last-child { padding-right: 16px; }
-  .scroll-x th:first-child, .scroll-x td:first-child {
-    position: sticky; left: 0; z-index: 1; background: var(--surface);
-    box-shadow: 1px 0 var(--line);
-  }
-  .scroll-x th:first-child { z-index: 2; }
-  .scroll-x tr.group td:first-child { background: #fafaf8; }
-  .syncm .chip, .ownm .chip { width: 158px; }
-  .who { gap: 8px; }
-  .avatar { width: 30px; height: 30px; }
-  .err-banner { margin: 12px 16px 6px; }
-  .err-banner .retry { display: block; margin: 8px 0 0; }
-  .limits { padding: 6px 16px 16px; }
-  #rpcdlg .head { padding: 16px 16px 12px; }
-  #rpcdlg .rows { padding: 8px 16px 4px; }
-  #rpcdlg .foot { padding: 12px 16px; flex-wrap: wrap; }
-}
-</style>
-</head>
-<body>
-
-<div class="appbar">
-  <div class="logo">⇄</div>
-  <div>
-    <h1>Direct Staking Watch</h1>
-  </div>
-  <nav class="tabs">
-    <button class="tab active" data-tab="main">Overview<span class="tab-dot" aria-hidden="true"></span></button>
-    <button class="tab" data-tab="access">Access Control<span class="tab-dot" aria-hidden="true"></span></button>
-    <button class="tab" data-tab="activity">Pool activity<span class="tab-dot" aria-hidden="true"></span></button>
-    <button class="tab" data-tab="automation">Automation<span class="tab-dot" aria-hidden="true"></span></button>
-    <button class="tab" data-tab="calldata">🧪 CRE Calldata<span class="tab-dot" aria-hidden="true"></span></button>
-  </nav>
-  <div class="right">
-    <span id="rpcstat"></span>
-    <button class="refresh alt" id="rpcbtn" title="Configure RPC endpoints">⚙ RPCs</button>
-  </div>
-</div>
-
-<dialog id="rpcdlg">
-  <form method="dialog">
-    <div class="head">
-      <h2>RPC endpoints</h2>
-      <p>Overrides are stored in this browser only and survive reloads. Leave a field empty to use the
-         built-in public endpoint. Each custom URL is checked with <span class="mono">eth_chainId</span>
-         before it is saved — a URL pointing at the wrong chain would silently render another network's
-         state under this one's name.</p>
-    </div>
-    <div class="rows" id="rpcrows"></div>
-    <div class="foot">
-      <button type="button" class="link" id="rpcreset">Reset all to defaults</button>
-      <span class="spacer"></span>
-      <button type="button" id="rpccancel">Cancel</button>
-      <button type="button" class="primary" id="rpcsave">Verify &amp; save</button>
-    </div>
-  </form>
-</dialog>
-
-<main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
-<main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
-<main id="activity" hidden><div class="card"><div class="loader"><span class="spin"></span> loading pool activity…</div></div></main>
-<main id="automation" hidden>
-  <div id="automation-cards"><div class="card"><div class="loader"><span class="spin"></span> reading the CRE workflow registry…</div></div></div>
-</main>
-
-<!-- Its own tab because it is its own tool: it decodes ANY CRE WorkflowRegistry calldata, needs no
-     on-chain read to do it, and is meant to be usable by a signer who has no interest in the rest of
-     this dashboard. It reads the Automation tab's registry data when that happens to be loaded — to
-     name a workflowId it recognises — and says so rather than depending on it. -->
-<main id="calldata" hidden>
-  <!-- Nothing here is re-rendered by the refresh loop, so a periodic refresh cannot wipe a paste that is
-       half-reviewed — the decode runs on input and on a registry read landing, never on a timer. -->
-  <div class="expbar"><strong>🧪 Experimental.</strong> Reads only — decodes, hashes, compares against
-    this repo's pins. Never signs, sends or uploads. A green result agrees with you; it is not authorization.</div>
-
-  <div class="card" id="cdtool">
-    <div class="card-head">
-      <h3>Calldata Explainer</h3>
-      <span class="desc">Paste any CRE <span class="mono">WorkflowRegistry</span> calldata — or a whole Safe
-      <span class="mono">execTransaction</span> — and every field is decoded and checked against this repo's pins.</span>
-    </div>
-    <div class="cdbox">
-      <textarea id="cd-in" spellcheck="false" rows="3" placeholder="0xb377bfc5…"></textarea>
-      <div class="cdbtns">
-        <button type="button" class="refresh" id="cd-go">Decode</button>
-        <button type="button" class="refresh alt" id="cd-clear">Clear</button>
-      </div>
-    </div>
-    <div id="cd-out"></div>
-    <div class="card-head">
-      <h3>Artifacts</h3>
-      <span class="desc">Hashed in this page and compared with the attestation in view — the pasted calldata's, or the
-      registered record's. A match proves these files are the ones <strong>declared</strong> at registration, not that
-      the DON runs them. The compiled binary is not attested: its build is not reproducible.</span>
-    </div>
-    <!-- The native file input renders its button and "no file chosen" text in the BROWSER's language, which
-         puts a stray locale in the middle of an English page. The input is kept (it is what opens the picker
-         and what the change handler reads) but visually hidden behind a label we draw ourselves. -->
-    <div class="cdfiles">
-      <label class="cdfile">
-        <span class="lab">main.ts</span>
-        <span class="btn">Choose file…</span>
-        <span class="name" id="cd-f-src-name">no file selected</span>
-        <input type="file" id="cd-f-src" accept=".ts,text/plain">
-      </label>
-      <label class="cdfile">
-        <span class="lab">config.deploy.json</span>
-        <span class="btn">Choose file…</span>
-        <span class="name" id="cd-f-cfg-name">no file selected</span>
-        <input type="file" id="cd-f-cfg" accept=".json,application/json">
-      </label>
-    </div>
-    <div class="cdbox">
-      <textarea id="cd-src-paste" spellcheck="false" rows="2" placeholder="…or paste main.ts here (byte-exact, trailing newline included)"></textarea>
-    </div>
-    <div id="cd-files-out"></div>
-  </div>
-</main>
-
-<footer>
-  <span>◷ Auto-refresh: 60s · read-only</span>
-</footer>
-
-<script>
 // ── sha256, in-page and synchronous ──────────────────────────────────────────
 // Not crypto.subtle: that exists only in a secure context, so a dashboard opened from a file:// path —
 // which is how an operator reads it offline, and exactly when they most want to check an artifact — would
@@ -591,7 +101,7 @@ const LOGOS = {
 
 const L1 = {
   name: 'Ethereum', tag: 'L1', chainId: 1, logo: LOGOS.ethereum,
-  rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io',
+  rpc: 'https://ethereum-rpc.publicnode.com', explorer: 'https://etherscan.io', bs: 'https://eth.blockscout.com',
   receiver: '0x6F357d53d6bE3238180316BA5F8f11467e164588',
   proxyAdmin: '0x88a45d2760b63c1500E3D2E3552b28e5Cdaa37BD',
   wsteth: '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0',
@@ -610,28 +120,29 @@ const COMMON_DEPLOYED = { // identical on all four lanes (deterministic deploys)
 
 const LANES = [
   { name: 'Optimism', chainId: 10, logo: LOGOS.optimism, rpc: 'https://optimism-rpc.publicnode.com', explorer: 'https://optimistic.etherscan.io',
-    bs: 'https://explorer.optimism.io',
+    bs: 'https://explorer.optimism.io', v2Logs: true, ccipSelector: '3734403246176062136',
     syncCheckpoint: { block: 155804910, wei: '129542754845784358617', count: 14 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
   { name: 'Arbitrum', chainId: 42161, logo: LOGOS.arbitrum, rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
-    bs: 'https://arbitrum.blockscout.com',
+    bs: 'https://arbitrum.blockscout.com', v2Logs: true, ccipSelector: '4949039107694359620',
     syncCheckpoint: { block: 496444513, wei: '265035298175104662154', count: 23 },
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
     oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
   { name: 'Base', chainId: 8453, logo: LOGOS.base, rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
-    logsRpc: 'https://base.gateway.tenderly.co', activityFrom: 48000000, senderFrom: 20476091,
+    bs: 'https://base.blockscout.com', v2Logs: true, activityFrom: 48000000,
+    senderFrom: 20476091, ccipSelector: '15971525489660198786',
     syncCheckpoint: { block: 50209626, wei: '305269281818334669206', count: 38 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x0E37599436974a25dDeEdF795C848d30Af46eaCF', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
     oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
   { name: 'Linea', chainId: 59144, logo: LOGOS.linea, rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
-    bs: 'https://api-explorer.linea.build',
+    bs: 'https://api-explorer.linea.build', v2Logs: true, ccipSelector: '4627098889531055414',
     syncCheckpoint: { block: 31767564, wei: '52300000000000000', count: 3 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
@@ -640,6 +151,7 @@ const LANES = [
   // No per-lane workflow name here any more: one registration drives all four lanes, and its name is
   // CRE_WORKFLOW_NAME, not a property of the lane.
 ].map(l => ({ ...l, ...COMMON_DEPLOYED }));
+const LANE_BY_CCIP_SELECTOR = new Map(LANES.map(L => [L.ccipSelector, L]));
 LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
 
 // ── The consolidated workflow's PARAMETERS ───────────────────────────────────
@@ -662,6 +174,8 @@ const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b2c87e45
 // single source digest mean anything. Published on-chain in the record's `attributes` at registration
 // and re-checkable here against a file the reader supplies. Regenerate with `just cre-workflow-hash`.
 const CRE_SOURCE_SHA256 = '539b2a58b5d1cc1192508a989637008d502df02e4a7d887c28f76c9682cbbe1d';
+// Registered source: main.ts at 9dd7005. The current repo source above is used for new deployments.
+const CRE_DEPLOYED_SOURCE_SHA256 = '1e61180338f834cfe9e77ac06b1871c6aa47f77c38de6c36f7510249b0df05bb';
 // Byte-exact copy of config.deploy.json — trailing newline included, or the digest will not match.
 const CRE_CONFIG_JSON = "{\n  \"receiverAddress\": \"0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A\",\n  \"targetAddress\": \"0x871a5cddE9813627Ff37A2895A0c9B117A664622\",\n  \"writeGasLimit\": \"750000\",\n  \"lanes\": [\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-optimism-1\",\n      \"schedule\": \"0 0 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-arbitrum-1\",\n      \"schedule\": \"0 15 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-base-1\",\n      \"schedule\": \"0 30 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-linea-1\",\n      \"schedule\": \"0 45 * * * *\"\n    }\n  ]\n}\n";
 
@@ -789,7 +303,7 @@ const SEL = {
   getOraclePool: '0x37d86246', getLastExecution: '0x7acd7f48', getDelay: '0xcebc9a82',
   getAmounts: '0x3d370b4e', getMaxFees: '0x77c46f80', shouldSyncAmount: '0x755b53a3',
   canSync: '0x269d5486', hasRole: '0x91d14854', balanceOf: '0x70a08231', isCallAllowed: '0x797c8d69',
-  isOwnerLinked: '0x0987294c', getWorkflowListByOwner: '0x8c42ffc5',
+  isOwnerLinked: '0x0987294c', getWorkflowListByOwner: '0x8c42ffc5', failedMessageHash: '0x34219403',
 };
 const pad = a => a.toLowerCase().replace('0x', '').padStart(64, '0');
 const padU = n => BigInt(n).toString(16).padStart(64, '0');
@@ -1294,8 +808,7 @@ function l1BalanceChecks(d) {
 }
 
 // ── Pool activity ────────────────────────────────────────────────────────────
-// Explorer transfers for OP/Arbitrum/Linea; Base uses a log-capable RPC because its Blockscout API
-// is currently unreliable. SlowStake comes from CustomSender logs on the same per-lane source.
+// Explorer transfers and CustomSender SlowStake events across all four lanes.
 const eqa = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 const ZERO = '0x' + '0'.repeat(40);
 const fmtAmt = wei => {
@@ -1384,14 +897,62 @@ function parseSlowStakeLog(L, log) {
   const user = topicAddress(topics[1]);
   const token = topicAddress(topics[3]);
   if (!user || !eqa(token, L.weth)) return null;
-  const parsedTs = /^0x[0-9a-f]+$/i.test(log.timeStamp ?? '') ? Number(BigInt(log.timeStamp)) : 0;
+  const rawTs = log.timeStamp;
+  const parsedTs = typeof rawTs === 'number' ? rawTs
+    : /^(0x[0-9a-f]+|\d+)$/i.test(rawTs ?? '') ? Number(BigInt(rawTs)) : 0;
   const amount = BigInt('0x' + data.slice(66, 130));
   return { tx, ts: parsedTs,
     kind: 'stake', label: 'Slow stake', amount: `${fmtAmt(amount)} WETH → L1`, cp: user };
 }
 
-async function senderLogs(L, topic) {
-  if (L.logsRpc) {
+async function blockscoutAddressLogs(base, address, topic, { limit = Infinity, since = null, accept = () => true } = {}) {
+  const rows = [];
+  const normalizedTopic = topic.toLowerCase();
+  let nextPage = {};
+  for (let pageNumber = 0; nextPage && pageNumber < 100; pageNumber++) {
+    const url = new URL(`${base}/api/v2/addresses/${address}/logs`);
+    url.searchParams.set('topic', topic);
+    Object.entries(nextPage).forEach(([key, value]) => url.searchParams.set(key, value));
+    const res = await rpcFetch(url.toString());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const page = await res.json();
+    if (!Array.isArray(page.items)) throw new Error('invalid logs response');
+    const logs = page.items
+      .filter(item => (item.topics?.[0] ?? '').toLowerCase() === normalizedTopic)
+      .map(item => ({
+      topics: item.topics, data: item.data,
+      blockNumber: item.block_number, logIndex: item.index,
+      transactionHash: item.transaction_hash,
+      timeStamp: item.block_timestamp ? Math.floor(Date.parse(item.block_timestamp) / 1000) : null,
+    }));
+    for (const log of logs) {
+      if (since != null) {
+        if (!Number.isFinite(log.timeStamp)) throw new Error('receiver event timestamp unavailable');
+        if (log.timeStamp < since) return rows;
+      }
+      if (accept(log)) rows.push(log);
+      if (rows.length >= limit) return rows;
+    }
+    nextPage = page.next_page_params;
+  }
+  if (nextPage) throw new Error('log history exceeds 5,000 rows');
+  return rows;
+}
+
+async function senderLogs(L, topic, options) {
+  if (L.v2Logs) {
+    const logs = await blockscoutAddressLogs(L.bs, L.sender, topic, options);
+    const missing = [...new Set(logs.filter(log => !Number.isFinite(log.timeStamp)).map(log => log.blockNumber))];
+    if (missing.length) {
+      const blocks = await rpcBatch(L.rpc, missing.map(n =>
+        ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })));
+      const stamps = new Map(missing.map((n, i) => [n, logQuantity(blocks[i]?.timestamp)]));
+      logs.forEach(log => { if (!Number.isFinite(log.timeStamp)) log.timeStamp = stamps.get(log.blockNumber); });
+      if (logs.some(log => !Number.isFinite(log.timeStamp))) throw new Error('sender log timestamp unavailable');
+    }
+    return logs;
+  }
+  if (L.logsRpc && !L.bs) {
     const logs = await rpcHistoryLogs(L, L.sender, [topic], L.senderFrom);
     const blockNumbers = [...new Set(logs.map(log => Number(BigInt(log.blockNumber))))];
     const blocks = blockNumbers.length ? await rpcBatchChunks(L.logsRpc, blockNumbers.map(n =>
@@ -1411,7 +972,7 @@ async function senderLogs(L, topic) {
 }
 
 async function slowStakeData(L) {
-  const logs = await senderLogs(L, SLOW_STAKE_TOPIC);
+  const logs = await senderLogs(L, SLOW_STAKE_TOPIC, { limit: 50, accept: log => !!parseSlowStakeLog(L, log) });
   return logs.map(log => parseSlowStakeLog(L, log)).filter(Boolean);
 }
 
@@ -1644,6 +1205,199 @@ function updateActivityUpd() {
     : activityRenderedAt ? `updated ${ago(Math.floor(activityRenderedAt / 1000))}` : '';
 }
 setInterval(updateActivityUpd, 10_000);
+
+// ── Shuttle failures ────────────────────────────────────────────────────────
+// MessageFailed discovers the incident and carries the complete CCIP message. Contract state and
+// lifecycle events provide the current verdict; an old failure event alone must never look active.
+const MESSAGE_FAILED_TOPIC = '0xef8a84d7e9c9d42c79a42cba16e93688c646989f43846843e163672cc887e253';
+const MESSAGE_RECOVERED_TOPIC = '0xef3bf8c64bc480286c4f3503b870ceb23e648d2d902e31fb7bb46680da6de8ad';
+const TOKENS_RECOVERED_TOPIC = '0x6e2f4b2b871174c4882a9b21bf5a2f421274d3dba05cc997af4528bdc393c027';
+const ZERO32 = '0x' + '0'.repeat(64);
+const FAILURES_SINCE = Date.parse('2026-08-01T00:00:00Z') / 1000;
+
+const logQuantity = value => {
+  try {
+    if (typeof value === 'number') return Number.isSafeInteger(value) ? value : null;
+    if (/^(0x[0-9a-f]+|\d+)$/i.test(value ?? '')) {
+      const n = Number(BigInt(value));
+      return Number.isSafeInteger(n) ? n : null;
+    }
+  } catch {}
+  return null;
+};
+
+function parseFailedMessageLog(log) {
+  const body = (log.data ?? '').replace(/^0x/, '');
+  const topics = log.topics ?? [];
+  const eventId = (topics[1] ?? '').toLowerCase();
+  const tx = (log.transactionHash ?? '').toLowerCase();
+  if ((topics[0] ?? '').toLowerCase() !== MESSAGE_FAILED_TOPIC ||
+      !/^0x[0-9a-f]{64}$/.test(eventId) || !/^0x[0-9a-f]{64}$/.test(tx) ||
+      !/^[0-9a-f]+$/i.test(body) || body.length % 64) return null;
+
+  const words = body.length / 64;
+  const word = i => {
+    if (!Number.isSafeInteger(i) || i < 0 || i >= words) throw new Error('short event data');
+    return body.slice(i * 64, i * 64 + 64);
+  };
+  const uint = i => BigInt('0x' + word(i));
+  const relative = (base, slot) => {
+    const offset = Number(uint(slot));
+    if (!Number.isSafeInteger(offset) || offset % 32) throw new Error('invalid event offset');
+    return base + offset / 32;
+  };
+  const bytes = (base, slot) => {
+    const at = relative(base, slot);
+    const length = Number(uint(at));
+    if (!Number.isSafeInteger(length)) throw new Error('invalid bytes length');
+    const start = (at + 1) * 64;
+    const value = body.slice(start, start + length * 2);
+    if (value.length !== length * 2) throw new Error('short bytes value');
+    return value;
+  };
+
+  try {
+    const tuple = relative(0, 0);
+    const messageId = ('0x' + word(tuple)).toLowerCase();
+    if (messageId !== eventId) return null;
+    const sourceSelector = uint(tuple + 1).toString();
+    bytes(tuple, tuple + 2); // validate the sender offset even though the receiver already authenticated it
+    const payload = bytes(tuple, tuple + 3);
+    const tokenArray = relative(tuple, tuple + 4);
+    const tokenCount = Number(uint(tokenArray));
+    const maxTokenCount = Math.floor((words - tokenArray - 1) / 2);
+    if (!Number.isSafeInteger(tokenCount) || tokenCount < 0 || tokenCount > maxTokenCount) return null;
+    const tokens = Array.from({ length: tokenCount }, (_, i) => ({
+      token: '0x' + word(tokenArray + 1 + i * 2).slice(-40),
+      amount: uint(tokenArray + 2 + i * 2),
+    }));
+    const block = logQuantity(log.blockNumber), logIndex = logQuantity(log.logIndex);
+    if (block == null || logIndex == null) return null;
+    return {
+      messageId, sourceSelector, tx, block, logIndex, timestamp: logQuantity(log.timeStamp),
+      recipient: payload.length >= 104 ? '0x' + payload.slice(0, 40) : null,
+      amount: payload.length >= 104 ? BigInt('0x' + payload.slice(40, 104)) : null,
+      tokens,
+    };
+  } catch { return null; }
+}
+
+function parseFailedLifecycleLog(log) {
+  const topic = (log.topics?.[0] ?? '').toLowerCase();
+  const messageId = (log.topics?.[1] ?? '').toLowerCase();
+  const tx = (log.transactionHash ?? '').toLowerCase();
+  const block = logQuantity(log.blockNumber), logIndex = logQuantity(log.logIndex);
+  const kind = topic === MESSAGE_RECOVERED_TOPIC ? 'retried'
+    : topic === TOKENS_RECOVERED_TOPIC ? 'recovered' : null;
+  if (!kind || !/^0x[0-9a-f]{64}$/.test(messageId) || !/^0x[0-9a-f]{64}$/.test(tx) ||
+      block == null || logIndex == null) return null;
+  return { kind, messageId, tx, block, logIndex, timestamp: logQuantity(log.timeStamp) };
+}
+
+async function l1ReceiverLogs(topic, toBlock) {
+  return (await blockscoutAddressLogs(L1.bs, L1.receiver, topic, { since: FAILURES_SINCE }))
+    .filter(log => log.blockNumber <= toBlock);
+}
+
+async function blockscoutIndexedBlock() {
+  const res = await rpcFetch(`${L1.bs}/api/v2/blocks?type=block`);
+  if (!res.ok) throw new Error(`index status HTTP ${res.status}`);
+  const indexedBlock = logQuantity((await res.json()).items?.[0]?.height);
+  if (indexedBlock == null) throw new Error('indexed block unreadable');
+  return indexedBlock;
+}
+
+async function failedMessageData() {
+  const [rpcHead, indexedHead] = await Promise.all([rpcBlockNumber(L1), blockscoutIndexedBlock()]);
+  const maxIndexLag = 64;
+  if (rpcHead - indexedHead > maxIndexLag)
+    throw new Error(`L1 indexer is ${rpcHead - indexedHead} blocks behind RPC (maximum ${maxIndexLag})`);
+  const atBlock = Math.min(rpcHead, indexedHead);
+  const failedLogs = await l1ReceiverLogs(MESSAGE_FAILED_TOPIC, atBlock);
+  const retriedLogs = await l1ReceiverLogs(MESSAGE_RECOVERED_TOPIC, atBlock);
+  const recoveredLogs = await l1ReceiverLogs(TOKENS_RECOVERED_TOPIC, atBlock);
+  const decoded = failedLogs.map(parseFailedMessageLog);
+  const lifecycle = [...retriedLogs, ...recoveredLogs].map(parseFailedLifecycleLog);
+  if (decoded.some(message => !message) || lifecycle.some(event => !event))
+    throw new Error('unrecognized receiver event');
+  if (decoded.some(message => message.timestamp == null))
+    throw new Error('receiver event timestamp unavailable');
+  const messages = [...new Map(decoded.filter(message => message.timestamp >= FAILURES_SINCE)
+    .map(message => [message.messageId, message])).values()];
+  const hashes = await rpcBatch(L1.rpc, messages.map(message => ({ method: 'eth_call', params: [{
+    to: L1.receiver, data: SEL.failedMessageHash + message.messageId.slice(2),
+  }, '0x' + atBlock.toString(16)] })));
+  if (hashes.some(hash => !/^0x[0-9a-f]{64}$/i.test(hash ?? '')))
+    throw new Error('failed-message state unreadable');
+  return messages.map((message, i) => {
+    const later = lifecycle.filter(event => event.messageId === message.messageId &&
+      (event.block > message.block || event.block === message.block && event.logIndex > message.logIndex))
+      .sort((a, b) => b.block - a.block || b.logIndex - a.logIndex)[0] ?? null;
+    const failedHash = hashes[i].toLowerCase();
+    return { ...message, failedHash, lifecycle: later,
+      state: failedHash !== ZERO32 ? 'active' : later?.kind ?? 'unknown' };
+  });
+}
+
+function renderShuttles(messages, error) {
+  if (error) {
+    setTabStatus('shuttle', 'crit');
+    document.getElementById('shuttle').innerHTML = `<div class="card">
+      <div class="card-head"><h3>L1 receiver failures</h3>${viewRefresh('shuttle', 'Shuttle failures')}</div>
+      <div class="err-banner">✕ ${esc(error)}</div></div>`;
+    return;
+  }
+  const active = messages.filter(message => message.state === 'active');
+  const unknown = messages.filter(message => message.state === 'unknown');
+  const retried = messages.filter(message => message.state === 'retried');
+  const recovered = messages.filter(message => message.state === 'recovered');
+  const ordered = [...messages].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0) ||
+    b.block - a.block || b.logIndex - a.logIndex);
+  setTabStatus('shuttle', unknown.length || active.length ? 'crit' : null);
+  const rows = ordered.map(message => {
+    const lane = LANE_BY_CCIP_SELECTOR.get(message.sourceSelector);
+    const source = lane ? laneWho(lane) : `<span class="mono">${message.sourceSelector}</span>`;
+    const recipient = message.recipient
+      ? lane ? alink(lane, message.recipient) : `<span class="mono">${short(message.recipient)}</span>` : '—';
+    const requested = message.amount == null ? '<div class="m">Malformed</div><div class="s">payload &lt; 52 bytes</div>'
+      : `<div class="m">${fmtAmt(message.amount)} requested</div><div class="s">${message.tokens.length} token ${message.tokens.length === 1 ? 'entry' : 'entries'}</div>`;
+    const state = message.state === 'active' ? chip('crit', 'Stored on L1', 'retry / recover')
+      : message.state === 'retried' ? chip('ok', 'Retry sent', 'L1 cleared')
+      : message.state === 'recovered' ? chip('warn', 'Tokens recovered', 'off Shuttle')
+      : chip('crit', 'Unknown', 'hash = 0; no event');
+    return `<tr>
+      <td><span class="num"><div class="m">${ago(message.timestamp)}</div><div class="s">${message.timestamp ? new Date(message.timestamp * 1000).toLocaleString() : 'time unavailable'}</div></span></td>
+      <td>${source}</td>
+      <td><span class="num">${requested}</span></td>
+      <td>${recipient}</td>
+      <td>${state}</td>
+      <td><span class="who">
+        <a class="mono" href="https://ccip.chain.link/msg/${message.messageId}" target="_blank" title="${message.messageId}">CCIP ↗</a>
+        <a class="mono" href="${L1.explorer}/tx/${message.tx}" target="_blank" title="${message.tx}">Failure ↗</a>
+        ${message.lifecycle ? `<a class="mono" href="${L1.explorer}/tx/${message.lifecycle.tx}" target="_blank" title="${message.lifecycle.tx}">${message.lifecycle.kind === 'retried' ? 'Retry' : 'Recovery'} ↗</a>` : ''}
+      </span></td>
+    </tr>`;
+  }).join('');
+  const summary = messages.length
+    ? `${active.length} active · ${retried.length} retry sent · ${recovered.length} tokens recovered`
+    : 'No failures since 1 Aug 2026.';
+  document.getElementById('shuttle').innerHTML = `<div class="card">
+    <div class="card-head">
+      <h3>L1 receiver failures</h3>
+      <span class="desc">${summary}${messages.length ? ' · since 1 Aug 2026' : ''}</span>
+      ${viewRefresh('shuttle', 'Shuttle failures')}
+    </div>
+    ${unknown.length ? `<div class="err-banner">✕ ${unknown.length} message ${unknown.length === 1 ? 'has' : 'have'} no lifecycle event</div>` : ''}
+    ${rows ? `<div class="scroll-x"><table>
+      <tr><th>Failed</th><th>Source</th><th>Payload</th><th>Recipient</th><th>Current state</th><th>Evidence</th></tr>
+      ${rows}</table></div>` : ''}
+  </div>`;
+}
+
+async function refreshShuttles() {
+  try { renderShuttles(await failedMessageData(), null); }
+  catch (e) { renderShuttles([], e.message); }
+}
 
 // ── Render ───────────────────────────────────────────────────────────────────
 // ── Automation ───────────────────────────────────────────────────────────────
@@ -1895,11 +1649,11 @@ function renderAutomation() {
   const srcRow = !cons || attrs.kind !== 'attest'
     ? { level: 'ok', html: chip('', 'not attested', 'no source digest is published for this record'), count: false }
     : (() => {
-        const srcOk = attrs.a.source === CRE_SOURCE_SHA256;
+        const srcOk = attrs.a.source === CRE_DEPLOYED_SOURCE_SHA256;
         return { level: srcOk ? 'ok' : 'crit', count: true, html: chip(srcOk ? 'ok' : 'crit',
-          srcOk ? 'matches repo' : 'does not match repo',
-          srcOk ? `main.ts <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span>`
-            : `<span class="mono">${esc(String(attrs.a.source ?? '—').slice(0, 16))}…</span> ≠ <span class="mono">${CRE_SOURCE_SHA256.slice(0, 16)}…</span>`) };
+          srcOk ? 'matches deployment' : 'does not match deployment',
+          srcOk ? 'main.ts · 9dd7005'
+            : `<span class="mono">${esc(String(attrs.a.source ?? '—').slice(0, 16))}…</span> ≠ <span class="mono">${CRE_DEPLOYED_SOURCE_SHA256.slice(0, 16)}…</span>`) };
       })();
 
   // Row 4 — the addresses the params point at. A config that is internally valid but aims at the wrong
@@ -2792,6 +2546,7 @@ async function refreshAll() {
     await Promise.all([
       core.then(lanes => refreshAutomationState(lanes)),
       refreshActivity(),
+      refreshShuttles(),
       refreshSyncVolume(),
       refreshAutomationLogs(),
     ]);
@@ -2812,6 +2567,7 @@ async function refreshView(view) {
   try {
     if (refreshAllPromise) await refreshAllPromise;
     else if (view === 'activity') await refreshActivity();
+    else if (view === 'shuttle') await refreshShuttles();
     else if (view === 'automation') await Promise.all([refreshAutomationState(), refreshAutomationLogs()]);
     else if (view === 'main') await Promise.all([refreshOverviewAccess(), refreshSyncVolume()]);
     else await refreshOverviewAccess();
@@ -2833,7 +2589,11 @@ function setTabStatus(tab, status) {
 function selectTab(tab) {
   const selected = tabButtons.find(b => b.dataset.tab === tab) ?? tabButtons[0];
   activeTab = selected.dataset.tab;
-  tabButtons.forEach(b => b.classList.toggle('active', b === selected));
+  tabButtons.forEach(b => {
+    b.classList.toggle('active', b === selected);
+    b.setAttribute('aria-pressed', String(b === selected));
+    b.setAttribute('aria-controls', b.dataset.tab);
+  });
   tabButtons.forEach(b => document.getElementById(b.dataset.tab).hidden = b !== selected);
   if (activeTab === 'activity') {
     activityViewBoundary = activitySeen;   // highlight what arrived since the last visit
@@ -2895,6 +2655,3 @@ if (LANES.some(L => activityCache[L.name]))
   renderActivity(LANES.map(L => ({ L, events: activityCache[L.name] })));
 refreshAll();
 setInterval(refreshAll, 60_000);
-</script>
-</body>
-</html>

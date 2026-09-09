@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Direct Staking Watch</title>
+<link rel="stylesheet" href="./static/styles.css">
+</head>
+<body>
+
+<div class="appbar">
+  <div class="logo">⇄</div>
+  <div>
+    <h1>Direct Staking Watch</h1>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="main">Overview<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="access">Access Control<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="activity">Pool activity<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="automation">Automation<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="shuttle">L1 failures<span class="tab-dot" aria-hidden="true"></span></button>
+    <button class="tab" data-tab="calldata">🧪 CRE Calldata<span class="tab-dot" aria-hidden="true"></span></button>
+  </nav>
+  <div class="right">
+    <span id="rpcstat"></span>
+    <button class="refresh alt" id="rpcbtn" title="Configure RPC endpoints">⚙ RPCs</button>
+  </div>
+</div>
+
+<dialog id="rpcdlg">
+  <form method="dialog">
+    <div class="head">
+      <h2>RPC endpoints</h2>
+      <p>Overrides are stored in this browser only and survive reloads. Leave a field empty to use the
+         built-in public endpoint. Each custom URL is checked with <span class="mono">eth_chainId</span>
+         before it is saved — a URL pointing at the wrong chain would silently render another network's
+         state under this one's name.</p>
+    </div>
+    <div class="rows" id="rpcrows"></div>
+    <div class="foot">
+      <button type="button" class="link" id="rpcreset">Reset all to defaults</button>
+      <span class="spacer"></span>
+      <button type="button" id="rpccancel">Cancel</button>
+      <button type="button" class="primary" id="rpcsave">Verify &amp; save</button>
+    </div>
+  </form>
+</dialog>
+
+<main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
+<main id="shuttle" hidden><div class="card"><div class="loader"><span class="spin"></span> reading L1 failures…</div></div></main>
+<main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
+<main id="activity" hidden><div class="card"><div class="loader"><span class="spin"></span> loading pool activity…</div></div></main>
+<main id="automation" hidden>
+  <div id="automation-cards"><div class="card"><div class="loader"><span class="spin"></span> reading the CRE workflow registry…</div></div></div>
+</main>
+
+<!-- Its own tab because it is its own tool: it decodes ANY CRE WorkflowRegistry calldata, needs no
+     on-chain read to do it, and is meant to be usable by a signer who has no interest in the rest of
+     this dashboard. It reads the Automation tab's registry data when that happens to be loaded — to
+     name a workflowId it recognises — and says so rather than depending on it. -->
+<main id="calldata" hidden>
+  <!-- Nothing here is re-rendered by the refresh loop, so a periodic refresh cannot wipe a paste that is
+       half-reviewed — the decode runs on input and on a registry read landing, never on a timer. -->
+  <div class="expbar"><strong>🧪 Experimental.</strong> Reads only — decodes, hashes, compares against
+    this repo's pins. Never signs, sends or uploads. A green result agrees with you; it is not authorization.</div>
+
+  <div class="card" id="cdtool">
+    <div class="card-head">
+      <h3>Calldata Explainer</h3>
+      <span class="desc">Paste any CRE <span class="mono">WorkflowRegistry</span> calldata — or a whole Safe
+      <span class="mono">execTransaction</span> — and every field is decoded and checked against this repo's pins.</span>
+    </div>
+    <div class="cdbox">
+      <textarea id="cd-in" spellcheck="false" rows="3" placeholder="0xb377bfc5…"></textarea>
+      <div class="cdbtns">
+        <button type="button" class="refresh" id="cd-go">Decode</button>
+        <button type="button" class="refresh alt" id="cd-clear">Clear</button>
+      </div>
+    </div>
+    <div id="cd-out"></div>
+    <div class="card-head">
+      <h3>Artifacts</h3>
+      <span class="desc">Hashed in this page and compared with the attestation in view — the pasted calldata's, or the
+      registered record's. A match proves these files are the ones <strong>declared</strong> at registration, not that
+      the DON runs them. The compiled binary is not attested: its build is not reproducible.</span>
+    </div>
+    <!-- The native file input renders its button and "no file chosen" text in the BROWSER's language, which
+         puts a stray locale in the middle of an English page. The input is kept (it is what opens the picker
+         and what the change handler reads) but visually hidden behind a label we draw ourselves. -->
+    <div class="cdfiles">
+      <label class="cdfile">
+        <span class="lab">main.ts</span>
+        <span class="btn">Choose file…</span>
+        <span class="name" id="cd-f-src-name">no file selected</span>
+        <input type="file" id="cd-f-src" accept=".ts,text/plain">
+      </label>
+      <label class="cdfile">
+        <span class="lab">config.deploy.json</span>
+        <span class="btn">Choose file…</span>
+        <span class="name" id="cd-f-cfg-name">no file selected</span>
+        <input type="file" id="cd-f-cfg" accept=".json,application/json">
+      </label>
+    </div>
+    <div class="cdbox">
+      <textarea id="cd-src-paste" spellcheck="false" rows="2" placeholder="…or paste main.ts here (byte-exact, trailing newline included)"></textarea>
+    </div>
+    <div id="cd-files-out"></div>
+  </div>
+</main>
+
+<footer>
+  <span>◷ Auto-refresh: 60s · read-only</span>
+</footer>
+
+<script src="./static/app.js"></script>
+</body>
+</html>

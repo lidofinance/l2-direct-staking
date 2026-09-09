@@ -20,6 +20,7 @@ substep() { echo "  ── $1"; }
 
 # PIDs of every anvil this farm started.
 ANVIL_PIDS=""
+source "$(dirname "${BASH_SOURCE[0]}")/cre-env.sh"
 
 fork_farm_kill_forks() {
   local pid
@@ -58,7 +59,7 @@ spawn_fork() {
   FORK_URL="http://127.0.0.1:$port"
   anvil --silent --auto-impersonate -p "$port" -f "$upstream" >"$FORK_FARM_LOG_DIR/$name.log" 2>&1 &
   ANVIL_PIDS="$ANVIL_PIDS $!"
-  echo "$name fork: $FORK_URL (upstream $upstream)"
+  echo "$name fork: $FORK_URL (upstream $(cre_env_host "$upstream"))"
   wait_for_rpc "$FORK_URL" "$name"
   if (( cooldown > 0 )); then
     local remaining=$(( cooldown - (SECONDS - spawn_t) ))
