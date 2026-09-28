@@ -165,5 +165,9 @@ cre_env_export() {
 cre_env_host() {
   local url="${1:-}"
   [[ -n "$url" ]] || { printf '%s' "(unset)"; return; }
-  printf '%s' "$(printf '%s' "$url" | sed -E 's#^([a-z]+://[^/]+).*#\1#')"
+  if [[ "$url" =~ ^(https?|wss?)://([^/?#]+) ]]; then
+    printf '%s://%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]##*@}"
+  else
+    printf '%s' '(invalid URL)'
+  fi
 }
