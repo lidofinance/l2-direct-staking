@@ -52,25 +52,13 @@ const SHA256_OK = sha256Hex('') === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649
   && sha256Hex('abc') === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // retired per-lane workflow owner; uploader EOA
-// Automation Safe (3/5, v1.4.1, same address on mainnet + all four L2s). Since the 2026-09 cutover it is
-// the ONE address in every automation owner role — ADR-0001 invariant shape:
-//   WorkflowRegistry.owner == CREReceiver.getExpectedAuthor() == CREReceiver.owner() == SyncTrigger.owner().
-// Linked on the L1 WorkflowRegistry 2026-09-10 (tx 0x2be23a9c…c575c4). That link, not this pin, is what
-// decides whether the DON will sign as this address; the Automation tab reads it.
+// The Automation Multisig owns the workflow, SyncTrigger, and CREReceiver.
+// Registry linkage and receiver author gates are verified by the Automation tab.
 const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b';
-// The dev 1/1 Safe (sole signer: DEV_EOA) that owned the interim consolidated registration
-// `direct-staking-sync-test` — PAUSED since the Safe-owned record went ACTIVE, deleted at
-// safe-txs/README.md step 7. Kept in the enumerated owner set so its record stays visible until then.
-const DEV_WF_OWNER = '0xede1750ac52156e10be2b41d8b8df816d58bafe1';
-const DEV_EOA      = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // former L2 control owner (Aug–Sep 2026)
 const CRE_WF_OWNER = AUTO_SAFE;
-// Expected CREReceiver.getExpectedAuthor(): the address that OWNS the registered workflow, or every
-// report reverts InvalidAuthor (which is exactly what happened on 2026-08-16, when it pointed at a Safe
-// that was never linked). The Automation tab checks the registry link rather than trusting this
-// constant; the constant only says which answer this dashboard expects to see.
+// Report metadata must name the registered workflow owner.
 const CRE_AUTHOR = CRE_WF_OWNER;
-const ST_OWNER   = AUTO_SAFE; // SyncTrigger and CREReceiver owner() — handed over from DEV_EOA by safe-txs/ownership-cutover.sh
+const ST_OWNER   = AUTO_SAFE;
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 const ADMIN_ROLE = '0x' + '0'.repeat(64);
@@ -78,20 +66,17 @@ const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
 const DON_FAMILY = 'zone-a'; // creDonFamily — the quota in getMaxWorkflowsPerUserDON is per family
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner (retired EOA)', [AUTO_SAFE]: 'Automation Safe (3/5)',
-  [DEV_WF_OWNER]: 'Dev Safe (1/1, retired)', [DEV_EOA]: 'Dev EOA (retired)',
+  [LOL]: 'LOL Safe', [AUTO_SAFE]: 'Automation Multisig (3/5)',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
-const EOAS = new Set([AUTO_OWNER, DEV_EOA]);
-const SAFES = new Set([LOL, AUTO_SAFE, DEV_WF_OWNER]);
-// Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
+const SAFES = new Set([LOL, AUTO_SAFE]);
+// Mark known Safe multisigs; do not infer unknown holder types from an address.
 const ICO = {
-  eoa: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="EOA"><circle cx="8" cy="4.5" r="3"/><path d="M8 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/></svg>',
   safe: '<svg class="hico" viewBox="0 0 20 16" width="13" height="11" fill="currentColor" aria-label="Safe multisig"><circle cx="7" cy="4.5" r="3"/><path d="M7 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/><circle cx="15" cy="5" r="2.4"/><path d="M15 8.8c-.7 0-1.4.1-2 .3 1.2 1 2 2.3 2 3.9v1h4v-1c0-1.9-1.7-3.5-4-4.2z"/></svg>',
   contract: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="contract"><path fill-rule="evenodd" d="M3.5 1H10l3 3v11H3.5V1zm5.5 1.2V5h2.8L9 2.2z"/></svg>',
 };
-const holderKind = a => EOAS.has(a) ? 'eoa' : SAFES.has(a) ? 'safe' : 'contract';
-const holder = (a, name) => `${ICO[holderKind((a || '').toLowerCase())]} ${name ?? who(a)}`;
+const holderKind = a => SAFES.has(a) ? 'safe' : a === DAO_AGENT ? 'contract' : null;
+const holder = (a, name) => `${ICO[holderKind((a || '').toLowerCase())] || ''} ${name ?? who(a)}`;
 
 // ponytail: RPC endpoints hardcoded; edit here if publicnode misbehaves.
 const LOGOS = {
@@ -127,14 +112,14 @@ const LANES = [
     syncCheckpoint: { block: 155804910, wei: '129542754845784358617', count: 14 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0xEfa0dB536d2c8089685630fafe88CF7805966FC3', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
-    oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
+    creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0x1F32b1c2345538c0c6f582fCB022739c4A194Ebb' },
   { name: 'Arbitrum', chainId: 42161, logo: LOGOS.arbitrum, rpc: 'https://arbitrum-one-rpc.publicnode.com', explorer: 'https://arbiscan.io',
     bs: 'https://arbitrum.blockscout.com', v2Logs: true, receiptsRpc: 'https://arb1.arbitrum.io/rpc', ccipSelector: '4949039107694359620',
     syncCheckpoint: { block: 496444513, wei: '265035298175104662154', count: 23 },
     sender: '0x72229141D4B016682d3618ECe47c046f30Da4AD1', proxyAdmin: '0x5B42aEbFe95247f1d22e282831e2A513bF050217',
     gov: '0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29', oldAutomation: '0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A',
-    oldPool: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
+    creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', wsteth: '0x5979D7b546E38E414F7E9822514be443A4800529' },
   { name: 'Base', chainId: 8453, logo: LOGOS.base, rpc: 'https://base-rpc.publicnode.com', explorer: 'https://basescan.org',
     logsRpc: 'https://mainnet.base.org', receiptsRpc: 'https://mainnet.base.org', activityFrom: 48000000,
@@ -142,44 +127,39 @@ const LANES = [
     syncCheckpoint: { block: 50209626, wei: '305269281818334669206', count: 38 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x0E37599436974a25dDeEdF795C848d30Af46eaCF', oldAutomation: '0x3776CC14ce997827F7A87091018Daa1739dc2790',
-    oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
+    creForwarder: '0xF8344CFd5c43616a4366C34E3EEE75af79a74482',
     weth: '0x4200000000000000000000000000000000000006', wsteth: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452' },
   { name: 'Linea', chainId: 59144, logo: LOGOS.linea, rpc: 'https://linea-rpc.publicnode.com', explorer: 'https://lineascan.build',
     bs: 'https://api-explorer.linea.build', v2Logs: true, ccipSelector: '4627098889531055414',
     syncCheckpoint: { block: 31767564, wei: '52300000000000000', count: 3 },
     sender: '0x328de900860816d29D1367F6903a24D8ed40C997', proxyAdmin: '0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192',
     gov: '0x74Be82F00CC867614803ffd7f36A2a4aF0405670', oldAutomation: '0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace',
-    oldPool: '0x6F357d53d6bE3238180316BA5F8f11467e164588', creForwarder: '0x9eF6468C5f37b976E57d52054c693269479A784d',
+    creForwarder: '0x9eF6468C5f37b976E57d52054c693269479A784d',
     weth: '0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f', wsteth: '0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F' },
-  // No per-lane workflow name here any more: one registration drives all four lanes, and its name is
-  // CRE_WORKFLOW_NAME, not a property of the lane.
 ].map(l => ({ ...l, ...COMMON_DEPLOYED }));
 const LANE_BY_CCIP_SELECTOR = new Map(LANES.map(L => [L.ccipSelector, L]));
 LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
 
 // ── The consolidated workflow's PARAMETERS ───────────────────────────────────
 // One registered workflow drives all four lanes, so the lane table, the staggered schedules and the
-// write gas limit live in cre-workflows/sync-automation/config.deploy.json instead of in four per-lane
-// registrations. That file is what the DON runs, and no off-chain source can show it back: `configUrl`
+// write gas limit live in cre-workflows/sync-automation/config.deploy.json.
+// That file is what the DON runs, and no off-chain source can show it back: `configUrl`
 // is signed-CloudFront and answers HTTP 403 to every caller but the DON.
 //
 // Two facts about the registration shape what this block can claim:
 //   • the workflowId is sha256 over the compiled binary AND the config, so the registration DOES commit
 //     to these params — and sha256(config) is reproducible byte-for-byte, which is why the digest below
 //     is recomputed IN THE BROWSER from the verbatim copy rather than trusted as a transcribed constant;
-//   • the binary half is NOT reproducible. Three `cre workflow hash` runs on one machine, same sources,
-//     gave 79ff0429…, 1a0aa094… and f087b180…, hence three different workflowIds. So a registered
-//     workflowId can never be re-derived after the fact: it is an identity here, never a check.
+//   • local rebuilds do not guarantee the registered binary's byte identity. Check the registered
+//     artifact directly; rebuilding source is not a workflowId verification.
 // Regenerate both constants with `just cre-workflow-hash`, which fails when they drift from the file.
-// The Automation-Safe-owned record (cre-workflows/sync-automation/workflow.yaml + the creWorkflowName
-// anchors), ACTIVE since the Safe executed safe-txs/ethereum-register-cre-workflow.json. Its predecessor
-// 'direct-staking-sync-test' under DEV_WF_OWNER is paused and only listed, never gated against.
+// Production registration name, shared with workflow.yaml and state expectations.
 const CRE_WORKFLOW_NAME = 'direct-staking-sync';
 const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b2c87e45ba0ce5ce97d';
 // sha256 of cre-workflows/sync-automation/main.ts — the WHOLE workflow, one file, which is what makes a
 // single source digest mean anything. Published on-chain in the record's `attributes` at registration
 // and re-checkable here against a file the reader supplies. Regenerate with `just cre-workflow-hash`.
-const CRE_SOURCE_SHA256 = '539b2a58b5d1cc1192508a989637008d502df02e4a7d887c28f76c9682cbbe1d';
+const CRE_SOURCE_SHA256 = '6b618bac8d29cca5ec12895201cab9a19747c1bac42979e0f59477f0d3453cf1';
 // Registered source: main.ts at 9dd7005. The current repo source above is used for new deployments.
 const CRE_DEPLOYED_SOURCE_SHA256 = '1e61180338f834cfe9e77ac06b1871c6aa47f77c38de6c36f7510249b0df05bb';
 // Byte-exact copy of config.deploy.json — trailing newline included, or the digest will not match.
@@ -390,10 +370,7 @@ async function rpcFetch(url, init) {
   return queued;
 }
 
-// Chunked so a batch-limited endpoint still works: free tiers commonly cap a batch (mainnet.optimism.io
-// at 10) and answer an oversized one with a single error OBJECT instead of the per-call array, which
-// used to surface as a bare "out.map is not a function". A lane reads ~20 calls, so this is 2 requests
-// against the default endpoints and the ceiling stays below every cap seen in the wild.
+// Bound batch size for public endpoints that reject oversized JSON-RPC arrays.
 const RPC_BATCH_MAX = 10;
 
 async function rpcBatchChunk(url, calls, idBase) {
@@ -525,7 +502,7 @@ async function l1Data() {
 
 // ── CRE registration plane (L1 WorkflowRegistry) ─────────────────────────────
 // One mainnet registry holds all four lanes' workflows. Read per OWNER and enumerated, so the tab
-// keeps working when the pending Safe migration moves ownership — the owner set is discovered from
+// checks unexpected author changes too — the owner set is discovered from
 // each lane's live getExpectedAuthor() rather than hardcoded.
 async function registryData(owners) {
   const R = L1.workflowRegistry;
@@ -761,7 +738,7 @@ async function automationLogs(L) {
 function laneGroups(L, d) {
   const eq = (a, b) => a && a.toLowerCase() === b.toLowerCase();
   const cell = ([level, value], a) => ({ level, value, a: a ? a.toLowerCase() : null }); // a → holder address, linked in the matrix
-  const syncRole = d.retiredHasRole || d.oldAutoHasRole ? ['crit', 'legacy holder'] // revoked at migration; a regrant = compromise
+  const syncRole = d.retiredHasRole || d.oldAutoHasRole ? ['crit', 'legacy holder'] // obsolete holder must remain revoked
     : d.triggerHasRole ? ['ok', 'SyncTrigger'] : ['crit', 'missing'];
   return [
     { contract: 'CustomSender', addr: L.sender, checks: [
@@ -1425,17 +1402,15 @@ async function refreshShuttles() {
 
 // ── Render ───────────────────────────────────────────────────────────────────
 // ── Automation ───────────────────────────────────────────────────────────────
-// Three planes, three verdicts, deliberately never merged into one light: the registry read ACTIVE
-// throughout the 2026-08-13 → 08-16 window in which the author gate rejected every report. A lane is
-// only as good as its weakest plane, and registration never carries that verdict on its own.
+// Registration, author admission, and delivery are separate checks. ACTIVE registry status
+// does not establish that reports pass the receiver or that a lane executes successfully.
 const AUTOMATION_CACHE_KEY = 'direct-staking-watch.automation-cache';
 // How long a lane may sit DUE before "waiting for the next tick" becomes "stalled". This is DERIVED
-// from the schedules the workflow actually runs, not fixed: the consolidation moved every lane from a
-// 5-minute cron to one hourly cron, and a 30-minute window against an hourly tick would raise a
-// critical on essentially every healthy sync — a lane goes due at `lastExecution + delay`, which has no
+// from the schedules the workflow runs: a 30-minute window against an hourly tick would raise a
+// critical on healthy syncs — a lane goes due at `lastExecution + delay`, which has no
 // relation to its minute-of-hour slot, so a normal wait is up to a full period.
 //
-// Floor and slack are deliberate: never tighter than the old 30 minutes, and always a quarter-hour
+// Floor and slack are deliberate: never tighter than 30 minutes, and always a quarter-hour
 // beyond one full tick period, so RPC lag or a skipped tick is late rather than "undelivered".
 const DUE_GRACE_FLOOR_S = 1800;
 const DUE_GRACE_SLACK_S = 900;
@@ -1935,7 +1910,7 @@ function render(l1, lanes) {
 
   const ownCard = `<div class="card">
     <div class="card-head">
-      <h3>Ownership &amp; Wiring</h3><span class="desc">On-chain values vs expected. ${ICO.contract} contract · ${ICO.safe} Safe · ${ICO.eoa} EOA</span>
+      <h3>Ownership &amp; Wiring</h3><span class="desc">On-chain values vs expected. ${ICO.contract} contract · ${ICO.safe} Safe</span>
       ${viewRefresh('access', 'Access Control')}
     </div>
     ${nDev ? `<div class="err-banner">✕ ${nDev} of ${nChecks} checks deviate from target${reachNote}</div>` : ''}
@@ -2171,8 +2146,7 @@ function cdExplainUpsert(a) {
   const idBare = (id || '').replace(/^0x/, '').toLowerCase();
   const rows = [];
 
-  // One name is expected here and everything else is a stop, the retired per-lane names included: this
-  // system runs ONE registration now, so re-registering a lane-specific one is a mistake, not a variant.
+  // The configured registration drives all four lanes; require its shared name.
   rows.push(cdRow('workflowName', name, name === CRE_WORKFLOW_NAME ? 'ok' : 'crit',
     name === CRE_WORKFLOW_NAME ? 'the consolidated four-lane workflow'
       : 'not the name this repo registers'));
@@ -2186,9 +2160,7 @@ function cdExplainUpsert(a) {
     known ? `already registered as ${esc(known.t[WF.name])} — upsertWorkflow reverts WorkflowIDAlreadyExists on a re-used id`
       : 'hash of binary + config + owner + name. The binary is not reproducible, so this identifies the artifact rather than proving it'));
 
-  // ACTIVE is a legitimate choice, not a defect, so it is described rather than flagged: registering
-  // ahead of the author cutover costs rejected reports, and whether that is worth avoiding is the
-  // operator's call, made once — not a warning re-raised on every paste.
+  // ACTIVE schedules immediately; reports still need to pass each lane's author gate.
   rows.push(cdRow('status', status === 0n ? '0 · ACTIVE' : status === 1n ? '1 · PAUSED' : String(status),
     status === 0n || status === 1n ? 'ok' : 'crit',
     status === 0n ? 'runs immediately. Until each lane\'s expectedAuthor points here, every tick is rejected (credits spent, no log)'
@@ -2513,12 +2485,8 @@ async function refreshOverviewAccess() {
 async function refreshAutomationState(lanes) {
   const currentLanes = lanes ?? await Promise.all(LANES.map(L => laneData(L)
     .then(d => ({ L, d })).catch(e => ({ L, error: e.message }))));
-  // The owner set is discovered, not hardcoded: whichever address each lane currently expects as its
-  // report author is the one whose registry account matters. Survives the pending Safe migration.
-  // CRE_WF_OWNER is included EXPLICITLY, not discovered: it owns the consolidated registration before
-  // any lane's expectedAuthor points at it, so a purely discovered owner set would be blind to the new
-  // workflow for exactly as long as the migration is mid-flight — the window that most needs watching.
-  const owners = [...new Set([AUTO_OWNER, CRE_WF_OWNER, DEV_WF_OWNER,
+  // Check the configured owner and every author actually reported by the lanes.
+  const owners = [...new Set([CRE_WF_OWNER,
     ...currentLanes.filter(l => !l.error && l.d.creAuthor).map(l => l.d.creAuthor.toLowerCase())])];
   let regs = null, regError = null;
   try { regs = await registryData(owners); } catch (e) { regError = e.message; }

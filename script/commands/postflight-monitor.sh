@@ -25,7 +25,7 @@ T_MSG_OK="0xdf6958669026659bac75ba986685e11a7d271284989f565f2802522663e9a70f"   
 T_MSG_FAIL="0xef8a84d7e9c9d42c79a42cba16e93688c646989f43846843e163672cc887e253" # LidoCustomReceiver.MessageFailed(bytes32,(bytes32,uint64,bytes,bytes,(address,uint256)[]))
 # Canonical mainnet stETH; the receiver holds it transiently while staking.
 L1_STETH="0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"
-TRAP_ALERT_WEI="1000000000000000000" # §2: alert if a balance > 1 ETH(-equiv)
+TRAP_ALERT_WEI="1000000000000000000" # : alert if a balance > 1 ETH(-equiv)
 
 rc=0
 source script/shared/chain-read.sh
@@ -158,60 +158,60 @@ else
     SKIP "L1 receiver address unresolved (l1LidoCustomReceiverBytes32)"
   else
     echo "  receiver = $L1_RECV"
-    # §2 trapped funds — alert if any balance > 1 ETH(-equiv); the ">1h" duration is the indexer's job.
-    ck_trap "§2 L1 receiver ETH" "$(parse_num "$(cast balance "$L1_RECV" --rpc-url "$L1_RPC" 2>/dev/null)")"
+    # trapped funds — alert if any balance > 1 ETH(-equiv); the ">1h" duration is the indexer's job.
+    ck_trap "L1 receiver ETH" "$(parse_num "$(cast balance "$L1_RECV" --rpc-url "$L1_RPC" 2>/dev/null)")"
     for pair in "wstETH:$L1_WSTETH" "stETH:$L1_STETH"; do
       lbl="${pair%%:*}"
       tok="${pair#*:}"
       is_addr "$tok" || {
-        WARN "§2 L1 receiver $lbl token address unresolved"
+        WARN "L1 receiver $lbl token address unresolved"
         continue
       }
-      ck_trap "§2 L1 receiver $lbl" "$(rd "$L1_RPC" "$tok" 'balanceOf(address)(uint256)' "$L1_RECV")"
+      ck_trap "L1 receiver $lbl" "$(rd "$L1_RPC" "$tok" 'balanceOf(address)(uint256)' "$L1_RECV")"
     done
-    # §2 MessageFailed — best-effort scan
+    # MessageFailed — best-effort scan
     fb="$(blocks_back "$L1_RPC" || true)"
     if [[ -n "$fb" ]]; then
       n="$(count_logs "$L1_RPC" "$L1_RECV" "$T_MSG_FAIL" "$fb")"
       if [[ "$n" == "?" ]]; then
-        WARN "§2 MessageFailed scan failed (RPC range limit?) — check an indexer"
+        WARN "MessageFailed scan failed (RPC range limit?) — check an indexer"
       elif [[ "$n" -gt 0 ]]; then
-        ALERT "§2 $n MessageFailed in last ${WINDOW_H}h — PAGE (retryFailedMessage / recoverTokens)"
+        ALERT "$n MessageFailed in last ${WINDOW_H}h — PAGE (retryFailedMessage / recoverTokens)"
       else
-        OK "§2 0 MessageFailed in last ${WINDOW_H}h (best-effort window)"
+        OK "0 MessageFailed in last ${WINDOW_H}h (best-effort window)"
       fi
       ok="$(count_logs "$L1_RPC" "$L1_RECV" "$T_MSG_OK" "$fb")"
-      INFO "§3 ${ok} MessageSucceeded in last ${WINDOW_H}h (pair vs L2 Sync below; 1:1 needs an indexer)"
+      INFO "${ok} MessageSucceeded in last ${WINDOW_H}h (pair vs L2 Sync below; 1:1 needs an indexer)"
     else
-      WARN "§2/§3 L1 event scan skipped (block-window probe failed)"
+      WARN "L1 event scan skipped (block-window probe failed)"
     fi
-    # §1 L1 access-control (ACL is non-enumerable → assert hasRole pair, not getRoleMemberCount)
+    # L1 access-control (ACL is non-enumerable → assert hasRole pair, not getRoleMemberCount)
     r1="$(rd "$L1_RPC" "$L1_RECV" 'hasRole(bytes32,address)(bool)' "$DEFAULT_ADMIN_ROLE" "$DAO")"
     if [[ "$r1" == "true" ]]; then
-      OK "§1 L1 receiver admin = Lido DAO Agent ($DAO)"
+      OK "L1 receiver admin = Lido DAO Agent ($DAO)"
     elif [[ "$r1" == "false" ]]; then
-      ALERT "§1 L1 receiver hasRole(admin, DAO) = false (expected true)"
+      ALERT "L1 receiver hasRole(admin, DAO) = false (expected true)"
     else
-      WARN "§1 L1 receiver hasRole unreadable"
+      WARN "L1 receiver hasRole unreadable"
     fi
     r2="$(rd "$L1_RPC" "$L1_RECV" 'hasRole(bytes32,address)(bool)' "$DEFAULT_ADMIN_ROLE" "$INIT_OWNER")"
     if [[ "$r2" == "false" ]]; then
-      OK "§1 L1 receiver admin NOT Initial Owner (rotated)"
+      OK "L1 receiver admin NOT Initial Owner (rotated)"
     elif [[ "$r2" == "true" ]]; then
-      ALERT "§1 L1 receiver hasRole(admin, InitialOwner) = true (expected false)"
+      ALERT "L1 receiver hasRole(admin, InitialOwner) = true (expected false)"
     else
-      WARN "§1 L1 receiver init-owner hasRole unreadable"
+      WARN "L1 receiver init-owner hasRole unreadable"
     fi
-    INFO "§1 sole-admin count (==1) needs an enumerable ACL or RoleGranted/Revoked history — indexer"
-    # §1 L1 ProxyAdmin — derived from the receiver's EIP-1967 admin slot (no hardcoded address)
+    INFO "sole-admin count (==1) needs an enumerable ACL or RoleGranted/Revoked history — indexer"
+    # L1 ProxyAdmin — derived from the receiver's EIP-1967 admin slot (no hardcoded address)
     pa="$(cast parse-bytes32-address "$(cast storage "$L1_RECV" "$EIP1967_ADMIN_SLOT" --rpc-url "$L1_RPC" 2>/dev/null)" 2>/dev/null || true)"
     if is_addr "$pa"; then
-      ck_addr "§1 L1 ProxyAdmin ($pa) owner" "$(rd "$L1_RPC" "$pa" 'owner()(address)')" "$DAO" "Lido DAO Agent"
+      ck_addr "L1 ProxyAdmin ($pa) owner" "$(rd "$L1_RPC" "$pa" 'owner()(address)')" "$DAO" "Lido DAO Agent"
     else
-      WARN "§1 L1 ProxyAdmin not derivable from admin slot"
+      WARN "L1 ProxyAdmin not derivable from admin slot"
     fi
   fi
-  INFO "§4 CRE registry owner/status: run \`just -E .env.<net> verify-cre-workflow\` (registry owner == LOL Safe, status ACTIVE)"
+  INFO "CRE registry owner/status: run \`NETWORK=<net> just verify-cre-workflow\` (registry owner == Automation Multisig, status ACTIVE)"
 fi
 
 # ════════════════════════ L2 lanes (×4) ════════════════════════
@@ -251,19 +251,20 @@ for net in "${NETS[@]}"; do
     ALERT "${name} — RPC chain-id $chain_id, expected $expected_chain_id; skipping"
     continue
   fi
-  FB="$(blocks_back "$url" || true)" # one block-window probe per lane, reused by the §4 + §3 event scans
+  FB="$(blocks_back "$url" || true)" # one block-window probe per lane, reused by the + event scans
 
   # Read lane anchors, then shared anchors through the duplicate-checking input resolver.
   {
     IFS= read -r ROUTER
     IFS= read -r WETH
-    IFS= read -r OLDPOOL
     IFS= read -r CREFWD
     IFS= read -r INP_SENDER
   } < <(yq '[.. | select(anchor=="l2CcipRouter")][0], [.. | select(anchor=="l2Weth")][0],
-    [.. | select(anchor=="RETIRED_l2OraclePool")][0], [.. | select(anchor=="l2CreForwarder")][0],
+    [.. | select(anchor=="l2CreForwarder")][0],
     [.. | select(anchor=="l2CustomSender")][0]' "$INF" 2>/dev/null)
   LOL="$(just _l2-input-anchor "$net" l2LiquidityOwner)"
+  AUTOMATION_OWNER="$(just _l2-input-anchor "$net" l2AutomationOwner)"
+  WORKFLOW_OWNER="$(just _l2-input-anchor "$net" creWorkflowOwner)"
   SEL="$(just _l2-input-anchor "$net" ethMainnetCcipChainSelector)"
   SYNCMIN="$(just _l2-input-anchor "$net" syncMinAmount)"
   # Deployed addresses (only SyncTrigger is not on-chain-discoverable). Absent file ⇒ SKIP those rows.
@@ -279,86 +280,80 @@ for net in "${NETS[@]}"; do
       [.. | select(anchor=="l2CreReceiver")][0], [.. | select(anchor=="l2OraclePool")][0]' "$DEP" 2>/dev/null)
   fi
 
-  # Bootstrap CustomSender LIVE from the known old pool, cross-check vs the .inputs externals anchor.
-  SENDER="$(rd "$url" "$OLDPOOL" 'SENDER()(address)')"
-  if ! is_addr "$SENDER"; then
-    SENDER="$INP_SENDER"
-  fi
+  # Use the configured sender; validate its active pool and the trigger's immutable sender below.
+  SENDER="$INP_SENDER"
   if is_addr "$SENDER"; then
     echo "  CustomSender = $SENDER"
-    if is_addr "$DEP_TRIG"; then
-      echo "  SyncTrigger  = $DEP_TRIG (.deployed)"
-    fi
-    is_addr "$INP_SENDER" && { eqa "$SENDER" "$INP_SENDER" || ALERT "§1 CustomSender live=$SENDER ≠ .inputs=$INP_SENDER (stale/contaminated file)"; }
   else
-    WARN "${name} — CustomSender unresolved (oldPool.SENDER() failed, no l2CustomSender in .inputs); §1/§3/§5 limited"
+    WARN "${name} — l2CustomSender missing from inputs; wiring and sync checks limited"
   fi
 
-  # ── §1 wiring + new pool (derived live; cross-checked vs file) ──
+  # ── wiring + pool (derived live; cross-checked vs file) ──
   POOL=""
   if is_addr "$SENDER"; then
     POOL="$(rd "$url" "$SENDER" 'getOraclePool()(address)')"
     if is_addr "$POOL"; then
       if is_addr "$DEP_POOL"; then
-        eqa "$POOL" "$DEP_POOL" && OK "§1 getOraclePool live == .deployed ($POOL)" || ALERT "§1 getOraclePool live=$POOL ≠ .deployed=$DEP_POOL (contamination)"
+        eqa "$POOL" "$DEP_POOL" && OK "getOraclePool live == .deployed ($POOL)" || ALERT "getOraclePool live=$POOL ≠ .deployed=$DEP_POOL (contamination)"
       else
-        INFO "§1 new OraclePool (live) = $POOL"
+        INFO "OraclePool (live) = $POOL"
       fi
     else
-      WARN "§1 CustomSender.getOraclePool() unreadable"
+      WARN "CustomSender.getOraclePool() unreadable"
       POOL="$DEP_POOL"
     fi
   fi
   if is_addr "$POOL"; then
-    ck_addr "§1 OraclePool owner" "$(rd "$url" "$POOL" 'owner()(address)')" "$LOL" "LOL"
+    ck_addr "OraclePool owner" "$(rd "$url" "$POOL" 'owner()(address)')" "$LOL" "LOL"
     p="$(rd "$url" "$POOL" 'paused()(bool)')"
     if [[ "$p" == "false" ]]; then
-      OK "§3 OraclePool not paused"
+      OK "OraclePool not paused"
     elif [[ "$p" == "true" ]]; then
-      ALERT "§3 OraclePool paused (blocks fastStake)"
+      ALERT "OraclePool paused (blocks fastStake)"
     else
-      WARN "§3 OraclePool paused() unreadable"
+      WARN "OraclePool paused() unreadable"
     fi
   fi
 
   # ── SyncTrigger-centric rows (need the deployed trigger address) ──
   if ! is_addr "$DEP_TRIG"; then
-    SKIP "§1/§3/§5 SyncTrigger+CREReceiver rows — config/state/${net}.deployed.yaml absent (run after deploy-test)"
+    SKIP "SyncTrigger+CREReceiver rows — config/state/${net}.deployed.yaml missing or invalid"
   else
     TRIG="$DEP_TRIG"
     if is_addr "$SENDER"; then
       hr="$(rd "$url" "$SENDER" 'hasRole(bytes32,address)(bool)' "$SYNC_ROLE" "$TRIG")"
       if [[ "$hr" == "true" ]]; then
-        OK "§1 CustomSender SYNC_ROLE → SyncTrigger"
+        OK "CustomSender SYNC_ROLE → SyncTrigger"
       elif [[ "$hr" == "false" ]]; then
-        ALERT "§1 CustomSender hasRole(SYNC_ROLE, trigger) = false (expected true)"
+        ALERT "CustomSender hasRole(SYNC_ROLE, trigger) = false (expected true)"
       else
-        WARN "§1 CustomSender SYNC_ROLE check unreadable"
+        WARN "CustomSender SYNC_ROLE check unreadable"
       fi
     fi
-    ck_addr "§1 SyncTrigger owner" "$(rd "$url" "$TRIG" 'owner()(address)')" "$LOL" "LOL"
+    ck_addr "SyncTrigger owner" "$(rd "$url" "$TRIG" 'owner()(address)')" "$AUTOMATION_OWNER" "Automation Multisig"
+    ck_addr "SyncTrigger sender" "$(rd "$url" "$TRIG" 'SENDER()(address)')" "$INP_SENDER" "configured CustomSender"
     # CREReceiver derived from the trigger's forwarder (live), cross-checked vs file
     RECV="$(rd "$url" "$TRIG" 'getForwarder()(address)')"
     if is_addr "$RECV"; then
-      is_addr "$DEP_RECV" && { eqa "$RECV" "$DEP_RECV" || ALERT "§1 SyncTrigger.getForwarder live=$RECV ≠ .deployed CREReceiver=$DEP_RECV"; }
+      is_addr "$DEP_RECV" && { eqa "$RECV" "$DEP_RECV" || ALERT "SyncTrigger.getForwarder live=$RECV ≠ .deployed CREReceiver=$DEP_RECV"; }
     else
       RECV="$DEP_RECV"
     fi
     if is_addr "$RECV"; then
-      ck_addr "§1 CREReceiver owner" "$(rd "$url" "$RECV" 'owner()(address)')" "$LOL" "LOL"
-      ck_addr "§1 CREReceiver expectedAuthor" "$(rd "$url" "$RECV" 'getExpectedAuthor()(address)')" "$LOL" "LOL"
-      ck_addr "§1 CREReceiver forwarder" "$(rd "$url" "$RECV" 'getForwarder()(address)')" "$CREFWD" "pinned CRE forwarder"
+      ck_addr "CREReceiver owner" "$(rd "$url" "$RECV" 'owner()(address)')" "$AUTOMATION_OWNER" "Automation Multisig"
+      ck_addr "CREReceiver expectedAuthor" "$(rd "$url" "$RECV" 'getExpectedAuthor()(address)')" "$WORKFLOW_OWNER" "workflow owner"
+      ck_addr "CREReceiver forwarder" "$(rd "$url" "$RECV" 'getForwarder()(address)')" "$CREFWD" "pinned CRE forwarder"
       ca="$(rd "$url" "$RECV" 'isCallAllowed(address,bytes4)(bool)' "$TRIG" "$TRIGGER_SYNC_SEL")"
       if [[ "$ca" == "true" ]]; then
-        OK "§1 CREReceiver allows triggerSync from SyncTrigger"
+        OK "CREReceiver allows triggerSync from SyncTrigger"
       elif [[ "$ca" == "false" ]]; then
-        ALERT "§1 CREReceiver isCallAllowed(trigger, triggerSync) = false (expected true)"
+        ALERT "CREReceiver isCallAllowed(trigger, triggerSync) = false (expected true)"
       else
-        WARN "§1 CREReceiver isCallAllowed unreadable"
+        WARN "CREReceiver isCallAllowed unreadable"
       fi
     fi
 
-    # ── §3 liveness ──
+    # ── liveness ──
     le="$(rd "$url" "$TRIG" 'getLastExecution()(uint48)')"
     nowts="$(parse_num "$(cast block latest --field timestamp --rpc-url "$url" 2>/dev/null)")"
     poolweth=""
@@ -369,77 +364,77 @@ for net in "${NETS[@]}"; do
       due_by_pool=0
       [[ "$poolweth" =~ ^[0-9]+$ && "$SYNCMIN" =~ ^[0-9]+$ ]] && uint_ge "$poolweth" "$SYNCMIN" && due_by_pool=1
       if ((ah > 24)) && ((due_by_pool == 1)); then
-        WARN "§3 last sync ${ah}h ago while pool WETH ≥ min — investigate stall"
+        WARN "last sync ${ah}h ago while pool WETH ≥ min — investigate stall"
       else
-        OK "§3 last sync ${ah}h ago$( ((due_by_pool == 1)) && echo " (pool WETH ≥ min)" || echo " (pool below min — idle is expected)")"
+        OK "last sync ${ah}h ago$( ((due_by_pool == 1)) && echo " (pool WETH ≥ min)" || echo " (pool below min — idle is expected)")"
       fi
     else
-      WARN "§3 getLastExecution unreadable"
+      WARN "getLastExecution unreadable"
     fi
-    [[ "$poolweth" =~ ^[0-9]+$ ]] && INFO "§3 OraclePool WETH = $(cast from-wei "$poolweth") (drains each sync)"
+    [[ "$poolweth" =~ ^[0-9]+$ ]] && INFO "OraclePool WETH = $(cast from-wei "$poolweth") (drains each sync)"
 
     should="$(rd "$url" "$TRIG" 'shouldSyncAmount()(uint256)')"
     can="$(rd "$url" "$TRIG" 'canSync()(bool)')"
     if [[ "$should" =~ ^[0-9]+$ && ("$can" == "true" || "$can" == "false") ]]; then
       if [[ "$should" != "0" && "$can" == "false" ]]; then
-        ALERT "§3 due-but-blocked: shouldSyncAmount=$(cast from-wei "$should") WETH yet canSync=false — silent stall (float<getMaxFees / SYNC_ROLE revoked / pool paused)"
+        ALERT "due-but-blocked: shouldSyncAmount=$(cast from-wei "$should") WETH yet canSync=false — silent stall (float<getMaxFees / SYNC_ROLE revoked / pool paused)"
       elif [[ "$should" != "0" && "$can" == "true" ]]; then
-        INFO "§3 due & executable (shouldSyncAmount=$(cast from-wei "$should") WETH, canSync=true) — workflow should fire"
+        INFO "due & executable (shouldSyncAmount=$(cast from-wei "$should") WETH, canSync=true) — workflow should fire"
       else
-        OK "§3 idle (shouldSyncAmount=0, canSync=$can)"
+        OK "idle (shouldSyncAmount=0, canSync=$can)"
       fi
     else
-      WARN "§3 shouldSyncAmount/canSync unreadable"
+      WARN "shouldSyncAmount/canSync unreadable"
     fi
 
-    # ── §5 float headroom (≥2× recommended; <1× ⇒ next sync reverts) ──
+    # ── float headroom (≥2× recommended; <1× ⇒ next sync reverts) ──
     flo="$(parse_num "$(cast balance "$TRIG" --rpc-url "$url" 2>/dev/null)")"
     mf="$(rd "$url" "$TRIG" 'getMaxFees()(uint256)')"
     if [[ "$flo" =~ ^[0-9]+$ && "$mf" =~ ^[0-9]+$ && "$mf" != "0" ]]; then
       ratio="$(awk -v f="$flo" -v m="$mf" 'BEGIN{printf "%.2f", f/m}')"
       if ! uint_ge "$flo" "$mf"; then
-        ALERT "§5 float ${ratio}× getMaxFees (< 1× = next sync reverts, lane stalls): $(cast from-wei "$flo") / $(cast from-wei "$mf") ETH"
+        ALERT "float ${ratio}× getMaxFees (< 1× = next sync reverts, lane stalls): $(cast from-wei "$flo") / $(cast from-wei "$mf") ETH"
       elif ! uint_ge "$flo" "$(uint_double "$mf")"; then
-        WARN "§5 float ${ratio}× getMaxFees (< 2× — top up): $(cast from-wei "$flo") / $(cast from-wei "$mf") ETH"
+        WARN "float ${ratio}× getMaxFees (< 2× — top up): $(cast from-wei "$flo") / $(cast from-wei "$mf") ETH"
       else
-        OK "§5 float ${ratio}× getMaxFees ($(cast from-wei "$flo") ETH)"
+        OK "float ${ratio}× getMaxFees ($(cast from-wei "$flo") ETH)"
       fi
     else
-      WARN "§5 float / getMaxFees unreadable"
+      WARN "float / getMaxFees unreadable"
     fi
 
-    # ── §4 CallExecuted best-effort scan (the only on-chain proof the DON author-gate passes) ──
+    # ── CallExecuted best-effort scan (the only on-chain proof the DON author-gate passes) ──
     if is_addr "$RECV"; then
       if [[ -n "$FB" ]]; then
         n="$(count_logs "$url" "$RECV" "$T_CALLEXEC" "$FB")"
         if [[ "$n" == "?" ]]; then
-          WARN "§4 CallExecuted scan failed (RPC range limit?) — check an indexer"
+          WARN "CallExecuted scan failed (RPC range limit?) — check an indexer"
         elif [[ "$n" -gt 0 ]]; then
-          OK "§4 author gate proven ($n CallExecuted in last ${WINDOW_H}h)"
+          OK "author gate proven ($n CallExecuted in last ${WINDOW_H}h)"
         else
-          WARN "§4 0 CallExecuted in last ${WINDOW_H}h — idle OR author-gate failure (InvalidAuthor); confirm via longer history/indexer"
+          WARN "0 CallExecuted in last ${WINDOW_H}h — idle OR author-gate failure (InvalidAuthor); confirm via longer history/indexer"
         fi
       else
-        WARN "§4 CallExecuted scan skipped (block-window probe failed)"
+        WARN "CallExecuted scan skipped (block-window probe failed)"
       fi
     fi
   fi
 
-  # ── §3 CCIP allow-list (router known; no trigger needed) + §3 Sync scan ──
+  # ── CCIP allow-list (router known; no trigger needed) + Sync scan ──
   if is_addr "$ROUTER" && [[ "$SEL" =~ ^[0-9]+$ ]]; then
     sup="$(rd "$url" "$ROUTER" 'isChainSupported(uint64)(bool)' "$SEL")"
     if [[ "$sup" == "true" ]]; then
-      OK "§3 CCIP dest-chain (Ethereum) allow-listed"
+      OK "CCIP dest-chain (Ethereum) allow-listed"
     elif [[ "$sup" == "false" ]]; then
-      ALERT "§3 CCIP dest-chain de-allow-listed — every triggerSync reverts inside the router (revert-spam, not a clean stall)"
+      ALERT "CCIP dest-chain de-allow-listed — every triggerSync reverts inside the router (revert-spam, not a clean stall)"
     else
-      WARN "§3 Router.isChainSupported unreadable"
+      WARN "Router.isChainSupported unreadable"
     fi
   fi
   if is_addr "$SENDER"; then
     if [[ -n "$FB" ]]; then
       s="$(count_logs "$url" "$SENDER" "$T_SYNC" "$FB")"
-      [[ "$s" == "?" ]] && WARN "§3 Sync scan failed (RPC range limit?)" || INFO "§3 ${s} Sync events (L2) in last ${WINDOW_H}h (pair vs L1 MessageSucceeded; 1:1 needs an indexer)"
+      [[ "$s" == "?" ]] && WARN "Sync scan failed (RPC range limit?)" || INFO "${s} Sync events (L2) in last ${WINDOW_H}h (pair vs L1 MessageSucceeded; 1:1 needs an indexer)"
     fi
   fi
 done
@@ -447,12 +442,12 @@ done
 # ════════════════════════ NOT covered here (wire into indexer / dashboard) ════════════════════════
 echo
 hdr "──────────── NOT covered here — needs an indexer / dashboard ────────────"
-echo "  • §1 events: RoleGranted/Revoked, OwnershipTransferred, Forwarder/ExpectedAuthor/AllowedCallUpdated, OraclePool Paused → Tenderly/Dune"
-echo "  • §4 CRE credit balance (LOL Safe's CRE account) — dashboard-only, no on-chain signal → https://cre.chain.link/workflows"
-echo "        on-chain proxy = the §3 liveness rows above (stale sync + healthy fees/float ⇒ suspect credit starvation)"
-echo "  • §2 CCIP manual-exec queue → https://ccip.chain.link/   • §5 Arbitrum retryable redeems → https://retryable-dashboard.arbitrum.io/"
+echo "  • events: RoleGranted/Revoked, OwnershipTransferred, Forwarder/ExpectedAuthor/AllowedCallUpdated, OraclePool Paused → Tenderly/Dune"
+echo "  • CRE credit balance (Automation Multisig's CRE account) — dashboard-only, no on-chain signal → https://cre.chain.link/workflows"
+echo "        on-chain proxy = the liveness rows above (stale sync + healthy fees/float ⇒ suspect credit starvation)"
+echo "  • CCIP manual-exec queue → https://ccip.chain.link/   • Arbitrum retryable redeems → https://retryable-dashboard.arbitrum.io/"
 echo "  • RMN curse (no single stable view) + continuous 1:1 Sync↔MessageSucceeded pairing → indexer"
-echo "  • exhaustive §1 wiring → state-mate (\`just -E .env.<net> test-<net>-upgrade-state-verify\`); fee/gas headroom (§5) → \`just quote-ccip-fees\` + \`just -E .env.<net> preflight-check\`"
+echo "  • exhaustive wiring → state-mate (\`NETWORK=<net> just verify-<net>-state\`); fee/gas headroom → \`just quote-ccip-fees\` + \`NETWORK=<net> just preflight-check\`"
 echo
 hdr "===================================================================="
 if ((rc == 0)); then

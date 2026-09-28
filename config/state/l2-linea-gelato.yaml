@@ -1,7 +1,5 @@
 ---
-# Linea-only legacy Gelato de-role check. Run in addition to the combined shared l2.yaml check.
-# The retired CRE pair is verified by l2.yaml for every lane; this file exists only because Linea
-# also had a Gelato automation address that does not exist on the other networks.
+# Linea-only negative SYNC_ROLE assertion, in addition to shared l2.yaml wiring.
 
 roles:
   - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"

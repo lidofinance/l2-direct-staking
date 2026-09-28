@@ -1,97 +1,82 @@
-> **View — post-migration monitoring & alerts.** Stakeholder: on-call / SRE.
-> Concern: the *ongoing* signals to watch once a network is live (access-control
-> invariants, trapped funds, sync liveness, CRE health, capacity) — distinct from
-> the one-time migration *recipe* in [`RUNBOOK.md`](../RUNBOOK.md), whose §Watch
-> section is the action-trigger tether into this canonical alert table. Doc map:
-> [`README.md` §Documentation](../README.md#documentation).
+# Monitoring and Alerts
 
-# Monitoring & alerts (post-migration)
+Monitor all four lanes and the shared Ethereum receiver. `just postflight-monitor`
+is a read-only spot check with best-effort recent event scans. It exits nonzero on
+WARN/ALERT/SKIP and does not replace continuous event indexing or service-credit
+monitoring. `MONITOR_WINDOW_HOURS` selects its event window (default 24).
 
-Post-migration monitoring for the shared L1 Receiver + the 4 L2 deployments. Signals marked **(×4)** apply per network; all four must be watched. The state-polling rows map directly to the state-mate configs in `config/state/` (shared `l2.yaml` wiring + per-network `.inputs`/`.deployed` siblings); the event-subscription rows should be wired into an indexer (Tenderly, Dune, or similar). Thresholds in parentheses are starting points — tune after the first week of observation.
+## Access control and wiring — critical
 
-> **Runnable spot-check — `just postflight-monitor`.** A stop-gap until the indexer/dashboard wiring exists: it reads the *on-chain-readable* rows below (access-control subset + live wiring cross-checks, trapped funds, sync-liveness, capacity/float headroom) across all four lanes + L1 in one pass, adds best-effort recent-window scans of `CallExecuted` / `MessageFailed` / `Sync` (`MONITOR_WINDOW_HOURS`, default 24 — a snapshot, not coverage), and ends with a footer listing what it *cannot* read one-shot (the event subscriptions, CRE credit, and CCIP/Arbitrum dashboards). It is **not** a replacement for state-mate (the exhaustive §1 oracle) or the event/dashboard rows; it delegates fee/gas headroom (§5) to `just quote-ccip-fees` + `preflight-check` and the CRE registry check (§4) to `just verify-cre-workflow`. The SyncTrigger/CREReceiver rows need `config/state/<net>.deployed.yaml`; absent it, they skip with a "run after deploy-test" note (CustomSender + the new pool are still derived live and cross-checked, so a stale `.deployed.yaml` is caught). Read-only; exits nonzero on any WARN/ALERT/SKIP.
+Compare RPC state with `config/state/` using the state-mate commands in
+[operations](../RUNBOOK.md#routine-checks).
 
-| Severity | Meaning | Response |
-| --- | --- | --- |
-| **CRITICAL** | Fund loss or access-control breach | Page on-call immediately |
-| **HIGH** | Sync stalled, funds stuck, or ops-visible incident | Business-hours response |
-| **MEDIUM** | Capacity headroom eroding (will fail later) | Investigate before exhaustion |
+| Contract | Expected |
+| --- | --- |
+| L1 receiver / ProxyAdmin | DAO Agent admin / owner |
+| L2 sender / ProxyAdmin | Governance Executor admin / owner |
+| L2 sender | Configured pool and receiver; SyncTrigger holds SYNC_ROLE; obsolete holders do not |
+| OraclePool | LOL Safe owner |
+| SyncTrigger | Automation Multisig owner; CREReceiver forwarder |
+| CREReceiver | Automation Multisig owner and expected author; lane CRE Forwarder; allowed `triggerSync()` call |
+| WorkflowRegistry | Shared configured workflow ID; Automation Multisig owner; ACTIVE status |
 
-## 1. Access-control invariants — CRITICAL
+Index `RoleGranted`, `RoleRevoked`, `OwnershipTransferred`, receiver configuration
+changes, and trigger fee/amount/delay changes. Page on unexpected authority or
+wiring changes. CustomSender uses non-enumerable access control: selected
+`hasRole` reads, including state-mate's `ozNonEnumerableAcl` checks, only cover
+named holders. Reconstruct membership from complete `RoleGranted`/`RoleRevoked`
+event history to detect unexpected holders.
 
-Any deviation = key compromise or unintended governance action.
+## Funds and delivery — critical
 
-| Contract | Getter | Expected |
-|---|---|---|
-| L1 Receiver | `hasRole(DEFAULT_ADMIN_ROLE, LidoDaoAgent)` / `getRoleMemberCount(DEFAULT_ADMIN_ROLE)` | `true` / `1` |
-| L1 ProxyAdmin | `owner()` | Lido DAO Agent |
-| L2 CustomSender (×4) | `hasRole(DEFAULT_ADMIN_ROLE, L2GovExecutor)` / `getRoleMemberCount` | `true` / `1` |
-| L2 CustomSender (×4) | `hasRole(SYNC_ROLE, newSyncTrigger)` / `getRoleMemberCount(SYNC_ROLE)` | `true` / `1` |
-| L2 CustomSender (×4) | `getOraclePool()` | new OraclePool |
-| L2 ProxyAdmin (×4) | `owner()` | L2 Gov Executor |
-| SyncTrigger (×4) | `owner()` | LOL multisig |
-| SyncTrigger (×4) | `getForwarder()` | CREReceiver |
-| CREReceiver (×4) | `owner()` / `getForwarder()` / `getExpectedAuthor()` | LOL multisig / CRE Forwarder / **LOL multisig** (owner == expectedAuthor == CRE workflow owner; ADR-0001) |
-| CREReceiver (×4) | `isCallAllowed(SyncTrigger, 0x340b2b0b)` | `true` |
-| OraclePool (×4) | `owner()` | LOL multisig |
+| Signal | Response |
+| --- | --- |
+| L1 `MessageFailed` | Investigate application failure; use the retry procedure in operations |
+| Persistent unexpected L1 ETH/tokens | Reconcile messages; governance controls receiver recovery |
+| CCIP execution failure | Inspect message execution status and manual-execution options |
+| Native return-bridge failure | Inspect the lane's bridge status and recovery deadline |
+| Arbitrum retryable not redeemed | Resolve before ticket expiry |
 
-**Events — alert on any emit:** `RoleGranted` / `RoleRevoked` (L1 Receiver, L2 CustomSender ×4); `OwnershipTransferred` (every ProxyAdmin, SyncTrigger, CREReceiver, OraclePool); `ForwarderUpdated` / `ExpectedAuthorUpdated` / `AllowedCallUpdated` (CREReceiver ×4).
+Do not infer successful application execution from CCIP delivery alone. Match the
+L2 message ID to L1 `MessageSucceeded`, then track the return-pool credit.
 
-## 2. Trapped / unexpected funds — CRITICAL
+## Sync liveness — high
 
-| Signal | Expected | Recovery |
-|---|---|---|
-| L1 Receiver ETH / stETH / wstETH balance | ~0 (transient during stake; alert if > 1 ETH for > 1 h) | Lido DAO governance |
-| L1 Receiver any unexpected ERC20 | 0 | `recoverTokens` via governance |
-| `LidoCustomReceiver.MessageFailed` (L1) | **none — page on-call** | `retryFailedMessage` (anyone) or `recoverTokens` (DAO) |
-| CCIP OffRamp manual-execution queue (×4) | empty | [ccip.chain.link](https://ccip.chain.link/) → manual exec, higher gas |
-| Arbitrum retryable auto-redeem failures | 0 | [retryable-dashboard.arbitrum.io](https://retryable-dashboard.arbitrum.io/) (≤ 7-day manual redeem, then lost) |
+Use 24 hours as an initial stall threshold while pool WETH is above the configured
+minimum; tune to lane behavior and operational requirements.
 
-## 3. Sync liveness — HIGH
+| Observation | Interpretation / response |
+| --- | --- |
+| `shouldSyncAmount() == 0` | Not due: inspect amount and interval before declaring a stall |
+| Due and `canSync() == false` | Check float, SYNC_ROLE, pool availability and pause |
+| Due and executable, no `CallExecuted` | Check workflow status/linkage, credit, author, forwarder, and allowed call |
+| Repeated report execution failures | Inspect revert reason, live fee adequacy, CCIP allow-list, and RMN state |
+| L2 `Sync` without matching L1 success | Trace CCIP and L1 application status |
+| L1 success without pool credit | Trace the native return bridge |
 
-Fund-safety does not degrade if sync stalls, but UX does: `fastStake` WETH accumulates and wstETH liquidity depletes.
+The contract's `canSync()` does not check live CCIP fee, allow-list, or RMN status.
+A healthy local predicate cannot establish end-to-end liveness.
 
-| Signal | Expected |
-|---|---|
-| Time since `SyncTrigger.getLastExecution()` advance (×4) | < 24 h while pool WETH ≥ `minSyncAmount` |
-| OraclePool WETH balance (×4) | drains each sync; alert if growing > 24 h despite accrual |
-| `CustomSender.Sync(messageId)` (L2) ↔ `LidoCustomReceiver.MessageSucceeded(messageId)` (L1) | 1:1 within CCIP SLA (~20 min); a missing pair = stuck/failed message. Anchor on `MessageSucceeded` (not `ccipReceive`) so a defensive-catch failure breaks the invariant cleanly — the catch path emits `MessageFailed`, not `MessageSucceeded`. |
-| L1 Adapter bridge call ↔ new OraclePool wstETH increase (L2) | 1:1 within bridge SLA (per network) |
-| `CREReceiver.CallExecuted` rate (×4) | ≥ 1 per `syncDelay` (12 h) when pool WETH ≥ `minSyncAmount` |
-| CREReceiver revert rate via CRE Forwarder (×4) | 0 |
-| `SyncTrigger.shouldSyncAmount() > 0` while `canSync()` false (×4) | none sustained — `shouldSyncAmount` nonzero (due-ness) while `canSync` (executability) false means **due but not executable**: a **stall the DON suppresses silently** (it logs `blocked` and emits **no** report, so §3 `CallExecuted` stays flat with no revert spam). Root cause is one of: float < `getMaxFees()` (§5), `SYNC_ROLE` revoked (§1), or OraclePool paused (below). The pairing `shouldSyncAmount() > 0 && !canSync()` **distinguishes a *blocked* lane (amount still reported) from a merely *idle* one** |
-| CCIP lane: dest-chain allow-list (`IRouterClient.isChainSupported(DEST_CHAIN_SELECTOR)`) + RMN curse state (×4) | supported / uncursed. **`canSync` deliberately does NOT gate on these** (unlike float / `SYNC_ROLE` / pause — see its NatSpec; the RMN curse has no single stable view to mirror, and the allow-list is omitted too to keep the predicate free of CCIP-version coupling). So a CCIP **de-allow-list or RMN curse** leaves both `shouldSyncAmount` nonzero and `canSync` returning `true` and every `triggerSync` reverts INSIDE the router — this surfaces as **revert-spam** (the `CREReceiver revert rate` row above spikes), NOT a clean due-but-`!canSync` stall. Subscribe to CCIP allow-list / RMN curse events and page on-call; the lane self-heals once re-allow-listed / un-cursed (`_lastExecution` rolls back on each revert, so it stays armed) |
-| OraclePool `Paused` event (×4) | subscribe; any emit = ops incident (blocks fastStake) |
+## Workflow and capacity — high / medium
 
-## 4. CRE workflow health & funding — HIGH
+Read registry ownership, account linkage, quota, and workflow status with
+`just cre-registry-status`. Validate each receiver with `verify-cre-workflow`.
+Observe live report delivery independently: a registered ACTIVE workflow can
+still fail its author gate or have no execution credit.
 
-The workflow owner is the **LOL multisig (Safe)** (ADR-0001), so the owner-identity and funding signals below are checked against the **Safe address / the Safe's CRE account**, never an EOA.
+Monitor CRE account credit through the service. Alert on unexpected workflow
+pause, deletion, or ownership-transfer events. Workflow credit, Safe gas, and
+trigger fee float require separate funding checks.
 
-| Signal | Expected | How / where |
-|---|---|---|
-| `WorkflowRegistry.getWorkflowById(id).owner` (×4) | configured Automation Owner | `just -E .env.<network> verify-cre-workflow` runs the combined L1+L2 state-mate config and compares the registry owner with the same `l2AutomationOwner` anchor used by `CREReceiver`; alert on any change. **This confirms only the registry owner field—not what the DON embeds in report metadata** (see the author-gate caveat below). |
-| `CREReceiver.CallExecuted` observed at least once (×4) — **the only proof the author gate passes** | seen after the first due sync | The registry-owner check above and `getExpectedAuthor()` are *different surfaces* from the DON-embedded `metadata.workflowOwner`. If the DON embeds a different address (CRE Early-Access residual (a), [ADR-0001](adr/0001-cre-workflow-owner-multisig.md)), every report is rejected (`InvalidAuthor`) and **syncs silently never fire** despite a green registry-owner check. A single observed `CallExecuted` from the live DON path is the proof the pin matches — gate on it before trusting the lane (see RUNBOOK G2) |
-| `WorkflowRegistry` workflow status (×4) | `ACTIVE` (enum 0) | same read; `PAUSED` = syncs stopped (intentional pause or owner action) |
-| `WorkflowRegistry` `OwnershipTransferRequested`/`-Accepted` / `WorkflowPaused` / `WorkflowDeleted` events (×4) | none unexpected | subscribe on L1 `0x4Ac5…E7e5`; any emit not preceded by a known LOL-Safe tx = page on-call |
-| **CRE credit balance** for the workflow owner's account (the LOL Safe) | **> top-up threshold** (tune after week 1) | [CRE dashboard](https://cre.chain.link/workflows). Credits are **off-chain and opaque**: the CRE CLI exposes **no** `fund` / `deposit` / `withdraw` / `balance` command (Early Access, verified April 2026), so there is **no on-chain signal** — observability is **dashboard-only**, watched manually / by scraping the dashboard. Depletion → DON stops executing → silent sync stall (shows up indirectly as §3 liveness: `getLastExecution` not advancing while pool WETH ≥ min). Coordinate top-up with Chainlink against the **Safe's** account before the threshold; re-verify the funding mechanism before GA |
+Suggested starting capacity thresholds:
 
-> **Funding observability caveat.** Because credit is administrative and dashboard-only during Early Access, treat §3 sync-liveness (`getLastExecution` advance + `CallExecuted` rate) as the **on-chain proxy** for "is the workflow funded and running." A liveness stall with healthy fees and a funded SyncTrigger float points at **credit starvation** — check the CRE dashboard balance for the LOL Safe account first. The Lido Deployer EOA holds **no** CRE credits and is not a funding surface to watch.
+| Signal | Threshold / action |
+| --- | --- |
+| Trigger ETH / `getMaxFees()` | Top up below 2×; below 1× blocks sync |
+| Actual CCIP fee / maxFee | Investigate sustained utilization above 80% |
+| L1 execution gas / configured gasLimit | Investigate sustained utilization above 80% |
+| Configured gas ceiling vs live CCIP cap | Reconcile any mismatch before retuning |
+| Pool wstETH vs expected staking demand | Top up before depletion |
 
-## 5. Capacity / headroom — MEDIUM
-
-Alert on ≥ 2 consecutive crossings to filter transient spikes.
-
-| Signal | Expected | Action |
-|---|---|---|
-| actual CCIP fee / `SyncTrigger.getFeeOtoD().maxFee` (×4) | < 80% | raise `maxFee` before exhaustion. On **Optimism/Linea** this ratio also climbs with **sync size** (CCIP charges 5 bps, uncapped — not only L1 gas price); the 100 WETH `maxAmount` cap holds it to ~40%, so a higher reading suggests `maxAmount` was raised — see [fee amount-sensitivity](otod-fee-amount-sensitivity.md). |
-| `ccipReceive` gas used / `FeeOtoD.gasLimit` (×4) | < 80% | raise `gasLimit` before OOG reverts (kept ≤ `getMaxGasLimit()` — `setFeeOtoD` rejects an over-cap bump with `SyncTriggerGasLimitAboveMax`) |
-| `SyncTrigger.getMaxGasLimit()` (×4) vs lane FeeQuoter `maxPerMsgGasLimit` | equal (3M Linea / 7M others) — the config-time ceiling mirrors the live cap | subscribe to `MaxGasLimitSet`; if CCIP changes a lane cap, re-seed via `setMaxGasLimit` so the guard stays aligned with `sync`-time reality |
-| SyncTrigger ETH balance / `getMaxFees()` (×4) | ≥ 2× (1× is the hard floor — below it the next sync reverts with the named `SyncTriggerInsufficientFloat` and `canSync()` returns `false`, so the lane stalls but the DON stops submitting) | top up — permissionless ETH send to the trigger ([Funding the float](fees.md#feeotodmaxfee-free-per-sync-but-it-is-the-per-sync-blast-radius-bound)). Depletion is monotonic (~`actualFee` per sync), so this **will** cross eventually |
-| Arbitrum auto-redeem success rate | 100% | raise `maxGas` / `gasPriceBid` |
-
-## Intentionally excluded (not alerts)
-
-- **Old OraclePool residual balance** — expected > 0 until the Initial Liquidity Owner (`0x2897A1…b18c`) sweeps once; not an ongoing signal.
-- **Legacy `SyncAutomation` / Gelato upkeep status** — one-shot cleanup; revocation asserted by state-mate at migration time.
-- **Lido DAO votes touching L1 Receiver / ProxyAdmin** — expected governance activity, visible on-chain.
-- **Fork-test / CI results** — development concern, not production monitoring.
+Use [fees](fees.md) for tuning and the [LP runbook](runbook-liquidity-provider.md)
+for liquidity. Missing RPC/event data is unknown, never evidence of a healthy lane.

@@ -34,7 +34,7 @@ if [[ "$chain_id" != 1 ]]; then
   die "Expected Ethereum mainnet (chain 1), got $chain_id"
 fi
 
-# L1MigrationConstants.L1_LIDO_CUSTOM_RECEIVER; only this receiver's events qualify.
+# L1Constants.L1_LIDO_CUSTOM_RECEIVER; only this receiver's events qualify.
 receiver=0x6F357d53d6bE3238180316BA5F8f11467e164588
 signature='retryFailedMessage((bytes32,uint64,bytes,bytes,(address,uint256)[]))'
 topic="$(cast keccak 'MessageFailed(bytes32,(bytes32,uint64,bytes,bytes,(address,uint256)[]))')"
