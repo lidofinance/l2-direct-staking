@@ -249,8 +249,8 @@ the seal; until the pool is seeded no real sync can fire):
 just -E .env.$L2_NETWORK update-cre-config      # fill deploy config with live trigger/receiver addrs
 just -E .env.$L2_NETWORK deploy-cre-workflow    # signed by the Automation Owner
 # → the registry owner must equal CREReceiver.expectedAuthor; the recipe aborts up front if they mismatch.
-# → persist the printed id:
-just record-cre-workflow-id "$L2_NETWORK" 0x...
+# → persist the printed id (once — one consolidated workflow, pinned in config/state/common.deployed.yaml):
+just record-cre-workflow-id 0x...
 just -E .env.$L2_NETWORK verify-cre-workflow    # Evidence: ACTIVE, owner == Automation Owner
 ```
 

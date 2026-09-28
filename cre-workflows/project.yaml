@@ -10,7 +10,8 @@
 #   ${L1_RPC_URL}              Ethereum mainnet — bound to ${RPC_ETHEREUM_REMOTE}
 #   ${L2_<NET>_RPC_URL}        each L2 lane     — bound to ${RPC_<NET>_REMOTE}
 #
-# The consolidated production owner is the linked Test Automation Safe. The CLI cannot interpolate an
+# The consolidated production owner is the Automation Safe (3/5, same address on mainnet + all four L2s).
+# It must be linked in WorkflowRegistry before upsert (safe-txs/README.md). The CLI cannot interpolate an
 # owner address, so the production target carries that literal and deploy-cre-workflow always emits an
 # unsigned transaction for the Safe. The retained per-lane targets still derive their old EOA owner
 # from CRE_ETH_PRIVATE_KEY when they are used for retirement commands.
@@ -42,7 +43,7 @@ test-settings: *default
 # bindings before deploy-cre-workflow invokes the CLI.
 production:
   account:
-    workflow-owner-address: "0xede1750ac52156e10be2b41d8b8df816d58bafe1"
+    workflow-owner-address: "0x23ac4bf8ca7345ee533b12705af40f69060d9b5b"
   rpcs:
     - chain-name: ethereum-mainnet-optimism-1
       url: "${L2_OPTIMISM_RPC_URL}"

@@ -72,7 +72,7 @@ Architecture lives in [`DOC.md`](DOC.md); fee math in [`docs/fees.md`](docs/fees
   L2_TEST_WETH_SEED=500000000000000          # 0.0005 WETH seeded by seed-test-weth (> the test min)
   # appended after deploy-test:  L2_ORACLE_POOL / L2_SYNC_TRIGGER / L2_CRE_RECEIVER / L2_TEST_DEPLOYER
   # after deploy-cre-workflow, persist the returned ID with:
-  #   just record-cre-workflow-id <network> <workflow-id>
+  #   just record-cre-workflow-id <workflow-id>          # once — one consolidated workflow, pinned in common.deployed.yaml
   ```
 
 | Network  | L2 Governance Executor | LOL multisig (pool/CREReceiver/SyncTrigger owner) |
@@ -454,7 +454,7 @@ just -E .env.<network> handoff              # Deployer: sweep test residue back 
 #   Fund the production float afterwards (permissionless — `just fund-trigger` or a bare ETH transfer to the
 #   trigger); until then canSync() is false, so no production sync can fire.
 just -E .env.<network> update-cre-config    # writes deployed addrs into cre config json
-just -E .env.<network> deploy-cre-workflow  # deploy/upsert; then: just record-cre-workflow-id <network> <returned-workflow-id>
+just -E .env.<network> deploy-cre-workflow  # deploy/upsert; then (once, all lanes): just record-cre-workflow-id <returned-workflow-id>
 just -E .env.<network> verify-cre-workflow  # combined state-mate: WorkflowRegistry ACTIVE + complete L2 production state
 just -E .env.<network> verify-stage2        # verify: infra LOL-owned + production-configured, Initial Owner still admin (seal not run)
 ```

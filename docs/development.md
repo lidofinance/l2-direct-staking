@@ -235,21 +235,21 @@ forge script script/linea/LineaL2Upgrade.s.sol:LineaL2UpgradeScript \
   --broadcast --non-interactive --unlocked --sender "$INITIAL_OWNER"
 ```
 
-**8. State-mate against the fork.** All four lanes share one wiring file, `config/state/l2.yaml`, composed with `l2.common.inputs.yaml`, one lane-specific `.inputs.yaml`, and one `.deployed.yaml`. The committed `linea.deployed.yaml` holds the production-target addresses; for the fork, write the freshly-deployed addresses to a throwaway `.deployed.yaml` and override the committed sibling with `--deployed` (both input files must be passed explicitly, since sibling auto-discovery is basename-keyed for the shared file; the `abi/` dir is auto-discovered from the shared config's directory):
+**8. State-mate against the fork.** All four lanes share one wiring file, `config/state/l2.yaml`, composed with `l2.common.inputs.yaml`, one lane-specific `.inputs.yaml`, and two `.deployed.yaml` files: `common.deployed.yaml` (the consolidated CRE workflow id, shared by every lane) plus the lane's own file. The committed `linea.deployed.yaml` holds the production-target L2 addresses; for the fork, write the freshly-deployed addresses to a throwaway `.deployed.yaml` and pass it as the second `--deployed` after the committed common file (all sibling files must be passed explicitly, since sibling auto-discovery is basename-keyed for the shared file; the `abi/` dir is auto-discovered from the shared config's directory):
 
 ```sh
 mkdir -p /tmp/linea-rehearsal
-WORKFLOW_ID="$(yq '.. | select(anchor == "creWorkflowId")' config/state/linea.deployed.yaml | tr -d '"')"
 RETIRED_TRIGGER="$(yq '.. | select(anchor == "RETIRED_l2SyncTrigger")' config/state/linea.deployed.yaml | tr -d '"')"
 RETIRED_RECEIVER="$(yq '.. | select(anchor == "RETIRED_l2CreReceiver")' config/state/linea.deployed.yaml | tr -d '"')"
 bash script/shared/write-deployed-yaml.sh /tmp/linea-rehearsal/linea.deployed.yaml \
     "$L2_ORACLE_POOL" "$L2_SYNC_TRIGGER" "$L2_CRE_RECEIVER" \
-    "$WORKFLOW_ID" "$RETIRED_TRIGGER" "$RETIRED_RECEIVER"
+    "$RETIRED_TRIGGER" "$RETIRED_RECEIVER"
 ROOT="$(git rev-parse --show-toplevel)"
 (cd lib/state-mate && L1_RPC_URL=http://127.0.0.1:8545 L2_STATE_MATE_RPC_URL=http://127.0.0.1:8651 \
   corepack yarn start "$ROOT/config/state/l2.yaml" \
     --inputs "$ROOT/config/state/l2.common.inputs.yaml" \
     --inputs "$ROOT/config/state/linea.inputs.yaml" \
+    --deployed "$ROOT/config/state/common.deployed.yaml" \
     --deployed /tmp/linea-rehearsal/linea.deployed.yaml)
 ```
 

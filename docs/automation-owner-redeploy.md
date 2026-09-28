@@ -351,7 +351,8 @@ everywhere.
 2. `just -E .env.<network> deploy-cre-workflow` on the new **signed** path: `CRE_WORKFLOW_OWNER` = AO,
    no `--unsigned`, keeping the abort-on-mismatch cross-check against the on-chain
    `getExpectedAuthor()`.
-3. Run `just record-cre-workflow-id <network> <workflow-id>` with the returned ID; then run
+3. Run `just record-cre-workflow-id <workflow-id>` with the returned ID (once; the pin is shared in
+   `config/state/common.deployed.yaml`); then run
    `just -E .env.<network> verify-cre-workflow`.
 
 **Gate:** `getWorkflowById` shows owner = AO, status `ACTIVE`, non-empty `binaryUrl`; registry owner ==

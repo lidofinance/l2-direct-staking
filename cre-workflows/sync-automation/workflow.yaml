@@ -17,7 +17,7 @@ simulate-settings:
     secrets-path: ""
 
 # ==========================================================================
-# CONSOLIDATED target — ONE registered workflow for all four lanes (direct-staking-sync-test), the layout
+# CONSOLIDATED target — ONE registered workflow for all four lanes (direct-staking-sync), the layout
 # chosen on 2026-08-18. Its config carries a `lanes[]` array (one cron trigger per lane, hourly and
 # staggered) instead of a single `chainSelectorName`, so the lane is no longer a property of the target.
 #
@@ -30,7 +30,7 @@ simulate-settings:
 # and every derived pin (`just cre-workflow-hash`, the dashboard's CRE_WORKFLOW_NAME) moves with it.
 production:
   user-workflow:
-    workflow-name: "direct-staking-sync-test"
+    workflow-name: "direct-staking-sync"
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.deploy.json"

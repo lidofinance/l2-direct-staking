@@ -132,8 +132,9 @@ receivers point `getExpectedAuthor()` at the Test Automation Safe:
    unsigned `WorkflowRegistry.upsertWorkflow` calldata for the Safe.
 4. Run `just cre-attach-params`, paste the emitted upsert calldata, then paste the rewritten result into
    the dashboard's CRE Calldata tab. Execute that calldata from the Safe after every field passes.
-5. Record the same workflow ID in each lane with `just record-cre-workflow-id <network> <workflow-id>`,
-   then run `NETWORK=<network> just verify-cre-workflow` for all four lanes.
+5. Record the workflow ID once with `just record-cre-workflow-id <workflow-id>` (it is written to
+   `config/state/common.deployed.yaml`, which every lane's state-mate run composes), then run
+   `NETWORK=<network> just verify-cre-workflow` for all four lanes.
 
 See [Per-call levers (DOC.md §3)](../DOC.md#3-access-control--ownership--the-final-state) for CREReceiver admin functions.
 

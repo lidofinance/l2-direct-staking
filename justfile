@@ -582,6 +582,7 @@ verify-constants-sync:
       case "$base" in
         config/state/optimism|config/state/arbitrum|config/state/base|config/state/linea)
           files+=("config/state/l2.common.inputs.yaml")
+          [[ -f "config/state/common.deployed.yaml" ]] && files+=("config/state/common.deployed.yaml")
           ;;
       esac
       [[ -f "$base.deployed.yaml" ]] && files+=("$base.deployed.yaml")
@@ -660,7 +661,7 @@ verify-constants-sync:
       cre_workflow_name=$(yq '.production.user-workflow.workflow-name' cre-workflows/sync-automation/workflow.yaml)
 
       echo
-      echo "[$net] state-mate inputs: l2.common.inputs.yaml + ${sm%.yaml}.inputs.yaml; deployed: ${sm%.yaml}.deployed.yaml"
+      echo "[$net] state-mate inputs: l2.common.inputs.yaml + ${sm%.yaml}.inputs.yaml; deployed: common.deployed.yaml + ${sm%.yaml}.deployed.yaml"
       expect_eq "l2ChainId → ${upper}_CHAIN_ID"                                  "$sol_chain_id"      "$(yml_anchor "$sm" l2ChainId)"
       expect_eq "l2CustomSender → L2_CUSTOM_SENDER"                             "$sol_l2_sender"     "$(yml_anchor "$sm" l2CustomSender)"
       expect_eq "l2CustomSenderImpl → L2_CUSTOM_SENDER_IMPL"                    "$sol_l2_sender_impl" "$(yml_anchor "$sm" l2CustomSenderImpl)"
@@ -966,9 +967,11 @@ verify-cre-workflow:
     ROOT_DIR="{{justfile_directory()}}"
     STATE_MATE_DIR="$ROOT_DIR/lib/state-mate"
     DEPLOYED="$ROOT_DIR/config/state/$L2_NETWORK.deployed.yaml"
+    COMMON_DEPLOYED="$ROOT_DIR/config/state/common.deployed.yaml"
     INPUTS="$ROOT_DIR/config/state/$L2_NETWORK.inputs.yaml"
     COMMON_INPUTS="$ROOT_DIR/config/state/l2.common.inputs.yaml"
     [[ -f "$DEPLOYED" ]] || { echo "Missing deployed state: $DEPLOYED" >&2; exit 1; }
+    [[ -f "$COMMON_DEPLOYED" ]] || { echo "Missing common deployed state: $COMMON_DEPLOYED" >&2; exit 1; }
     [[ -f "$INPUTS" ]] || { echo "Missing inputs state: $INPUTS" >&2; exit 1; }
     [[ -f "$COMMON_INPUTS" ]] || { echo "Missing common inputs state: $COMMON_INPUTS" >&2; exit 1; }
     command -v node >/dev/null 2>&1 || { echo "Missing required command: node" >&2; exit 1; }
@@ -977,26 +980,25 @@ verify-cre-workflow:
       cd "$STATE_MATE_DIR"
       L1_RPC_URL="$L1_RPC_URL" L2_STATE_MATE_RPC_URL="$L2_RPC_URL" \
         "${YARN[@]}" start "$ROOT_DIR/config/state/l2.yaml" \
-        --inputs "$COMMON_INPUTS" --inputs "$INPUTS" --deployed "$DEPLOYED"
+        --inputs "$COMMON_INPUTS" --inputs "$INPUTS" --deployed "$COMMON_DEPLOYED" --deployed "$DEPLOYED"
     )
 
-# Persist the content-derived CRE workflow ID as state-mate deployed state.
-# Replaces only deployed.l1 in config/state/<network>.deployed.yaml, preserving deployed.l2.
-record-cre-workflow-id network workflow_id:
+# Persist the content-derived CRE workflow ID as state-mate deployed state. ONE consolidated workflow
+# serves all four lanes, so the pin lives once in config/state/common.deployed.yaml (deployed.l1);
+# the per-lane <network>.deployed.yaml files carry only that lane's L2 contracts (deployed.l2).
+record-cre-workflow-id workflow_id:
     #!/usr/bin/env bash
     set -euo pipefail
-    NETWORK="{{network}}"
     WORKFLOW_ID="{{workflow_id}}"
-    case "$NETWORK" in optimism|arbitrum|base|linea) ;; *) echo "Unknown network: $NETWORK" >&2; exit 2 ;; esac
     [[ "$WORKFLOW_ID" =~ ^0x[0-9a-fA-F]{64}$ ]] || {
       echo "Bad workflow ID: $WORKFLOW_ID (expected 0x + 64 hex chars)" >&2
       exit 1
     }
     [[ "$WORKFLOW_ID" != "0x$(printf '0%.0s' {1..64})" ]] || { echo "Refusing zero workflow ID" >&2; exit 1; }
     command -v yq >/dev/null 2>&1 || { echo "Missing required command: yq" >&2; exit 1; }
-    OUT="{{justfile_directory()}}/config/state/$NETWORK.deployed.yaml"
-    [[ -f "$OUT" ]] || { echo "Missing deployed state: $OUT" >&2; exit 1; }
-    TMP="$(mktemp "${TMPDIR:-/tmp}/$NETWORK.deployed.XXXXXX.yaml")"
+    OUT="{{justfile_directory()}}/config/state/common.deployed.yaml"
+    [[ -f "$OUT" ]] || { echo "Missing common deployed state: $OUT" >&2; exit 1; }
+    TMP="$(mktemp "${TMPDIR:-/tmp}/common.deployed.XXXXXX.yaml")"
     trap 'rm -f "$TMP"' EXIT
     # `style="double"` is load-bearing, not cosmetic: a bare 0x… scalar is an integer to any
     # YAML 1.1 loader, which would silently turn the 64-hex-digit ID into a lossy float.
@@ -1005,7 +1007,7 @@ record-cre-workflow-id network workflow_id:
       "$OUT" > "$TMP"
     mv "$TMP" "$OUT"
     trap - EXIT
-    echo "Recorded $NETWORK CRE workflow ID in $OUT"
+    echo "Recorded the consolidated CRE workflow ID in $OUT (shared by all four lanes)"
 
 # What does the CRE WorkflowRegistry actually say? Keyless, read-only, no .env needed — the CLI
 # mirror of the dashboard's Automation tab (docs/dashboard-automation-tab.md §1).
@@ -1067,7 +1069,10 @@ cre-registry-status:
 
     # ── Live expectedAuthor per lane (optional; also grows the owner set) ──
     declare -a AUTHORS
-    OWNERS="$AUTOMATION_OWNER $WORKFLOW_OWNER"
+    # Case-insensitive de-dup: once the Automation Safe holds BOTH roles the two anchors coincide, and an
+    # owner enumerated twice would count its one row twice and report every lane as "ambiguous".
+    OWNERS="$AUTOMATION_OWNER"
+    grep -qi -- "$WORKFLOW_OWNER" <<<"$OWNERS" || OWNERS="$OWNERS $WORKFLOW_OWNER"
     echo "──── author pins (L2) ────"
     for i in "${!NETS[@]}"; do
       net="${NETS[$i]}"; u="$(echo "$net" | tr '[:lower:]' '[:upper:]')"
@@ -1134,13 +1139,13 @@ cre-registry-status:
     echo
 
     # ── DRIFT: repo pins vs the enumeration. A repo fact, deliberately not a chain fault. ──
-    echo "──── repo pins vs chain (config/state/<net>.deployed.yaml) ────"
+    echo "──── repo pin vs chain (config/state/common.deployed.yaml, one id for all lanes) ────"
     # Join on THIS lane's workflow and compare THAT row's id. Matching the pin against the whole id set
     # (or the name as a substring) would pass a lane whose pin actually holds a different lane's id —
     # the cross-chain blindness this repo has been bitten by before.
     for net in "${NETS[@]}"; do
       name="$(just _l2-input-anchor "$net" creWorkflowName)"
-      pin="$(yq '[.. | select(anchor == "creWorkflowId")][0]' "$ROOT_DIR/config/state/$net.deployed.yaml" 2>/dev/null | tr -d '"')"
+      pin="$(yq '[.. | select(anchor == "creWorkflowId")][0]' "$ROOT_DIR/config/state/common.deployed.yaml" 2>/dev/null | tr -d '"')"
       live="$(awk -F'\t' -v n="$name" '$5 == n { print $1 }' "$ROWS")"
       count="$(printf '%s' "$live" | grep -c . || true)"
       if [[ "$count" -eq 0 ]]; then
@@ -1150,8 +1155,8 @@ cre-registry-status:
       elif [[ "$live" == "$pin" ]]; then
         OK "$(printf '%-9s pin matches chain  %s' "$net" "$pin")"
       else
-        WARN "$(printf '%-9s pin STALE: repo %s, chain %s — refresh with just record-cre-workflow-id %s %s' \
-          "$net" "$pin" "$live" "$net" "$live")"
+        WARN "$(printf '%-9s pin STALE: repo %s, chain %s — refresh with just record-cre-workflow-id %s' \
+          "$net" "$pin" "$live" "$live")"
       fi
     done
     echo
@@ -2014,7 +2019,7 @@ deploy-cre-workflow:
     echo "===================================================================="
     echo "The pinned CRE CLI emits empty attributes. Run 'just cre-attach-params', paste the calldata,"
     echo "and execute the rewritten calldata from $OWNER_CS."
-    echo "Record the returned workflow ID in all four lanes with 'just record-cre-workflow-id <network> <workflow-id>',"
+    echo "Record the returned workflow ID once (shared by all four lanes) with 'just record-cre-workflow-id <workflow-id>',"
     echo "then run 'NETWORK=<network> just verify-cre-workflow' for each lane."
     echo "===================================================================="
 
@@ -3555,9 +3560,13 @@ _state-verify network rpc_url='' only='':
     # lane input delta and deployed sibling explicitly. Absolute paths, since the runner cd's into
     # lib/state-mate.
     STATE_MATE_CONFIG="$ROOT_DIR/config/state/l2.yaml"
+    # Deployed state is split the same way: common.deployed.yaml carries the outputs shared by all
+    # four lanes (the ONE consolidated CRE workflow id, deployed.l1) and <net>.deployed.yaml the
+    # lane's own three contracts + RETIRED_* pair (deployed.l2). state-mate merges the two maps.
     STATE_MATE_SIBLING_ARGS=(
       --inputs   "$ROOT_DIR/config/state/l2.common.inputs.yaml"
       --inputs   "$ROOT_DIR/config/state/$NETWORK.inputs.yaml"
+      --deployed "$ROOT_DIR/config/state/common.deployed.yaml"
       --deployed "$ROOT_DIR/config/state/$NETWORK.deployed.yaml"
     )
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/${NETWORK}-l2-state-verify.XXXXXX")"
@@ -3965,19 +3974,20 @@ _acceptance-test:
       # hasRole(DEFAULT_ADMIN_ROLE, deployer)==false on the INHERITED CustomSender proxy, which holds
       # for both EOAs — so no fork-specific override is needed.
       fork_deployed="$WORK_DIR/$name.deployed.yaml"
-      workflow_id="$(yq '.. | select(anchor == "creWorkflowId")' "$ROOT_DIR/config/state/$name.deployed.yaml" | tr -d '"' | head -n1)"
+      sm_common_deployed="$ROOT_DIR/config/state/common.deployed.yaml"   # creWorkflowId: the fork inherits the registry row
       retired_trigger="$(yq '.. | select(anchor == "RETIRED_l2SyncTrigger")' "$ROOT_DIR/config/state/$name.deployed.yaml" | tr -d '"' | head -n1)"
       retired_receiver="$(yq '.. | select(anchor == "RETIRED_l2CreReceiver")' "$ROOT_DIR/config/state/$name.deployed.yaml" | tr -d '"' | head -n1)"
       substep "$name: writing fork .deployed.yaml"
       bash "$ROOT_DIR/script/shared/write-deployed-yaml.sh" "$fork_deployed" \
         "${DEPLOYED_POOLS[$i]}" "${DEPLOYED_TRIGGERS[$i]}" "${DEPLOYED_RECEIVERS[$i]}" \
-        "$workflow_id" "$retired_trigger" "$retired_receiver"
+        "$retired_trigger" "$retired_receiver"
 
       substep "$name: running state-mate checks"
       (
         cd "$STATE_MATE_DIR"
         L1_RPC_URL="$L1_FORK_URL" L2_STATE_MATE_RPC_URL="$fork_url" \
-          yarn start "$sm_config" --inputs "$sm_common_inputs" --inputs "$sm_inputs" --deployed "$fork_deployed" 2>&1 | tail -8
+          yarn start "$sm_config" --inputs "$sm_common_inputs" --inputs "$sm_inputs" \
+            --deployed "$sm_common_deployed" --deployed "$fork_deployed" 2>&1 | tail -8
       ) || die "$name state-mate failed"
       # Linea-only Gelato de-role — separate config; its static inputs match the fork.
       if [[ "$name" == "linea" ]]; then
@@ -4791,7 +4801,9 @@ cre-attach-params:
       || { echo "Expected raw upsertWorkflow calldata (selector 0xb377bfc5)" >&2; exit 1; }
 
     sig='upsertWorkflow(string,string,bytes32,uint8,string,string,string,bytes,bool)'
-    decoded="$(cast decode-calldata --json "$sig" "$calldata")"
+    # cast ≥1.8 wraps decoded values as {"data":[…]}; older versions emit the bare array.
+    unwrap='if type == "object" and has("data") then .data else . end'
+    decoded="$(cast decode-calldata --json "$sig" "$calldata" | jq -c "$unwrap")"
     current_attrs="$(printf '%s' "$decoded" | jq -er '.[7] | select(type == "string")')"
     [[ "$current_attrs" == "0x" ]] \
       || { echo "Refusing to overwrite non-empty attributes: $current_attrs" >&2; exit 1; }
@@ -4812,7 +4824,7 @@ cre-attach-params:
 
     rewritten="$(cast calldata "$sig" "$name" "$tag" "$workflow_id" "$status" "$don" \
       "$binary_url" "$config_url" "$attrs_hex" "$keep_alive")"
-    roundtrip_attrs="$(cast decode-calldata --json "$sig" "$rewritten" | jq -er '.[7]')"
+    roundtrip_attrs="$(cast decode-calldata --json "$sig" "$rewritten" | jq -er "$unwrap | .[7]")"
     [[ "$roundtrip_attrs" == "$attrs_hex" ]] || { echo "Re-encoded attributes failed round-trip check" >&2; exit 1; }
     echo "Attached cre-attest/3 config/source digests; paste this calldata into the dashboard before signing." >&2
     printf '%s\n' "$rewritten"
@@ -5047,7 +5059,7 @@ env-doctor:
     for net in "${LANES[@]}"; do
       echo "──────── lane: $net ────────"
       IN="$ROOT_DIR/config/state/$net.inputs.yaml"
-      CRE_DEP="$ROOT_DIR/config/state/$net.deployed.yaml"
+      CRE_DEP="$ROOT_DIR/config/state/common.deployed.yaml"   # creWorkflowId lives once, shared by all lanes
       if [[ "${L2_NETWORK:-}" == "$net" ]]; then
         L2="${L2_RPC_URL:-}"; RECV="${L2_CRE_RECEIVER:-}"; TRIG="${L2_SYNC_TRIGGER:-}"
       else
@@ -5147,6 +5159,7 @@ cre *ARGS:
     CRE="$(just _cre-bin)"
     source "{{justfile_directory()}}/script/shared/cre-env.sh"
     cre_env_export
+    cre_env_export_all_l2_rpcs   # the consolidated production target interpolates all four L2 RPC aliases
     echo "cre binary: $CRE"
     echo "cwd:        $(pwd)/cre-workflows"
     cd cre-workflows

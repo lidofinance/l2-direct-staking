@@ -543,21 +543,24 @@ const SHA256_OK = sha256Hex('') === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
 const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // retired per-lane workflow owner; uploader EOA
-const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // LOL Safe (3/5) — the msig the migration
-  // aimed at until 2026-08-24. It is NOT isOwnerLinked on the registry and the org's linked-owner slots
-  // were the binding constraint, so the consolidated workflow goes to CRE_WF_OWNER instead.
-// Owner of the consolidated four-lane workflow: a Safe v1.4.1 with THRESHOLD 1 whose only signer is
-// ST_OWNER below — so the workflow-owner and contract-owner trust domains are ONE key today. Linked
-// on the L1 WorkflowRegistry 2026-08-20 (label `lido-automation-safe-new`). That link, not this pin, is
-// what decides whether the DON will sign as this address; the Automation tab reads it.
-const CRE_WF_OWNER = '0xede1750ac52156e10be2b41d8b8df816d58bafe1';
-// Expected CREReceiver.getExpectedAuthor(). Moved to CRE_WF_OWNER on 2026-08-25, verified on all four
-// lanes before this pin changed — the gate must name the address that OWNS the registered workflow, or
-// every report reverts InvalidAuthor (which is exactly what happened on 2026-08-16, when it pointed at
-// a Safe that was never linked). The Automation tab checks the registry link rather than trusting this
+// Automation Safe (3/5, v1.4.1, same address on mainnet + all four L2s). Since the 2026-09 cutover it is
+// the ONE address in every automation owner role — ADR-0001 invariant shape:
+//   WorkflowRegistry.owner == CREReceiver.getExpectedAuthor() == CREReceiver.owner() == SyncTrigger.owner().
+// Linked on the L1 WorkflowRegistry 2026-09-10 (tx 0x2be23a9c…c575c4). That link, not this pin, is what
+// decides whether the DON will sign as this address; the Automation tab reads it.
+const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b';
+// The dev 1/1 Safe (sole signer: DEV_EOA) that owned the interim consolidated registration
+// `direct-staking-sync-test` — PAUSED since the Safe-owned record went ACTIVE, deleted at
+// safe-txs/README.md step 7. Kept in the enumerated owner set so its record stays visible until then.
+const DEV_WF_OWNER = '0xede1750ac52156e10be2b41d8b8df816d58bafe1';
+const DEV_EOA      = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // former L2 control owner (Aug–Sep 2026)
+const CRE_WF_OWNER = AUTO_SAFE;
+// Expected CREReceiver.getExpectedAuthor(): the address that OWNS the registered workflow, or every
+// report reverts InvalidAuthor (which is exactly what happened on 2026-08-16, when it pointed at a Safe
+// that was never linked). The Automation tab checks the registry link rather than trusting this
 // constant; the constant only says which answer this dashboard expects to see.
 const CRE_AUTHOR = CRE_WF_OWNER;
-const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger and CREReceiver control owner since Aug 2026
+const ST_OWNER   = AUTO_SAFE; // SyncTrigger and CREReceiver owner() — handed over from DEV_EOA by safe-txs/ownership-cutover.sh
 const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 const ADMIN_ROLE = '0x' + '0'.repeat(64);
@@ -565,12 +568,12 @@ const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
 const DON_FAMILY = 'zone-a'; // creDonFamily — the quota in getMaxWorkflowsPerUserDON is per family
 
 const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'LOL Safe (3/5)', [ST_OWNER]: 'L2 Control Owner',
-  [CRE_WF_OWNER]: 'Test Automation Msig',
+  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner (retired EOA)', [AUTO_SAFE]: 'Automation Safe (3/5)',
+  [DEV_WF_OWNER]: 'Dev Safe (1/1, retired)', [DEV_EOA]: 'Dev EOA (retired)',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
-const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
-const SAFES = new Set([LOL, AUTO_SAFE, CRE_WF_OWNER]);
+const EOAS = new Set([AUTO_OWNER, DEV_EOA]);
+const SAFES = new Set([LOL, AUTO_SAFE, DEV_WF_OWNER]);
 // Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
 const ICO = {
   eoa: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="EOA"><circle cx="8" cy="4.5" r="3"/><path d="M8 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/></svg>',
@@ -656,7 +659,10 @@ LANES.forEach(l => NAMES[l.sender.toLowerCase()] = 'CustomSender');
 //     gave 79ff0429…, 1a0aa094… and f087b180…, hence three different workflowIds. So a registered
 //     workflowId can never be re-derived after the fact: it is an identity here, never a check.
 // Regenerate both constants with `just cre-workflow-hash`, which fails when they drift from the file.
-const CRE_WORKFLOW_NAME = 'direct-staking-sync-test';
+// The Automation-Safe-owned record (cre-workflows/sync-automation/workflow.yaml + the creWorkflowName
+// anchors), ACTIVE since the Safe executed safe-txs/ethereum-register-cre-workflow.json. Its predecessor
+// 'direct-staking-sync-test' under DEV_WF_OWNER is paused and only listed, never gated against.
+const CRE_WORKFLOW_NAME = 'direct-staking-sync';
 const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b2c87e45ba0ce5ce97d';
 // sha256 of cre-workflows/sync-automation/main.ts — the WHOLE workflow, one file, which is what makes a
 // single source digest mean anything. Published on-chain in the record's `attributes` at registration
@@ -2740,7 +2746,7 @@ async function refreshAutomationState(lanes) {
   // CRE_WF_OWNER is included EXPLICITLY, not discovered: it owns the consolidated registration before
   // any lane's expectedAuthor points at it, so a purely discovered owner set would be blind to the new
   // workflow for exactly as long as the migration is mid-flight — the window that most needs watching.
-  const owners = [...new Set([AUTO_OWNER, CRE_WF_OWNER,
+  const owners = [...new Set([AUTO_OWNER, CRE_WF_OWNER, DEV_WF_OWNER,
     ...currentLanes.filter(l => !l.error && l.d.creAuthor).map(l => l.d.creAuthor.toLowerCase())])];
   let regs = null, regError = null;
   try { regs = await registryData(owners); } catch (e) { regError = e.message; }

@@ -6,6 +6,7 @@
 #   yarn start config/state/l2.yaml \
 #     --inputs   config/state/l2.common.inputs.yaml \
 #     --inputs   config/state/<net>.inputs.yaml \
+#     --deployed config/state/common.deployed.yaml \
 #     --deployed config/state/<net>.deployed.yaml
 #
 #   This file verifies only the PRODUCTION profile (the permanent end state). It is expected to fail
@@ -13,11 +14,12 @@
 #
 #   config/state/l2.common.inputs.yaml — intentionally universal L2 policy and identities
 #   config/state/<net>.inputs.yaml     — lane-specific deploy parameters and external facts
-#   config/state/<net>.deployed.yaml — L1 workflow ID + our deployed L2 contract addresses
+#   config/state/common.deployed.yaml  — the ONE consolidated CRE workflow ID (deployed.l1), shared by all lanes
+#   config/state/<net>.deployed.yaml   — our deployed L2 contract addresses + RETIRED_* pair (deployed.l2)
 #
-# Sibling auto-discovery is basename-keyed, so both input files and the per-lane deployed sibling
-# MUST be passed explicitly. State-mate composes their disjoint anchor books ahead of this wiring;
-# duplicate anchors across common and lane inputs are fatal.
+# Sibling auto-discovery is basename-keyed, so both input files and both deployed siblings MUST be
+# passed explicitly. State-mate composes their disjoint anchor books ahead of this wiring (the two
+# `deployed:` maps are merged key-wise); duplicate anchors across any two sibling files are fatal.
 # roles:/misc: are protocol-universal constants and stay inline. ABIs live in ./abi.
 #
 # Lane-specific parametrization (resolved from <net>.inputs.yaml):

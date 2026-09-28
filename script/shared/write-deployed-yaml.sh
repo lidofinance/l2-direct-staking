@@ -1,49 +1,39 @@
 #!/usr/bin/env bash
 # Emit a state-mate `<net>.deployed.yaml` sibling from this migration's freshly-deployed addresses.
 #
-# Usage: write-deployed-yaml.sh OUT_PATH POOL TRIGGER RECEIVER
-#        [WORKFLOW_ID [RETIRED_TRIGGER RETIRED_RECEIVER]]
-#   WORKFLOW_ID defaults to the existing output file's &creWorkflowId, then to zero bytes32.
+# Usage: write-deployed-yaml.sh OUT_PATH POOL TRIGGER RECEIVER [RETIRED_TRIGGER RETIRED_RECEIVER]
 #   RETIRED_* default to their existing anchored values, then to the zero-address fail-closed stub.
+#   The CRE workflow id is NOT here: one consolidated workflow serves every lane, so its
+#   &creWorkflowId pin lives once in config/state/common.deployed.yaml (`just record-cre-workflow-id`).
 #   env DEPLOYED_YAML_GENERATOR — the recipe named in the generated header (default "just deploy-test").
 #   `just deploy-automation` sets it, because a pair-only redeploy produces this file too and the header
 #   must name the recipe that actually wrote it rather than the one that first created the lane.
 #
 # The three L2 addresses are the ONLY contracts this migration deploys (OraclePool, SyncTrigger,
-# CREReceiver). The file also carries the L1 CRE workflow ID, preserved across regeneration or passed
-# explicitly; zero bytes32 is the fail-closed predeployment stub. The pre-existing CustomSender
+# CREReceiver). The pre-existing CustomSender
 # proxy/impl + ProxyAdmin are NOT here: they are fixed external
 # facts pinned in config/state/<net>.inputs.yaml (externals:), cross-checked by verify-constants-sync.
 # Every value is validated as a non-zero 0x+40hex address and checksummed before writing — the
 # state-mate `.deployed` loader rejects `null`/placeholder, so we fail early here with a clear message.
 set -euo pipefail
 
-if [[ "$#" -ne 4 && "$#" -ne 5 && "$#" -ne 7 ]]; then
-  echo "write-deployed-yaml: expected 4, 5, or 7 args (OUT POOL TRIGGER RECEIVER [WORKFLOW_ID [RETIRED_TRIGGER RETIRED_RECEIVER]]), got $#" >&2
+if [[ "$#" -ne 4 && "$#" -ne 6 ]]; then
+  echo "write-deployed-yaml: expected 4 or 6 args (OUT POOL TRIGGER RECEIVER [RETIRED_TRIGGER RETIRED_RECEIVER]), got $#" >&2
   exit 1
 fi
 command -v cast >/dev/null 2>&1 || { echo "write-deployed-yaml: missing required command: cast" >&2; exit 1; }
 
 out="$1"
-workflow_id="${5:-}"
-retired_trigger="${6:-}"
-retired_receiver="${7:-}"
-if [[ -z "$workflow_id" && -f "$out" ]]; then
-  workflow_id="$(sed -nE 's/^[[:space:]]*-[[:space:]]*&creWorkflowId[[:space:]]+"(0x[0-9a-fA-F]{64})".*/\1/p' "$out" | head -n1)"
-fi
+retired_trigger="${5:-}"
+retired_receiver="${6:-}"
 if [[ -z "$retired_trigger" && -f "$out" ]]; then
   retired_trigger="$(sed -nE 's/^[[:space:]]*-[[:space:]]*&RETIRED_l2SyncTrigger[[:space:]]+"(0x[0-9a-fA-F]{40})".*/\1/p' "$out" | head -n1)"
 fi
 if [[ -z "$retired_receiver" && -f "$out" ]]; then
   retired_receiver="$(sed -nE 's/^[[:space:]]*-[[:space:]]*&RETIRED_l2CreReceiver[[:space:]]+"(0x[0-9a-fA-F]{40})".*/\1/p' "$out" | head -n1)"
 fi
-workflow_id="${workflow_id:-0x0000000000000000000000000000000000000000000000000000000000000000}"
 retired_trigger="${retired_trigger:-0x0000000000000000000000000000000000000000}"
 retired_receiver="${retired_receiver:-0x0000000000000000000000000000000000000000}"
-if [[ ! "$workflow_id" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
-  echo "write-deployed-yaml: workflow ID is not 0x + 64 hex chars: '$workflow_id'" >&2
-  exit 1
-fi
 for retired in "$retired_trigger" "$retired_receiver"; do
   if [[ ! "$retired" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
     echo "write-deployed-yaml: retired address is not 0x + 40 hex chars: '$retired'" >&2
@@ -85,12 +75,11 @@ fi
   echo "# The three Stage-1 deploy outputs (OraclePool, SyncTrigger, CREReceiver) — the only contracts this"
   echo "# migration deploys. The two RETIRED_* anchors preserve the superseded automation pair. The"
   echo "# pre-existing CustomSender proxy/impl + ProxyAdmin are external facts in"
-  echo "# config/state/<net>.inputs.yaml (externals:), NOT here. state-mate concatenates this file"
-  echo "# (anchors first) ahead of the shared wiring l2.yaml so the *aliases resolve."
+  echo "# config/state/<net>.inputs.yaml (externals:), NOT here; the shared CRE workflow id (deployed.l1) is in"
+  echo "# config/state/common.deployed.yaml. state-mate merges both deployed files (anchors first) ahead of"
+  echo "# the shared wiring l2.yaml so the *aliases resolve."
   echo "# deploy-commit: $deploy_commit"
   echo "deployed:"
-  echo "  l1:"
-  printf '    - &creWorkflowId "%s"\n' "$workflow_id"
   echo "  l2:"
   for i in "${!labels[@]}"; do
     printf '    - &%s "%s"\n' "${labels[$i]}" "${checksummed[$i]}"
