@@ -264,7 +264,7 @@ for net in "${NETS[@]}"; do
     [.. | select(anchor=="l2CustomSender")][0]' "$INF" 2>/dev/null)
   LOL="$(just _l2-input-anchor "$net" l2LiquidityOwner)"
   AUTOMATION_OWNER="$(just _l2-input-anchor "$net" l2AutomationOwner)"
-  WORKFLOW_OWNER="$(just _l2-input-anchor "$net" creWorkflowOwner)"
+  WORKFLOW_OWNER="$AUTOMATION_OWNER"
   SEL="$(just _l2-input-anchor "$net" ethMainnetCcipChainSelector)"
   SYNCMIN="$(just _l2-input-anchor "$net" syncMinAmount)"
   # Deployed addresses (only SyncTrigger is not on-chain-discoverable). Absent file ⇒ SKIP those rows.

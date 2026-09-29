@@ -21,5 +21,4 @@ externals:
   # Known deployer; l2.yaml asserts it has no admin role.
   - &l2LidoDeployer "0xBeedf0c72D63eE8f8784eDB4A9326Fb43b69D50c"
   - &l2AutomationOwner "0x23AC4BF8ca7345eE533B12705aF40F69060D9b5b"
-  - &creWorkflowOwner "0x23AC4BF8ca7345eE533B12705aF40F69060D9b5b"
   - &creWorkflowRegistry "0x4Ac54353FA4Fa961AfcC5ec4B118596d3305E7e5"

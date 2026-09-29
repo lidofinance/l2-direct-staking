@@ -8,7 +8,9 @@ monitoring. `MONITOR_WINDOW_HOURS` selects its event window (default 24).
 ## Access control and wiring — critical
 
 Compare RPC state with `config/state/` using the state-mate commands in
-[operations](../RUNBOOK.md#routine-checks).
+[operations](../RUNBOOK.md#routine-checks); `just monitor-state all` runs them for every
+network from environment RPCs. Severity comments (`ALERT: HIGH|WARN`) in those files guide
+the response but do not change state-mate's exit behavior.
 
 | Contract | Expected |
 | --- | --- |

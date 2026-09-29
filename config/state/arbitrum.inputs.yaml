@@ -24,7 +24,7 @@ externals:
   #   lanes. Always resolve via THIS lane's *Constants.sol.
   - &l2ChainId 42161
   - &l2GovernanceExecutor "0x1dcA41859Cd23b526CBe74dA8F48aC96e14B1A29"
-  - &l2OldSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
+  - &RETIRED_l2ChainlinkSyncAutomation "0x7EbD06BF137077fF5EE858ca6368dBd95DB7c66A"
   # CustomSender proxy and implementation; pool/trigger/receiver addresses live in deployed.yaml.
   # Pinned to ArbitrumConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
   - &l2CustomSender "0x72229141D4B016682d3618ECe47c046f30Da4AD1"

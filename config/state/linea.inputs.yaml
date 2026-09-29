@@ -24,7 +24,7 @@ externals:
   - &l2ChainId 59144
   - &l2GovernanceExecutor "0x74Be82F00CC867614803ffd7f36A2a4aF0405670"
   - &lineaMessageService "0x508Ca82Df566dCD1B0DE8296e70a96332cD644ec" # LineaBridgeExecutor.LINEA_MESSAGE_SERVICE
-  - &l2OldSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
+  - &RETIRED_l2ChainlinkSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
   # CustomSender proxy and implementation; pool/trigger/receiver addresses live in deployed.yaml.
   # Pinned to LineaConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
   - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"

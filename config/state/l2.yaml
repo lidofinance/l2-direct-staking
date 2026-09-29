@@ -5,6 +5,9 @@
 # The L1 section checks the shared workflow; L2 checks contracts and access control.
 # Revoked holders remain explicit negative-role assertions. Linea's additional Gelato
 # holder is checked by l2-linea-gelato.yaml. ABI mirrors live in ./abi.
+# ALERT comments mark mismatches to monitor; state-mate does not route severity.
+# `# immutable` marks bytecode-backed values or constants, not write-protected storage.
+# These snapshots do not establish sync liveness or successful cross-chain delivery.
 roles:
   - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
   - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"
@@ -25,15 +28,15 @@ l1:
           args: [*creWorkflowId]
           result:
             workflowId: *creWorkflowId
-            owner: *creWorkflowOwner
+            owner: *l2AutomationOwner
             createdAt: null
-            status: 0 # ACTIVE
+            status: 0 # ALERT: WARN — ACTIVE; registration alone does not prove deliveries
             workflowName: *creWorkflowName
             binaryUrl: null
             configUrl: null
             tag: *creWorkflowTag
             attributes: null
-            donFamily: *creDonFamily
+            donFamily: *creDonFamily # ALERT: WARN
 
 l2:
   rpcUrl: L2_STATE_MATE_RPC_URL
@@ -47,62 +50,63 @@ l2:
       proxyChecks: {}
       storage:
         - slot: *EIP1967_IMPLEMENTATION_SLOT
-          expected: *l2CustomSenderImpl
+          expected: *l2CustomSenderImpl # ALERT: HIGH
           label: implementation
         - slot: *EIP1967_ADMIN_SLOT
-          expected: *l2ProxyAdmin
+          expected: *l2ProxyAdmin # ALERT: HIGH
           label: admin
       checks:
-        CCIP_ROUTER: *l2CcipRouter
-        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
-        LINK_TOKEN: *l2LinkToken
-        MIN_PROCESS_MESSAGE_GAS: *minProcessMessageGas
-        SYNC_ROLE: *SYNC_ROLE
-        TOKEN: *l2Weth
-        WNATIVE: *l2Weth
-        getOraclePool: *l2OraclePool
-        getReceiver:
+        CCIP_ROUTER: *l2CcipRouter # immutable
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE # immutable
+        LINK_TOKEN: *l2LinkToken # immutable
+        MIN_PROCESS_MESSAGE_GAS: *minProcessMessageGas # immutable
+        SYNC_ROLE: *SYNC_ROLE # immutable
+        TOKEN: *l2Weth # immutable
+        WNATIVE: *l2Weth # immutable
+        getOraclePool: *l2OraclePool # ALERT: HIGH
+        getReceiver: # ALERT: HIGH
           args: [*ethMainnetCcipChainSelector]
           result: *l1LidoCustomReceiverBytes32
         hasRole:
-          # missing here "result: true" checks are verified in section ozNonEnumerableAcl
-          # althouth due to non-enumarable ACL we need to do at least these few explicit "has no role" checks
+          # Positive holders are asserted in ozNonEnumerableAcl below. The ACL is non-enumerable, so
+          # every known former or unrelated holder is denied here explicitly.
           - args: [*DEFAULT_ADMIN_ROLE, *initialOwner]
             result: false
-          - args: [*SYNC_ROLE, *l2OldSyncAutomation]
+          - args: [*SYNC_ROLE, *RETIRED_l2ChainlinkSyncAutomation]
             result: false
-          # The superseded CRE SyncTrigger must be inert. Its immutable lane identity
-          # are checked again in retiredSyncTrigger below so a mistyped address cannot pass vacuously.
+          # Each RETIRED_* holder is identity-checked in a retired* block below so a mistyped address
+          # cannot satisfy this negative check vacuously.
           - args: [*SYNC_ROLE, *RETIRED_l2SyncTrigger]
             result: false
           - args: [*DEFAULT_ADMIN_ROLE, *l2LidoDeployer]
             result: false
-        supportsInterface:
+        supportsInterface: # immutable
           - args: ["0x01ffc9a7"] # IERC165
             result: true
       implementationChecks:
-        CCIP_ROUTER: *l2CcipRouter
-        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
-        LINK_TOKEN: *l2LinkToken
-        MIN_PROCESS_MESSAGE_GAS: *minProcessMessageGas
-        SYNC_ROLE: *SYNC_ROLE
-        TOKEN: *l2Weth
-        WNATIVE: *l2Weth
+        CCIP_ROUTER: *l2CcipRouter # immutable
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE # immutable
+        LINK_TOKEN: *l2LinkToken # immutable
+        MIN_PROCESS_MESSAGE_GAS: *minProcessMessageGas # immutable
+        SYNC_ROLE: *SYNC_ROLE # immutable
+        TOKEN: *l2Weth # immutable
+        WNATIVE: *l2Weth # immutable
         getOraclePool: null
         getReceiver: null
         hasRole: null
         getRoleAdmin: null
         supportsInterface: null
       ozNonEnumerableAcl:
-        *DEFAULT_ADMIN_ROLE : [*l2GovernanceExecutor]
-        *SYNC_ROLE : [*l2SyncTrigger]
+        # Only named holders are checked, including cross-role exclusions; arbitrary holders are not enumerated.
+        *DEFAULT_ADMIN_ROLE : [*l2GovernanceExecutor] # ALERT: HIGH
+        *SYNC_ROLE : [*l2SyncTrigger] # ALERT: HIGH
 
     proxyAdmin:
       name: ProxyAdmin
       address: *l2ProxyAdmin
       checks:
-        UPGRADE_INTERFACE_VERSION: null # covered-but-skipped: shared OZ v5 ProxyAdmin ABI; only owner is asserted on L2
-        owner: *l2GovernanceExecutor
+        UPGRADE_INTERFACE_VERSION: null
+        owner: *l2GovernanceExecutor # ALERT: HIGH
 
     governanceExecutor:
       # name + OVM check are lane-specific (see header). The remaining checks are identical across
@@ -113,11 +117,11 @@ l2:
         # Each BridgeExecutor variant exposes ONE messenger getter; state-mate requires every ABI
         # view function be covered, so both appear here and the non-applicable one resolves to null
         # (a null check whose function is absent from the lane's ABI is silently skipped).
-        OVM_L2_CROSS_DOMAIN_MESSENGER: *ovmL2CrossDomainMessenger # OP-stack (OP, Base); null elsewhere
+        OVM_L2_CROSS_DOMAIN_MESSENGER: *ovmL2CrossDomainMessenger # immutable — OP-stack (OP, Base); null elsewhere
         LINEA_MESSAGE_SERVICE: *lineaMessageService # Linea only; null elsewhere
         getEthereumGovernanceExecutor: *lidoDaoAgent
         getDelay: 0
-        getGracePeriod: 86400 # 24h
+        getGracePeriod: 86400
         getGuardian: "0x0000000000000000000000000000000000000000"
         getMinimumDelay: 0
         getMaximumDelay: 1
@@ -130,31 +134,31 @@ l2:
       name: PausableImmutableOraclePool
       address: *l2OraclePool
       checks:
-        SENDER: *l2CustomSender
-        TOKEN_IN: *l2Weth
-        TOKEN_OUT: *l2Wsteth
+        SENDER: *l2CustomSender # immutable
+        TOKEN_IN: *l2Weth # immutable
+        TOKEN_OUT: *l2Wsteth # immutable
         getFee: 0
         getOracle: *l2PriceOracle
-        owner: *l2LiquidityOwner
-        paused: false
+        owner: *l2LiquidityOwner # ALERT: HIGH
+        paused: false # ALERT: WARN
 
     syncTrigger:
       name: SyncTrigger
       address: *l2SyncTrigger
       checks:
-        SENDER: *l2CustomSender
-        DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector
-        WNATIVE: *l2Weth
-        owner: *l2AutomationOwner # AO owns the sync levers; GovExec keeps the kill switch via CustomSender SYNC_ROLE admin, DOC.md, Ownership and access control
-        getDelay: *syncDelay
-        getAmounts:
+        SENDER: *l2CustomSender # immutable
+        DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector # immutable
+        WNATIVE: *l2Weth # immutable
+        owner: *l2AutomationOwner # ALERT: HIGH
+        getDelay: *syncDelay # ALERT: HIGH
+        getAmounts: # ALERT: HIGH
           result: [*syncMinAmount, *syncMaxAmount]
-        getForwarder: *l2CreReceiver
-        getFeeOtoD: *feeOtoD # FeeCodec.encodeCCIP(maxFee, payInLink, gasLimit)
-        getFeeDtoO: *feeDtoO # FeeCodec.encode<Net>L1toL2(...) — lane-specific encoding
+        getForwarder: *l2CreReceiver # ALERT: HIGH
+        getFeeOtoD: *feeOtoD # ALERT: HIGH — FeeCodec.encodeCCIP(maxFee, payInLink, gasLimit)
+        getFeeDtoO: *feeDtoO # ALERT: HIGH — FeeCodec.encode<Net>L1toL2(...) — lane-specific encoding
         getLastExecution: null # changes after successful syncs
-        getMaxFees: *maxNativeFee # native fee total derived from the fee blobs (LINK payment not supported)
-        getMaxGasLimit: *maxGasLimit # FeeOtoD gasLimit ceiling = lane CCIP maxPerMsgGasLimit (EVM2EVMOnRamp v1.5 on OP/Linea, FeeQuoter v1.6 on Base/Arb); rejects an over-cap setting
+        getMaxFees: *maxNativeFee # ALERT: HIGH — native fee total derived from the fee blobs (LINK payment not supported)
+        getMaxGasLimit: *maxGasLimit # ALERT: HIGH — FeeOtoD gasLimit ceiling = lane CCIP maxPerMsgGasLimit (EVM2EVMOnRamp v1.5 on OP/Linea, FeeQuoter v1.6 on Base/Arb); rejects an over-cap setting
         shouldSyncAmount: null # changes with time and pool WETH; due-ness is monitored, not a fixed invariant
         MIN_DELAY: 60 # immutable 1-minute rate-limiter floor (SyncTrigger.MIN_DELAY = 1 minutes), lane-invariant
         canSync: null # covered-but-skipped: reads the per-sync fee float (drifts), so no stable equality holds — same rationale as shouldSyncAmount above
@@ -164,13 +168,13 @@ l2:
       address: *l2CreReceiver
       # WorkflowRegistry identity, owner, and ACTIVE status are checked in the L1 section.
       checks:
-        owner: *l2AutomationOwner
-        getForwarder: *l2CreForwarder
-        getExpectedAuthor: *creWorkflowOwner
+        owner: *l2AutomationOwner # ALERT: HIGH
+        getForwarder: *l2CreForwarder # ALERT: HIGH
+        getExpectedAuthor: *l2AutomationOwner # ALERT: WARN
         isCallAllowed:
           - args: [*l2SyncTrigger, "0x340b2b0b"] # triggerSync()
             result: true
-        supportsInterface:
+        supportsInterface: # immutable
           - args: ["0x805f2132"] # IReceiver (onReport-only) id the CRE forwarder queries
             result: true
           - args: ["0x01ffc9a7"] # ERC-165 base id (ERC165Checker probes this first)
@@ -182,9 +186,9 @@ l2:
       name: SyncTrigger
       address: *RETIRED_l2SyncTrigger
       checks:
-        SENDER: *l2CustomSender
-        DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector
-        WNATIVE: *l2Weth
+        SENDER: *l2CustomSender # immutable
+        DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector # immutable
+        WNATIVE: *l2Weth # immutable
         getForwarder: null
         owner: null
         getDelay: null
@@ -197,3 +201,22 @@ l2:
         MIN_DELAY: null
         shouldSyncAmount: null
         canSync: null
+
+    # Identify the revoked Chainlink Automation upkeep target (chainlink-csr SyncAutomation) the same
+    # way; only its immutable lane identity is asserted.
+    retiredChainlinkSyncAutomation:
+      name: SyncAutomation
+      address: *RETIRED_l2ChainlinkSyncAutomation
+      checks:
+        SENDER: *l2CustomSender # immutable
+        DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector # immutable
+        WNATIVE: *l2Weth # immutable
+        getForwarder: null
+        owner: null
+        getDelay: null
+        getAmounts: null
+        getAmountToSync: null
+        getFeeOtoD: null
+        getFeeDtoO: null
+        getMaxFees: null
+        getLastExecution: null

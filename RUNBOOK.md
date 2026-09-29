@@ -35,6 +35,11 @@ NETWORK=linea just verify-linea-state
 just verify-l1-state-mate
 ```
 
+For scheduled snapshots without a `.env`, `just monitor-state <network|all>` runs the same
+`config/state` assertions with RPCs taken from the environment (`L2_<NET>_RPC_URL`,
+`RPC_<NET>_REMOTE`, or the public default; `L1_RPC_URL` for Ethereum and the WorkflowRegistry).
+`just test-monitor-state` exercises that runner against a simulated RPC.
+
 State-mate assertions are expectations, and failures require investigation rather than changing the
 expectations to match an unexplained result.
 

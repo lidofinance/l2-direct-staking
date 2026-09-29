@@ -139,6 +139,16 @@ preflight-check-l1:
     printf '%sOK%s L1 preflight passed for %s — %s%d PASS, 0 WARN%s.\n' "$C_PASS" "$C_RST" "$L2_NETWORK" "$C_PASS" "$PASS_N" "$C_RST"
     hdr "===================================================================="
 
+# Run the state-mate CLI over config/state against a simulated RPC, including drift and fault cases.
+test-monitor-state:
+    node script/commands/test-monitor-state.cjs
+
+# Snapshot state checks from config/state: <ethereum|optimism|arbitrum|base|linea|all>. RPC precedence per
+# network: L2_STATE_MATE_RPC_URL (single lane), L2_<NET>_RPC_URL, RPC_<NET>_REMOTE, public default;
+# L1_RPC_URL or RPC_ETHEREUM_REMOTE for Ethereum and the shared WorkflowRegistry check.
+monitor-state network:
+    bash script/commands/monitor-state.sh "{{network}}"
+
 # Check Solidity constants against state inputs, encoded fees, workflow budgets, and L1 preflight values.
 # Offline; exits nonzero on drift.
 verify-constants-sync:
@@ -276,7 +286,7 @@ verify-constants-sync:
       expect_eq "l2GovernanceExecutor → LIDO_L2_GOVERNANCE_EXECUTOR"             "$sol_l2_gov"        "$(yml_anchor "$sm" l2GovernanceExecutor)"
       expect_eq "l2CreForwarder → CRE_FORWARDER"                                 "$sol_l2_fwd"        "$(yml_anchor "$sm" l2CreForwarder)"
       expect_eq "l2LiquidityOwner → LIQUIDITY_OWNER"                             "$sol_l2_liq"        "$(yml_anchor "$sm" l2LiquidityOwner)"
-      expect_eq "l2OldSyncAutomation → L2_OLD_CHAINLINK_AUTOMATION"              "$sol_l2_oldsync"    "$(yml_anchor "$sm" l2OldSyncAutomation)"
+      expect_eq "RETIRED_l2ChainlinkSyncAutomation → L2_OLD_CHAINLINK_AUTOMATION"              "$sol_l2_oldsync"    "$(yml_anchor "$sm" RETIRED_l2ChainlinkSyncAutomation)"
       expect_eq "l2Weth → L2_WETH"                                               "$sol_l2_weth"       "$(yml_anchor "$sm" l2Weth)"
       expect_eq "l2Wsteth → L2_WSTETH"                                           "$sol_l2_wsteth"     "$(yml_anchor "$sm" l2Wsteth)"
       expect_eq "l2LinkToken → L2_LINK_TOKEN"                                    "$sol_l2_link"       "$(yml_anchor "$sm" l2LinkToken)"
@@ -295,8 +305,13 @@ verify-constants-sync:
       expect_eq "creDonFamily → CRE_CLI_DON_FAMILY default"                       "$cre_don_family"    "$(yml_anchor "$sm" creDonFamily)"
       if [[ "$net" == "linea" ]]; then
         sol_gelato=$(sol_addr "$sol" L2_OLD_GELATO_AUTOMATION)
-        expect_eq "RETIRED_l2GelatoSyncAutomation → L2_OLD_GELATO_AUTOMATION"    "$sol_gelato" "$(yml_anchor "config/state/l2-linea-gelato.yaml" RETIRED_l2GelatoSyncAutomation)"
-        expect_eq "l2CustomSender (Linea Gelato config) → L2_CUSTOM_SENDER"      "$sol_l2_sender" "$(yml_anchor "config/state/l2-linea-gelato.yaml" l2CustomSender)"
+        gel="config/state/l2-linea-gelato.yaml"
+        expect_eq "RETIRED_l2GelatoSyncAutomation → L2_OLD_GELATO_AUTOMATION"    "$sol_gelato" "$(yml_anchor "$gel" RETIRED_l2GelatoSyncAutomation)"
+        # The standalone Gelato config mirrors a few lane anchors under misc:; each mirror must equal its source.
+        for mirror in l2ChainId l2CustomSender l2Weth; do
+          expect_eq "$mirror (Linea Gelato misc mirror) == linea.inputs.yaml" "$(yml_anchor "$sm" "$mirror")" "$(yml_anchor "$gel" "$mirror")"
+        done
+        expect_eq "ethMainnetCcipChainSelector (Linea Gelato misc mirror) == common.inputs.yaml" "$(yml_anchor config/state/common.inputs.yaml ethMainnetCcipChainSelector)" "$(yml_anchor "$gel" ethMainnetCcipChainSelector)"
       fi
 
       # Fee blobs + derived maxFees are NOT plain constants — they are FeeCodec-encoded from the
@@ -460,11 +475,13 @@ verify-externals-coverage:
     #   lineaMessageService — Linea message-service predeploy; pinned on-chain via LineaBridgeExecutor
     #                         (Linea analogue of ovmL2CrossDomainMessenger; null on the other lanes)
     #   RETIRED_l2SyncTrigger — denied SYNC_ROLE; immutable lane identity checked by l2.yaml
-    #   l2AutomationOwner / creWorkflowOwner — configured Automation Multisig authorities;
+    #                           (RETIRED_l2ChainlinkSyncAutomation / RETIRED_l2GelatoSyncAutomation are
+    #                           pinned by yml_anchor rows above and identity-checked the same way)
+    #   l2AutomationOwner — configured Automation Multisig authority;
     #                     checked against contract ownership and the registry by state-mate
     #   creWorkflowRegistry — Chainlink's shared Ethereum registry; independently checked on-chain
     #   creWorkflowId — content-derived workflow deployment output (zero is the fail-closed predeploy stub)
-    allow=" l2OraclePool l2SyncTrigger l2CreReceiver RETIRED_l2SyncTrigger l2AutomationOwner creWorkflowOwner creWorkflowRegistry creWorkflowId lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
+    allow=" l2OraclePool l2SyncTrigger l2CreReceiver RETIRED_l2SyncTrigger l2AutomationOwner creWorkflowRegistry creWorkflowId lidoDaoAgent ovmL2CrossDomainMessenger lineaMessageService "
     # Anchor names cross-checked by a `yml_anchor` row in verify-constants-sync. The justfile is
     # invariant across the loop below, so scan it ONCE here (space-padded for the `case` match)
     # rather than re-grepping it per anchor per net.
@@ -482,9 +499,8 @@ verify-externals-coverage:
     echo "===================================================================="
     echo "VERIFY EXTERNALS COVERAGE  (every L2 external/deployed anchor pinned to a source-of-truth)"
     echo "===================================================================="
-    # Gelato's RETIRED_l2GelatoSyncAutomation / l2CustomSender live under misc: in
-    # l2-linea-gelato.yaml (not externals:), so they are not swept here — they are pinned by the
-    # explicit yml_anchor rows above.
+    # l2-linea-gelato.yaml is standalone: its anchors live under misc: (not externals:), so they are not
+    # swept here — they are pinned by the explicit yml_anchor rows above.
     for net in common optimism arbitrum base linea; do
       inputs="config/state/${net}.inputs.yaml"
       deployed="config/state/${net}.deployed.yaml"
@@ -574,7 +590,7 @@ cre-registry-status:
     REGISTRY="$(just _l2-input-anchor optimism creWorkflowRegistry)"
     DON_FAMILY="$(just _l2-input-anchor optimism creDonFamily)"
     AUTOMATION_OWNER="$(just _l2-input-anchor optimism l2AutomationOwner)"
-    WORKFLOW_OWNER="$(just _l2-input-anchor optimism creWorkflowOwner)"
+    WORKFLOW_OWNER="$AUTOMATION_OWNER"
     CRE_RECEIVER="$(just _l2-input-anchor optimism l2CreReceiver 2>/dev/null || true)"
     [[ -n "$CRE_RECEIVER" ]] || CRE_RECEIVER="$(yq '[.. | select(anchor == "l2CreReceiver")][0]' \
       "$ROOT_DIR/config/state/optimism.deployed.yaml" | tr -d '"')"
@@ -1631,12 +1647,12 @@ _audit-ownership-net net label rpc_url:
     SENDER="$(ext l2CustomSender)";      PROXY_ADMIN="$(ext l2ProxyAdmin)"
     INIT_OWNER="$(ext initialOwner)";    GOV_EXEC="$(ext l2GovernanceExecutor)"
     LOL="$(ext l2LiquidityOwner)";         DEPLOYER="$(ext l2LidoDeployer)"
-    AUTOMATION_OWNER="$(ext l2AutomationOwner)"; WORKFLOW_OWNER="$(ext creWorkflowOwner)"
-    FORWARDER="$(ext l2CreForwarder)";     OLD_AUTOMATION="$(ext l2OldSyncAutomation)"
+    AUTOMATION_OWNER="$(ext l2AutomationOwner)"; WORKFLOW_OWNER="$AUTOMATION_OWNER"
+    FORWARDER="$(ext l2CreForwarder)";     OLD_AUTOMATION="$(ext RETIRED_l2ChainlinkSyncAutomation)"
     POOL="$(dpl l2OraclePool)"; TRIGGER="$(dpl l2SyncTrigger)"; RECEIVER="$(dpl l2CreReceiver)"
     RETIRED_TRIGGER="$(dpl RETIRED_l2SyncTrigger)"
-    # Linea checks a revoked Gelato automation; its address lives under misc: in the
-    # standalone gelato wiring file (no .inputs sibling — see l2-linea-gelato.yaml).
+    # Linea also checks a revoked Gelato automation; its anchor lives under misc: in the standalone
+    # gelato wiring file (see l2-linea-gelato.yaml).
     OLD_GELATO=""
     if [[ "{{net}}" == "linea" ]]; then
       OLD_GELATO="$(yq '.misc[] | select(anchor == "RETIRED_l2GelatoSyncAutomation")' config/state/l2-linea-gelato.yaml | tr -d '"')"

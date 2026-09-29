@@ -49,7 +49,7 @@ A source dependency is not evidence of an audit; review scope is in
 | Lido DAO Agent | L1 receiver admin and L1 ProxyAdmin owner |
 | L2 Governance Executor | CustomSender admin, SYNC_ROLE administration, and L2 ProxyAdmin ownership |
 | LOL Safe (`l2LiquidityOwner`) | OraclePool ownership: pause, unpause, and sweep |
-| Automation Multisig (`l2AutomationOwner`, `creWorkflowOwner`) | SyncTrigger and CREReceiver ownership; CRE workflow ownership |
+| Automation Multisig (`l2AutomationOwner`) | SyncTrigger and CREReceiver ownership; CRE workflow ownership |
 | SyncTrigger | CustomSender `SYNC_ROLE` |
 | CREReceiver | Sole configured caller of `SyncTrigger.triggerSync()` |
 | Chainlink CRE Forwarder | Sole configured caller of `CREReceiver.onReport()` |
@@ -70,7 +70,7 @@ For CRE delivery, all of these must agree:
 ```text
 WorkflowRegistry workflow owner
     = CREReceiver.getExpectedAuthor()
-    = configured creWorkflowOwner
+    = configured l2AutomationOwner
 ```
 
 The registry owner must also be linked to the CRE account. An ACTIVE registry

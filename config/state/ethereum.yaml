@@ -2,6 +2,8 @@
 # Ethereum state shared by all four lanes. Run with `just verify-l1-state-mate`.
 # Assert DAO Agent authority, lane adapter/sender wiring, and proxy implementation.
 # Addresses in ethereum.inputs.yaml are checked by `just verify-constants-sync`.
+# ALERT comments mark mismatches to monitor; state-mate does not route severity.
+# `# immutable` marks bytecode-backed values or constants, not write-protected storage.
 
 roles:
   - &DEFAULT_ADMIN_ROLE "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -26,17 +28,17 @@ l1:
       implementation: *l1LidoCustomReceiverImpl
       proxyChecks: {}
       checks:
-        CCIP_ROUTER: *l1CcipRouter
-        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
-        MIN_FAILED_MESSAGE_GAS: *minFailedMessageGas
-        WNATIVE: *l1Weth
-        WSTETH: *l1Wsteth
+        CCIP_ROUTER: *l1CcipRouter # immutable
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE # immutable
+        MIN_FAILED_MESSAGE_GAS: *minFailedMessageGas # immutable
+        WNATIVE: *l1Weth # immutable
+        WSTETH: *l1Wsteth # immutable
         hasRole:
           - args: [*DEFAULT_ADMIN_ROLE, *lidoDaoAgent]
-            result: true
+            result: true # ALERT: HIGH
           - args: [*DEFAULT_ADMIN_ROLE, *initialOwner]
             result: false
-        getAdapter:
+        getAdapter: # ALERT: HIGH — applies to every lane below
           - args: [*optimismCcipChainSelector]
             result: *l1OptimismAdapter
           - args: [*arbitrumCcipChainSelector]
@@ -45,7 +47,7 @@ l1:
             result: *l1BaseAdapter
           - args: [*lineaCcipChainSelector]
             result: *l1LineaAdapter
-        getSender:
+        getSender: # ALERT: HIGH — authorized sender for each source lane
           - args: [*optimismCcipChainSelector]
             result: *l2OptimismSenderBytes32
           - args: [*arbitrumCcipChainSelector]
@@ -54,7 +56,7 @@ l1:
             result: *l2BaseSenderBytes32
           - args: [*lineaCcipChainSelector]
             result: *l2LineaSenderBytes32
-        supportsInterface:
+        supportsInterface: # immutable
           - args: ["0x01ffc9a7"] # IERC165
             result: true
         getFailedMessageHash: null # per-message; not pinnable in static yaml
@@ -62,11 +64,11 @@ l1:
       implementationChecks:
         # Implementation is uninitialized (initializer disabled in constructor) —
         # immutables still readable; admin role unset.
-        CCIP_ROUTER: *l1CcipRouter
-        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE
-        MIN_FAILED_MESSAGE_GAS: *minFailedMessageGas
-        WNATIVE: *l1Weth
-        WSTETH: *l1Wsteth
+        CCIP_ROUTER: *l1CcipRouter # immutable
+        DEFAULT_ADMIN_ROLE: *DEFAULT_ADMIN_ROLE # immutable
+        MIN_FAILED_MESSAGE_GAS: *minFailedMessageGas # immutable
+        WNATIVE: *l1Weth # immutable
+        WSTETH: *l1Wsteth # immutable
         hasRole:
           - args: [*DEFAULT_ADMIN_ROLE, *lidoDaoAgent]
             result: false
@@ -79,50 +81,50 @@ l1:
         supportsInterface: null
       storage:
         - slot: *EIP1967_IMPLEMENTATION_SLOT
-          expected: *l1LidoCustomReceiverImpl
+          expected: *l1LidoCustomReceiverImpl # ALERT: HIGH
           label: implementation
         - slot: *EIP1967_ADMIN_SLOT
-          expected: *l1ProxyAdmin
+          expected: *l1ProxyAdmin # ALERT: HIGH
           label: admin
 
     proxyAdmin:
       name: ProxyAdmin
       address: *l1ProxyAdmin
       checks:
-        UPGRADE_INTERFACE_VERSION: "5.0.0"
-        owner: *lidoDaoAgent
+        UPGRADE_INTERFACE_VERSION: "5.0.0" # immutable
+        owner: *lidoDaoAgent # ALERT: HIGH
 
     optimismAdapter:
       name: OptimismLegacyAdapterL1toL2
       address: *l1OptimismAdapter
       checks:
-        DELEGATOR: *l1LidoCustomReceiver
-        L1_TOKEN: *l1Wsteth
-        L1_ERC20_BRIDGE: *l1OptimismStandardBridge
-        L2_TOKEN: *l2OptimismWsteth
+        DELEGATOR: *l1LidoCustomReceiver # immutable
+        L1_TOKEN: *l1Wsteth # immutable
+        L1_ERC20_BRIDGE: *l1OptimismStandardBridge # immutable
+        L2_TOKEN: *l2OptimismWsteth # immutable
 
     arbitrumAdapter:
       name: ArbitrumLegacyAdapterL1toL2
       address: *l1ArbitrumAdapter
       checks:
-        DELEGATOR: *l1LidoCustomReceiver
-        L1_TOKEN: *l1Wsteth
-        L1_GATEWAY_ROUTER: *l1ArbitrumGatewayRouter
-        L1_TOKEN_GATEWAY: *l1ArbitrumTokenGateway
+        DELEGATOR: *l1LidoCustomReceiver # immutable
+        L1_TOKEN: *l1Wsteth # immutable
+        L1_GATEWAY_ROUTER: *l1ArbitrumGatewayRouter # immutable
+        L1_TOKEN_GATEWAY: *l1ArbitrumTokenGateway # immutable
 
     baseAdapter:
       name: BaseLegacyAdapterL1toL2
       address: *l1BaseAdapter
       checks:
-        DELEGATOR: *l1LidoCustomReceiver
-        L1_TOKEN: *l1Wsteth
-        L1_ERC20_BRIDGE: *l1BaseStandardBridge
-        L2_TOKEN: *l2BaseWsteth
+        DELEGATOR: *l1LidoCustomReceiver # immutable
+        L1_TOKEN: *l1Wsteth # immutable
+        L1_ERC20_BRIDGE: *l1BaseStandardBridge # immutable
+        L2_TOKEN: *l2BaseWsteth # immutable
 
     lineaAdapter:
       name: LineaAdapterL1toL2
       address: *l1LineaAdapter
       checks:
-        DELEGATOR: *l1LidoCustomReceiver
-        TOKEN: *l1Wsteth
-        TOKEN_BRIDGE: *l1LineaTokenBridge
+        DELEGATOR: *l1LidoCustomReceiver # immutable
+        TOKEN: *l1Wsteth # immutable
+        TOKEN_BRIDGE: *l1LineaTokenBridge # immutable

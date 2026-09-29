@@ -23,7 +23,7 @@ externals:
   - &l2ChainId 10
   - &l2GovernanceExecutor "0xEfa0dB536d2c8089685630fafe88CF7805966FC3"
   - &ovmL2CrossDomainMessenger "0x4200000000000000000000000000000000000007"
-  - &l2OldSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
+  - &RETIRED_l2ChainlinkSyncAutomation "0x3776CC14ce997827F7A87091018Daa1739dc2790"
   # CustomSender proxy and implementation; pool/trigger/receiver addresses live in deployed.yaml.
   # Pinned to OptimismConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
   - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"

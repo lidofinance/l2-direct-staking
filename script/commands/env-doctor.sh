@@ -59,7 +59,7 @@ fi
 echo
 echo "Actor addresses:"
 INFO "L2_AUTOMATION_OWNER   = ${L2_AUTOMATION_OWNER:-<unset>}"
-WORKFLOW_OWNER="$(just _l2-input-anchor optimism creWorkflowOwner 2>/dev/null || true)"
+WORKFLOW_OWNER="$(just _l2-input-anchor optimism l2AutomationOwner 2>/dev/null || true)"
 INFO "CRE_WORKFLOW_OWNER    = ${WORKFLOW_OWNER:-<unset>}"
 if [[ -n "$AO_KEY" && -n "${L2_AUTOMATION_OWNER:-}" ]]; then
   DERIVED="$(cast wallet address --private-key "$AO_KEY" 2>/dev/null || true)"
@@ -161,7 +161,6 @@ for net in "${LANES[@]}"; do
   INFO "receiver ${RECV:-<unset>}"
   # Every lane must use the configured Automation Multisig.
   ANCHOR_AO="$(anchor "$IN" l2AutomationOwner)"
-  ANCHOR_WF="$(anchor "$IN" creWorkflowOwner)"
   if [[ -n "$ANCHOR_AO" && "$ANCHOR_AO" != "null" ]]; then
     if [[ -z "${L2_AUTOMATION_OWNER:-}" || "$(lc "$ANCHOR_AO")" == "$(lc "$L2_AUTOMATION_OWNER")" ]]; then
       OK "l2AutomationOwner anchor == L2_AUTOMATION_OWNER ($ANCHOR_AO)"
@@ -175,10 +174,10 @@ for net in "${LANES[@]}"; do
     PINNED="$(cast call "$RECV" 'getExpectedAuthor()(address)' --rpc-url "$L2" 2>/dev/null | tr -d '\r\n' || true)"
     if [[ -z "$PINNED" ]]; then
       INFO "on-chain getExpectedAuthor(): unreachable (RPC down or wrong address)"
-    elif [[ -n "$ANCHOR_WF" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_WF")" ]]; then
-      OK "on-chain CREReceiver.getExpectedAuthor() == creWorkflowOwner ($PINNED)"
+    elif [[ -n "$ANCHOR_AO" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_AO")" ]]; then
+      OK "on-chain CREReceiver.getExpectedAuthor() == l2AutomationOwner ($PINNED)"
     else
-      BAD "on-chain CREReceiver.getExpectedAuthor() = $PINNED — expected creWorkflowOwner (${ANCHOR_WF:-<absent>})"
+      BAD "on-chain CREReceiver.getExpectedAuthor() = $PINNED — expected l2AutomationOwner (${ANCHOR_AO:-<absent>})"
     fi
   fi
   if [[ -n "$WFID" ]]; then
