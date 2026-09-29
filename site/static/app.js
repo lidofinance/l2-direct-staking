@@ -160,8 +160,8 @@ const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b2c87e45
 // single source digest mean anything. Published on-chain in the record's `attributes` at registration
 // and re-checkable here against a file the reader supplies. Regenerate with `just cre-workflow-hash`.
 const CRE_SOURCE_SHA256 = '6b618bac8d29cca5ec12895201cab9a19747c1bac42979e0f59477f0d3453cf1';
-// Registered source: main.ts at 9dd7005. The current repo source above is used for new deployments.
-const CRE_DEPLOYED_SOURCE_SHA256 = '1e61180338f834cfe9e77ac06b1871c6aa47f77c38de6c36f7510249b0df05bb';
+// Registered source: main.ts at c944edc. The current repo source above is used for new deployments.
+const CRE_DEPLOYED_SOURCE_SHA256 = '539b2a58b5d1cc1192508a989637008d502df02e4a7d887c28f76c9682cbbe1d';
 // Byte-exact copy of config.deploy.json — trailing newline included, or the digest will not match.
 const CRE_CONFIG_JSON = "{\n  \"receiverAddress\": \"0x09BdB4E8BA68d245DCb1c6fbEb1e4f13b57cc69A\",\n  \"targetAddress\": \"0x871a5cddE9813627Ff37A2895A0c9B117A664622\",\n  \"writeGasLimit\": \"750000\",\n  \"lanes\": [\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-optimism-1\",\n      \"schedule\": \"0 0 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-arbitrum-1\",\n      \"schedule\": \"0 15 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-base-1\",\n      \"schedule\": \"0 30 * * * *\"\n    },\n    {\n      \"chainSelectorName\": \"ethereum-mainnet-linea-1\",\n      \"schedule\": \"0 45 * * * *\"\n    }\n  ]\n}\n";
 
@@ -382,7 +382,14 @@ async function rpcBatchChunk(url, calls, idBase) {
   // cap, auth). Report what it said — never let it fall through as a shape error.
   if (!Array.isArray(out)) throw new Error(out?.error?.message || 'endpoint rejected the batch request');
   const byId = new Map(out.map(r => [r.id, r]));
-  return calls.map((_, i) => byId.get(idBase + i)?.result ?? null); // per-call revert → null
+  return calls.map((c, i) => {
+    const response = byId.get(idBase + i);
+    // State reads tolerate per-call reverts. History reads must retain the provider's reason for
+    // rejecting a query (range limit, rate limit, archive access), not turn it into a shape error.
+    if (c.method === 'eth_getLogs' && response?.error)
+      throw new Error(`eth_getLogs (${response.error.code ?? 'RPC error'}): ${response.error.message || 'request failed'}`);
+    return response?.result ?? null;
+  });
 }
 
 async function rpcBatch(url, calls) {
@@ -646,6 +653,8 @@ async function attachSyncAmounts(L, rows) {
 
 // Persist older blocks; reread the reorg window through the live tip for event views.
 const RPC_CONFIRMATIONS = 1800;
+// mainnet.base.org rejects eth_getLogs ranges larger than 2,000 blocks, even inside a batch.
+const RPC_LOG_BLOCKS = 2000;
 const rpcBlockNumber = async L => Number(BigInt(await rpcRequest(L.logsRpc ?? L.rpc, 'eth_blockNumber', [])));
 // Cumulative totals advance only behind the reorg window.
 async function rpcSafeBlock(L) {
@@ -659,8 +668,8 @@ async function rpcHistoryLogs(L, address, topics, fromBlock, toBlock = null, { l
   toBlock ??= await rpcBlockNumber(L);
   const result = [];
   const ranges = [];
-  for (let first = fromBlock; first <= toBlock; first += 10000)
-    ranges.push([first, Math.min(first + 9999, toBlock)]);
+  for (let first = fromBlock; first <= toBlock; first += RPC_LOG_BLOCKS)
+    ranges.push([first, Math.min(first + RPC_LOG_BLOCKS - 1, toBlock)]);
   if (Number.isFinite(limit)) ranges.reverse();
   for (let i = 0; i < ranges.length; i += 4) {
     const pages = ranges.slice(i, i + 4).map(([first, last]) => {
@@ -1189,7 +1198,7 @@ function renderActivity(results) {
       <span class="upd" id="activity-upd" role="status" aria-live="polite"></span>
       ${viewRefresh('activity', 'Pool activity')}
     </div>
-    ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
+    ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.map(esc).join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" onclick="this.disabled=true;refreshActivity()">⟳ retry</button></div>` : ''}
     ${pending.length ? `<div class="loader"><span class="spin"></span> Loading ${pending.join(', ')} history…</div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
@@ -1651,7 +1660,7 @@ function renderAutomation() {
         const srcOk = attrs.a.source === CRE_DEPLOYED_SOURCE_SHA256;
         return { level: srcOk ? 'ok' : 'crit', count: true, html: chip(srcOk ? 'ok' : 'crit',
           srcOk ? 'matches deployment' : 'does not match deployment',
-          srcOk ? 'main.ts · 9dd7005'
+          srcOk ? 'main.ts · c944edc'
             : `<span class="mono">${esc(String(attrs.a.source ?? '—').slice(0, 16))}…</span> ≠ <span class="mono">${CRE_DEPLOYED_SOURCE_SHA256.slice(0, 16)}…</span>`) };
       })();
 
@@ -1764,7 +1773,7 @@ function renderAutomation() {
       ${legendHtml()}
     </div>
     ${automation.regError ? `<div class="err-banner">✕ registry unreadable: ${automation.regError}</div>` : ''}
-    ${automation.logErrors.length ? `<div class="err-banner">⚠ event source unreachable: ${automation.logErrors.join(', ')} · showing cached history<button class="retry" onclick="this.disabled=true;refreshAutomationLogs()">⟳ retry</button></div>` : ''}
+    ${automation.logErrors.length ? `<div class="err-banner">⚠ event source unreachable: ${automation.logErrors.map(esc).join(', ')} · showing cached history<button class="retry" onclick="this.disabled=true;refreshAutomationLogs()">⟳ retry</button></div>` : ''}
     <div class="scroll-x"><table class="syncm">
       <tr><th>Lane</th><th>Workflow</th><th>Author gate</th><th>Delivery</th><th>Last accepted report</th></tr>
       ${laneRows}
@@ -1790,7 +1799,7 @@ function renderAutomation() {
       <span class="desc">Latest ${visibleEvents.length} events.</span>
     </div>
     ${automation.logErrors.length || missingLanes.length ? `<div class="err-banner">⚠ incomplete: ${
-      [...automation.logErrors, ...missingLanes.map(n => n + ' (not loaded)')].join(', ')} — rows below are cached or partial</div>` : ''}
+      [...automation.logErrors, ...missingLanes.map(n => n + ' (not loaded)')].map(esc).join(', ')} — rows below are cached or partial</div>` : ''}
     ${evRows ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Event</th><th>Detail</th><th>Tx</th></tr>${evRows}</table></div>`
       : '<div class="err-banner">no CREReceiver events found</div>'}
