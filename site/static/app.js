@@ -1096,6 +1096,9 @@ let activityCache = readActivityCache();
 // so the highlight survives auto-refreshes while the user is looking at the table.
 let activityViewBoundary = readActivitySeen();
 let lastActivityResults = null;
+// The table opens on the latest rows; "Show all" reveals the rest of what was already fetched.
+const ACTIVITY_PREVIEW_ROWS = 20;
+let activityShowAll = false;
 let activityRenderedAt = null;
 let syncVolume = cachedSyncVolume();
 let syncVolumeRefreshing = true;
@@ -1191,7 +1194,8 @@ function renderActivity(results) {
   lastActivityResults = results;
   const isFresh = e => !!activityViewBoundary && (e.ts > activityViewBoundary.ts ||
     e.ts === activityViewBoundary.ts && !activityViewBoundary.txs.includes(e.tx));
-  const tr = rows.map(e => `<tr${isFresh(e) ? ' class="fresh"' : ''}>
+  const shown = activityShowAll ? rows : rows.slice(0, ACTIVITY_PREVIEW_ROWS);
+  const tr = shown.map(e => `<tr${isFresh(e) ? ' class="fresh"' : ''}>
     <td><span class="num"><div class="m">${ago(e.ts)}</div><div class="s">${new Date(e.ts * 1000).toLocaleString()}</div></span></td>
     <td><span class="who"><span class="avatar">${netLogo(e.L)}</span><span class="name">${e.L.name}</span></span></td>
     <td><span class="tag ${e.kind}">${e.label}</span></td>
@@ -1210,7 +1214,9 @@ function renderActivity(results) {
     ${pending.length ? `<div class="loader"><span class="spin"></span> Loading ${pending.join(', ')} history…</div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
-      ${tr}</table></div>` : failed.length || pending.length ? '' : '<div class="err-banner">no transfers found</div>'}
+      ${tr}</table></div>${rows.length > shown.length ? `<div class="show-all">
+        <button type="button" class="refresh alt" onclick="activityShowAll=true;renderActivity(lastActivityResults)">Show all ${rows.length}</button>
+      </div>` : ''}` : failed.length || pending.length ? '' : '<div class="err-banner">no transfers found</div>'}
   </div>`;
   updateActivityUpd();
 }
