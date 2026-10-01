@@ -1824,13 +1824,10 @@ function render(l1, lanes) {
     : worst([syncState(l.d)[0], floatState(l.d).level]));
 
   const overviewLevel = worst([
-    l1.error ? 'crit' : worst(l1BalanceChecks(l1.d).map(c => c.level)),
+    l1.error ? 'crit' : worst([...l1BalanceChecks(l1.d), ...l1AccessChecks(l1.d)].map(c => c.level)),
     ...laneOverviewLevels,
   ]);
-  const accessLevel = worst([
-    l1.error ? 'crit' : worst(l1AccessChecks(l1.d).map(c => c.level)),
-    ...lanes.map(l => l.error ? 'crit' : worst(laneChecks(l.L, l.d).map(c => c.level))),
-  ]);
+  const accessLevel = worst(lanes.map(l => l.error ? 'crit' : worst(laneChecks(l.L, l.d).map(c => c.level))));
   setOverviewStatus('core', overviewLevel);
   setTabStatus('access', accessLevel === 'ok' ? null : accessLevel);
 
@@ -1936,41 +1933,26 @@ function render(l1, lanes) {
     <div class="scroll-x">${buildTable(() => true)}</div>
   </div>`;
 
-  // L1 cards: balances stay in Overview; roles and ownership live in Access Control.
-  const l1Access = l1.error ? [] : l1AccessChecks(l1.d);
-  const l1Balances = l1.error ? [] : l1BalanceChecks(l1.d);
-  const l1BalanceBody = l1.error
-    ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="l1-metric-grid l1-balance-grid">${l1Balances.map(c => `<div class="l1-metric ${c.level}">
-        <div class="l1-metric-label">${c.key.replace('Receiver ', '')}</div>
+  // One L1 card on Overview: the shared receiver's balances and its roles.
+  const l1Metrics = (checks, grid, label) => `<div class="l1-metric-grid ${grid}">${checks.map(c => `<div class="l1-metric ${c.level}">
+        <div class="l1-metric-label">${label(c.key)}</div>
         ${chip(c.level, c.value, c.sub)}
       </div>`).join('')}</div>`;
-  const l1BalanceCard = `<div class="card l1-card l1-balance-card">
+  const l1Body = l1.error
+    ? `<div class="err-banner">RPC error: ${l1.error}</div>`
+    : l1Metrics(l1BalanceChecks(l1.d), 'l1-balance-grid', key => key.replace('Receiver ', '')) +
+      l1Metrics(l1AccessChecks(l1.d), 'l1-access-grid', key => key);
+  const l1Card = `<div class="card l1-card">
     <div class="card-head">
       <div class="l1-card-copy">
         <h3>${netName(L1)}</h3>
-        <span class="desc">Shared receiver balances</span>
+        <span class="desc">Shared receiver balances and access control</span>
       </div>
       <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
-    </div>${l1BalanceBody}</div>`;
+    </div>${l1Body}</div>`;
 
-  const l1AccessBody = l1.error
-    ? `<div class="err-banner">RPC error: ${l1.error}</div>`
-    : `<div class="l1-metric-grid l1-access-grid">${l1Access.map(c => `<div class="l1-metric ${c.level}">
-        <div class="l1-metric-label">${c.key}</div>
-        ${chip(c.level, c.value, c.sub)}
-      </div>`).join('')}</div>`;
-  const l1AccessCard = `<div class="card l1-card">
-    <div class="card-head">
-      <div class="l1-card-copy">
-        <h3>${netName(L1)}</h3>
-        <span class="desc">Access control</span>
-      </div>
-      <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
-    </div>${l1AccessBody}</div>`;
-
-  document.getElementById('overview-cards').innerHTML = hero + syncCard + l1BalanceCard;
-  document.getElementById('access').innerHTML = ownCard + l1AccessCard;
+  document.getElementById('overview-cards').innerHTML = hero + syncCard + l1Card;
+  document.getElementById('access').innerHTML = ownCard;
 }
 
 const legendHtml = () => `<span class="legend">
