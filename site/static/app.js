@@ -1359,7 +1359,7 @@ async function failedMessageData() {
 
 function renderShuttles(messages, error) {
   if (error) {
-    setTabStatus('shuttle', 'crit');
+    setOverviewStatus('shuttle', 'crit');
     document.getElementById('shuttle').innerHTML = `<div class="card">
       <div class="card-head"><h3>L1 receiver failures</h3>${viewRefresh('shuttle', 'Shuttle failures')}</div>
       <div class="err-banner">✕ ${esc(error)}</div></div>`;
@@ -1371,7 +1371,7 @@ function renderShuttles(messages, error) {
   const recovered = messages.filter(message => message.state === 'recovered');
   const ordered = [...messages].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0) ||
     b.block - a.block || b.logIndex - a.logIndex);
-  setTabStatus('shuttle', unknown.length || active.length ? 'crit' : null);
+  setOverviewStatus('shuttle', unknown.length || active.length ? 'crit' : 'ok');
   const rows = ordered.map(message => {
     const lane = LANE_BY_CCIP_SELECTOR.get(message.sourceSelector);
     const source = lane ? laneWho(lane) : `<span class="mono">${message.sourceSelector}</span>`;
@@ -1831,7 +1831,7 @@ function render(l1, lanes) {
     l1.error ? 'crit' : worst(l1AccessChecks(l1.d).map(c => c.level)),
     ...lanes.map(l => l.error ? 'crit' : worst(laneChecks(l.L, l.d).map(c => c.level))),
   ]);
-  setTabStatus('main', overviewLevel === 'ok' ? null : overviewLevel);
+  setOverviewStatus('core', overviewLevel);
   setTabStatus('access', accessLevel === 'ok' ? null : accessLevel);
 
   const rpcOk = [l1, ...lanes].filter(x => !x.error).length;
@@ -1969,7 +1969,7 @@ function render(l1, lanes) {
       <span class="l1-card-links">${alink(L1, L1.receiver, 'LidoCustomReceiver')} ${alink(L1, L1.proxyAdmin, 'ProxyAdmin')}</span>
     </div>${l1AccessBody}</div>`;
 
-  document.getElementById('main').innerHTML = hero + syncCard + l1BalanceCard;
+  document.getElementById('overview-cards').innerHTML = hero + syncCard + l1BalanceCard;
   document.getElementById('access').innerHTML = ownCard + l1AccessCard;
 }
 
@@ -2611,6 +2611,14 @@ function setTabStatus(tab, status) {
   if (!button) return;
   button.dataset.status = status ?? '';
   button.title = status === 'crit' ? 'Critical issue' : status === 'warn' ? 'Warning' : status === 'new' ? 'New activity' : '';
+}
+
+// Overview also holds the L1 failures card, so its dot shows the worse of the two.
+const overviewStatus = { core: 'ok', shuttle: 'ok' };
+function setOverviewStatus(part, level) {
+  overviewStatus[part] = level;
+  const combined = worst(Object.values(overviewStatus));
+  setTabStatus('main', combined === 'ok' ? null : combined);
 }
 
 function selectTab(tab) {
