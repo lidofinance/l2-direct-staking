@@ -19,7 +19,6 @@
     <button class="tab" data-tab="access">Access Control<span class="tab-dot" aria-hidden="true"></span></button>
     <button class="tab" data-tab="activity">Pool activity<span class="tab-dot" aria-hidden="true"></span></button>
     <button class="tab" data-tab="automation">Automation<span class="tab-dot" aria-hidden="true"></span></button>
-    <button class="tab" data-tab="shuttle">L1 failures<span class="tab-dot" aria-hidden="true"></span></button>
     <button class="tab" data-tab="calldata">🧪 CRE Calldata<span class="tab-dot" aria-hidden="true"></span></button>
   </nav>
   <div class="right">
@@ -47,8 +46,10 @@
   </form>
 </dialog>
 
-<main id="main"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></main>
-<main id="shuttle" hidden><div class="card"><div class="loader"><span class="spin"></span> reading L1 failures…</div></div></main>
+<main id="main">
+  <div id="overview-cards"><div class="card"><div class="loader"><span class="spin"></span> reading on-chain state…</div></div></div>
+  <div id="shuttle"><div class="card"><div class="loader"><span class="spin"></span> reading L1 failures…</div></div></div>
+</main>
 <main id="access" hidden><div class="card"><div class="loader"><span class="spin"></span> reading access control…</div></div></main>
 <main id="activity" hidden><div class="card"><div class="loader"><span class="spin"></span> loading pool activity…</div></div></main>
 <main id="automation" hidden>
@@ -113,6 +114,6 @@
   <span>◷ Auto-refresh: 60s · read-only</span>
 </footer>
 
-<script src="./static/app.js"></script>
+<script type="module" src="./static/main.js"></script>
 </body>
 </html>
