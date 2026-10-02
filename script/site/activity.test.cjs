@@ -86,7 +86,7 @@ test('a failed source leaves events and cursor untouched and retry reads the sam
     if (method === 'eth_blockNumber') return hex(block + 100);
     return p.topics[0] === SLOW_STAKE_TOPIC ? slowStake(p) : [];
   });
-  await assert.rejects(activityData(L), /SlowStake: upstream unavailable/);
+  await assert.rejects(activityData(L), /SlowStake: eth_getLogs \(RPC error\): upstream unavailable/);
   assert.equal(activityProgress[L.name].block, block);
   assert.equal(records.get(PROGRESS_KEY), JSON.stringify(saved));
   slowStake = p => { if (Number(p.fromBlock) !== block - 1799) throw new Error('skipped range'); return []; };

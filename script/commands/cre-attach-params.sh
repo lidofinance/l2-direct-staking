@@ -24,7 +24,9 @@ if [[ ! "$calldata" =~ ^0xb377bfc5[0-9a-fA-F]+$ ]]; then
 fi
 
 sig='upsertWorkflow(string,string,bytes32,uint8,string,string,string,bytes,bool)'
-decoded="$(cast decode-calldata --json "$sig" "$calldata")"
+# cast >=1.8 wraps decoded values in {"data":[...]}; older versions emit an array.
+unwrap='if type == "object" and has("data") then .data else . end'
+decoded="$(cast decode-calldata --json "$sig" "$calldata" | jq -c "$unwrap")"
 current_attrs="$(printf '%s' "$decoded" | jq -er '.[7] | select(type == "string")')"
 if [[ "$current_attrs" != "0x" ]]; then
   echo "Refusing to overwrite non-empty attributes: $current_attrs" >&2
@@ -45,7 +47,7 @@ attrs_hex="$(cast from-utf8 "$attrs_json")"
 
 rewritten="$(cast calldata "$sig" "$name" "$tag" "$workflow_id" "$status" "$don" \
   "$binary_url" "$config_url" "$attrs_hex" "$keep_alive")"
-roundtrip_attrs="$(cast decode-calldata --json "$sig" "$rewritten" | jq -er '.[7]')"
+roundtrip_attrs="$(cast decode-calldata --json "$sig" "$rewritten" | jq -er "$unwrap | .[7]")"
 [[ "$roundtrip_attrs" == "$attrs_hex" ]] || {
   echo "Re-encoded attributes failed round-trip check" >&2
   exit 1

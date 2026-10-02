@@ -1,34 +1,17 @@
 /**
  * Lido Direct Staking — CRE Sync Workflow
  *
- * ONE FILE ON PURPOSE. This is the whole workflow: the ABI it calls, the config contract it validates,
- * the lane fan-out, the pure encoders, the per-lane handler and the entry point. It used to be four
- * modules (abi/encoding/lanes/main); they were merged on 2026-08-25 because what gets registered on
- * mainnet is a single compiled artifact whose parameters are only checkable by reading the source that
- * produced it — and a reviewer chasing four files to answer "what does this DON actually do?" is one
- * import away from reviewing something the compiler did not use.
+ * This file contains the ABI, configuration schema, lane planning, encoders, handler, and entry point.
+ * One registered workflow serves four lanes. Each lane has its own cron trigger and execution budget.
  *
- * ONE registered workflow, FOUR lanes: `initWorkflow` registers one cron trigger per lane, so each lane
- * runs in its own execution with its own time budget and its own failure domain — not one handler
- * looping over four chains, where a stuck lane strands the other three.
+ * Per tick: read shouldSyncAmount() and canSync(); when due and executable, encode triggerSync(),
+ * sign a report, and write to CREReceiver → SyncTrigger → CustomSender → CCIP → L1.
  *
- * Flow (per lane, per tick):
- *   CronCapability trigger → read shouldSyncAmount() (due? amount?) + canSync() (executable?) → if both,
- *   encode triggerSync() → sign report → write to CREReceiver → SyncTrigger.triggerSync() →
- *   CustomSender.sync() → CCIP → L1
+ * Code above "Workflow handler" is pure and tested outside WASM. Only the handler and entry use
+ * the CRE runtime. The entry memoizes its promise because both this file and the toolchain call it.
  *
- * The sections below keep the old module boundary as a rule, not as a filename: everything above
- * "Workflow handler" is pure — no CRE runtime import is used in it — so `bun test` exercises it
- * directly, outside WASM. Only the handler and the entry touch the runtime.
- *
- * The entry is idempotent on purpose — the compiled bundle contains two calls to it (ours and the
- * toolchain's) and must still produce exactly one Runner and one response.
- *
- * ONE EXPORT RULE, enforced by the toolchain: javy turns every ESM export of the entry module into a
- * WASM export and fails the build with "Exported functions with parameters are not supported". While
- * this was four modules the rule was invisible — only `main()` was exported from the entry. In one file
- * it is load-bearing, so nothing here is exported except `main` and the `__test__` bag at the bottom
- * (an object, not a function), and the types, which the compiler erases.
+ * Javy maps exported functions to WASM exports and rejects parameterized functions. Export only
+ * main(), the __test__ object, and types erased by the compiler.
  */
 
 import {
@@ -432,11 +415,8 @@ const initWorkflow = (config: Config) =>
     ),
   );
 
-// main() is IDEMPOTENT, and that is a fix for something the build output shows: the compiled bundle ends
-// with BOTH the call below and the toolchain's own `main().catch(sendErrorResponse)` (see the tail of
-// .cre_build_tmp.js). Two calls used to mean two Runners per execution — two WASI-arg parses and two
-// responses for one request. Memoising the promise collapses them into one run while still handing the
-// toolchain's catch the same promise, so an error is still reported exactly once.
+// Both this file and the generated bundle call main(). Share one Runner and response;
+// the toolchain's catch receives the same promise for error reporting.
 let running: Promise<void> | null = null;
 
 export function main(): Promise<void> {

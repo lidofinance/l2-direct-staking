@@ -1,21 +1,10 @@
 // ── Anchors (config/state/*.inputs.yaml + *.deployed.yaml) ──────────────────
 export const LOL        = '0xfc832da3d688352c0ab1a32136c7fabbb16d66e6'; // l2LiquidityOwner (LOL Safe)
-export const AUTO_OWNER = '0xbdf111fec2e818ad9c76fbbae46144746ad55773'; // retired per-lane workflow owner; uploader EOA
-export const AUTO_SAFE  = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b'; // Lido Automation Safe (3/5). Linked on the L1
-  // WorkflowRegistry and owns the consolidated workflow; expected author since 2026-09-10 and owner of
-  // SyncTrigger and CREReceiver since 2026-09-28.
-// Previous owner of the consolidated four-lane workflow: a Safe v1.4.1 with THRESHOLD 1 whose only signer
-// is ST_OWNER below. Linked on the L1 WorkflowRegistry 2026-08-20 (label `lido-automation-safe-new`); it
-// owns no workflow today.
-const CRE_WF_OWNER = '0xede1750ac52156e10be2b41d8b8df816d58bafe1';
-// Expected CREReceiver.getExpectedAuthor(). Moved to CRE_WF_OWNER on 2026-08-25 and to AUTO_SAFE on
-// 2026-09-10, verified on all four lanes before this pin changed — the gate must name the address that
-// OWNS the registered workflow, or every report reverts InvalidAuthor (which is exactly what happened on
-// 2026-08-16, when it pointed at a Safe that was never linked). The Automation tab checks the registry
-// link rather than trusting this constant; the constant only says which answer this dashboard expects to see.
+// The Automation Multisig owns the workflow, SyncTrigger, and CREReceiver.
+// Registry linkage and receiver author gates are verified by the Automation tab.
+export const AUTO_SAFE = '0x23ac4bf8ca7345ee533b12705af40f69060d9b5b';
 export const CRE_AUTHOR = AUTO_SAFE;
-const ST_OWNER   = '0x2a140ba9ad3b306ff62185954f49b130492266ab'; // SyncTrigger and CREReceiver owner 2026-08-07 → 2026-09-28
-export const CONTROL_OWNER = AUTO_SAFE; // SyncTrigger and CREReceiver owner() since 2026-09-28, verified on all four lanes
+export const CONTROL_OWNER = AUTO_SAFE;
 export const DAO_AGENT  = '0x3e40d73eb977dc6a537af587d48316fee66e9c8c'; // Lido DAO Agent
 export const SYNC_ROLE  = '0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71'; // keccak256("SYNC_ROLE")
 export const ADMIN_ROLE = '0x' + '0'.repeat(64);
@@ -23,12 +12,10 @@ export const TRIGGER_SYNC_SEL = '0x340b2b0b'; // triggerSync()
 export const DON_FAMILY = 'zone-a'; // creDonFamily — the quota in getMaxWorkflowsPerUserDON is per family
 
 export const NAMES = {
-  [LOL]: 'LOL Safe', [AUTO_OWNER]: 'Automation Owner', [AUTO_SAFE]: 'Lido Automation', [ST_OWNER]: 'L2 Control Owner',
-  [CRE_WF_OWNER]: 'Test Automation Msig',
+  [LOL]: 'LOL Safe', [AUTO_SAFE]: 'Automation Multisig (3/5)',
   [DAO_AGENT]: 'DAO Agent', ['0x' + '0'.repeat(40)]: 'zero',
 };
-export const EOAS = new Set([AUTO_OWNER, ST_OWNER]);
-export const SAFES = new Set([LOL, AUTO_SAFE, CRE_WF_OWNER]);
+export const SAFES = new Set([LOL, AUTO_SAFE]);
 // ponytail: RPC endpoints hardcoded; edit here if publicnode misbehaves.
 const LOGOS = {
   ethereum: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAMAAABlApw1AAACBFBMVEUAAADv7//09PTy8vXx9Pbz9Pjy9ffy9fjy9Pfx9Pfy9Pby9Pfx8/Xz8/Py8vTx9Pjv7/fy9Pfy9Pfy9ffz9ffy8/b09vjy9fXz9Pb09/ry9Pjz9fnv7/Tv9PTk5uiCg4Ssra9jZGWQkpTIycw7PDza296QkZIvMDBgYWK6vL21t7lHSUnm6OqEhojNz9Ly9PSztLednqB4envBw8Xv8vWen6Hv8/NsbW7x8/bP0NOpqqyJiovz8/dUVVXv7++lpqjy8/jz9Pbx9PZ9fn9bXF01NjYdHh4sLCw5Ojo0NTUwMTETExNucHBISElgYWE+Pz9zdHUaGhomJyfv7/oWFxckJSUtLi7x8vV4eXpRUlMhISHx8/Z1d3fy9PdnaGlERkaEhYZ6fHxrbW1AQUGDhYVWV1cqKipERUVOT1BcXV6LjI1iY2QyMzNMTU7Fx8lLTU2Sk5ba3N+HiIpKS0zW2Nt7fH4vLy+6vL6rrK6ChIXk5umfoKJYWVpXWVmQkpPd3+GTlJaXmJnOz9Lm5+qFhoepq6y6u77r7fB1dneRkpQ7PT2EhoeQkZPIysxISUnW2NrW19uztLa3uLqXmJp4enpTVVVvcHKsrrBmZ2g8PT2eoKJsbm+en6A9PT7v8/dsbm7BwsXd3+KEhYfx8/fy9fbP0dPx9Pjx8/bv8veJiozy9fnv8vQEFD2BAAAArHRSTlMAEDBQcI+fr7/f7/+AQGDPIJ9g33+vb1CPX+9/MDD//////////////////////2D/////UP9A/5D///9A/xD/r8/P/////////////////////zD///+g////sP/f/////////////////////////////////////////////////////////////////////////////////////0D/////gK//cO9g/1BgIk4dsgAACKdJREFUeNrM1YV1wEAMA9BjsMJOGfYfszBA0YnyJ5De6fmcPR9iyqW23gWfpPfWypBi8O7afEi5Cb4gLafxouGnPOOH5hyXa4Ufc8cvzWu8SvrUBH9Tt4U/nIZ/aZt3PGMW/JusI206MKIbIf4uMKTr4s60ZIG1EyssKwwYVGCMh19hFxxI09GHU3EwjUeu5wYGeDu6FRigfQtLgwHeI9wJDNAewWec7N6bzkdxOjWc0YOA4NFsRk8g2a2OP031JvMn0oWbn9/gWUCmLwb5qR5fuOfz9Y04s8BuJIihoGeJtMw4bVaYmRmXie5/kLDCCkx1RydwvVbp/3kOUnTeXPr3CzDlSvWqCN4LMLVQqTfSbRG//81Q0ZZkHvD3szVsAmhbcYLHV/P787AN0N6RPA8yJr/KOwDaCeTBxVrFC2EM3gXQLqAXpe+fedMAWtJ2025BpicYgPaKpIuDx/eEMtgA6h3CnqL4AkvzIID2STKRoe/3/nAIQPuJL/1UApjBBoCEgchAui+YcjgCoFVJosETgSLgGICVuiJzJ9ECSfMYABMGciPNArWGEwC0jViiLMUC5eEYgBMGYKW4LswMngygnQLMkAPwjDbYAMAweOb8gwFHgAGwHt9PFgHHAbQX8Ti2wQ5AvRHvCR5TEeAB6HC8PH5ClTgHAPL4ScQHyJsOAFbqHsd7gHJwALBSNxLtAUbDmQDaiHKInpAG+wAtUQ7RM7LE+QA6Bj0BX6PzcR/ASh1fq5+xBvsA2ol/2UzQJc4H0H66lD7BDfYBJuFLOnUPN9gH0F5W426mxPkAdKnrPgBwhwCYvgiAtpAaP2YM9gF4jzN0g/LmBQHaO7gomIkTAT6AVrkdimWwD6Bd1B26TkWAD8B7PMSlWH+4BID2Qlk2SxnsA/Cl7pkdUcpgH4AvdRmkwGi4JID2E2E8Ahh8WYB2QoJZrsT5AHwYzCEpkIcCAPVGYQkmSIN9AD4MPmwC3IhR4mzmFxaXll2CtkJ1CHC46f78ldW19XUXob2joMV3ohn88dPq5mwC+AidBfvcvTgGz3/+srpqAIYAh8HbUmkqygJ93dydVQPYmW/fI3iclX7QBtvuGIDNz1+/6VL3oViRyJv+zzcAQ1haZkvd9dINNgLmF3ZW/ziAbdKv4wTDBe7ofWiB7GyuugA7m7SMeTxS+sMZ/Pff6uZ4AIbwf4N3q+huNAZiy8zHJZedvp6WmfH7rr0FlpnKzMy0zPBP10XHUXDkF90LepHGGsgdT4/BFuYZqEbpI5AAlFUm1MUsAe4JiMO/jwTQDHyo27Yu4eEg4sa9+wEACWQ1Q0TaVSZoBz9A5+YmgEo6LySwg3wCHj56HAQSAlZJzGNwcB3xBFjnEgRsTZKFunWEgy88eRoEDAGLZ88FjwFFoAqcyxAwePFSXyoigepXr41zGQKIN2/PF4/Au7ogIAkgovVFlFBDo3cCTc07BZA3ZA0tXgm0tglbssROMdrrvBGIdnTKX2ICXXV+CHQ3iwfUNswROiIJNLURYwl6P9bQQxKI9lJ7MtvQEFZgCBjxM9giHMz17UxGv4gAlk7B1m+XsKnvHOgDKxRGAEvn4PFKSVO/UbrVKznqUKgriACKf2hYj4jGKrXyy4jRMbBCAQTGHfFPTOop0WBLPFocm1aqasb5EPoLINDk/OiJGq1nh4QbDmmWmFMGVfM5rRDmFH9lRHyMeZAZry8ogxQrvK/LQQBygxE/MVfZRi04PqgljB7NaoUwu/iPTepFfBQO5qgVU+cFZQBWaAECmXPDiU96CbOV8hVTLXshgVb4nJFA6xcQ/xJOEOcel71cmZWAjoAAiH9ikt4Ws4tuU0vXMOqmizok8LUZxb+EWWLRTa4p55QFWsESQPFH9Bq+VXKnBnu8HQpdOYpBe4VA9Lsj/h86CSPEfsaAXPP9VMlYQCuEWcS/hCn6ixyJnQZULUUd2aAdpobm8zXaYilCEBYAExA2yFBSw18gfgeV/HeBfu+ksKCSgCX1nBOaj/u8t9kIp99EpLCAdIHit/izkwCcTvM2QCu4odmCiBB2P7aKTfzRJVJwPwQUP38zd2CdARRSwgZoBRQ/GoApoqAhJlIgqv464kfM+jidto8xg39qCWgFrPwQISgFQR3ibIA4dXTnIIgfIgR1+u3pdvTn/+rOI0uKIAaiqrGVCFO4HU53wOQKdwC2dRcuwIod63EuMZfE28DPV9brfwLpSREZY1p98xccSOESIYBPtO74aXkqMtD/WpQIgXwMS2RMRAptgP5IaLHv2XCnvFQbgBxUJSwypiKFNqARgh2A2aELQKSQBiRCABLmRvC832cpJxOq58ggCAHoAJTJBSRSBBIhdADK7KdnX2UQXITQAeh1Nj5ShEYIbgBqRHykCI0Q3ADUiHgZBBwh3IsMQEZARoqQCJF4Zqs476UhDoo9wsqO8zIIiRCZx/KO3OlIERIhYAXzOvbjpBtbqmDlxGkZhAiAjNHK6LCXhkQIdoH0PYZlEBIh0AVSbsOHqkIiBLtASnWCB9LAC+IciaLcL6gMAosQXob8o8EaKQKLEG2yv+Ql6aWR76DKIRMpvmngSdZ9v/xIEVCEuGpChpA1UoQ6KC9gZcKSdcgPYeALxluRemlIhEipX7l+hvktRQAO2q6ZdepAI0UADir1d3wOHsQu+QD07+DZq9MuUJP6+25Rz/1XrpeVqp9/D2D/7N9B//qV+0e+GFcHIzj0hThrEJcAM8LtkxcCv/4g96t3pg7Gcql4R9prw5lm78ZIrk//IbQNS2KaO5s/z3rxZMqO5XKS2kI7tHSmObF8Znv4Fvp/tXj/FlqV8pNbKCuzPPnPwrgx2CLszI3YnR1bjuHS6KdifDPYwkyXjvz/aMDqQNyeH/s/UuoOUD3IdLv+dROPK7M4PDsbdWy/35q6cZ0tnme4fnvj7NY4lvKpl1bKeLRVN25nlP4W8ZTRGOsAez8AAAAASUVORK5CYII=',
@@ -112,7 +99,7 @@ export const CRE_CONFIG_SHA256 = '616ad39dc51a89da3913e43048e2e1150f99149436b13b
 // sha256 of cre-workflows/sync-automation/main.ts — the WHOLE workflow, one file, which is what makes a
 // single source digest mean anything. Published on-chain in the record's `attributes` at registration
 // and re-checkable here against a file the reader supplies. Regenerate with `just cre-workflow-hash`.
-export const CRE_SOURCE_SHA256 = '539b2a58b5d1cc1192508a989637008d502df02e4a7d887c28f76c9682cbbe1d';
+export const CRE_SOURCE_SHA256 = '6b618bac8d29cca5ec12895201cab9a19747c1bac42979e0f59477f0d3453cf1';
 // Registered source: main.ts at c944edc. The current repo source above is used for new deployments.
 export const CRE_DEPLOYED_SOURCE_SHA256 = '539b2a58b5d1cc1192508a989637008d502df02e4a7d887c28f76c9682cbbe1d';
 // Byte-exact copy of config.deploy.json — trailing newline included, or the digest will not match.

@@ -252,7 +252,7 @@ function render(l1, lanes) {
 
   const ownCard = `<div class="card">
     <div class="card-head">
-      <h3>Ownership &amp; Wiring</h3><span class="desc">On-chain values vs expected. ${ICO.contract} contract · ${ICO.safe} Safe · ${ICO.eoa} EOA</span>
+      <h3>Ownership &amp; Wiring</h3><span class="desc">On-chain values vs expected. ${ICO.contract} contract · ${ICO.safe} Safe</span>
       ${viewRefresh('access', 'Access Control')}
     </div>
     ${nDev ? `<div class="err-banner">✕ ${nDev} of ${nChecks} checks deviate from target${reachNote}</div>` : ''}

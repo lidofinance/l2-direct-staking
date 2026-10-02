@@ -1,16 +1,20 @@
 ---
-# Linea-only legacy Gelato de-role check. Run in addition to the combined shared l2.yaml check.
-# The retired CRE pair is verified by l2.yaml for every lane; this file exists only because Linea
-# also had a Gelato automation address that does not exist on the other networks.
+# Linea-only negative SYNC_ROLE assertion for the former Gelato automation, in addition to the shared
+# l2.yaml wiring. Standalone: state-mate rejects .inputs labels a main config does not reference, and
+# l2.yaml (shared by all lanes) cannot carry a Linea-only anchor, so the few Linea facts this file
+# needs are mirrored under misc: and pinned to linea.inputs.yaml by `just verify-constants-sync`.
+# The retired holder is identity-checked so a mistyped address cannot pass the negative check vacuously.
 
 roles:
   - &SYNC_ROLE "0xbb1ef2b79fa8154a13ffa50bd30e5f91ed93ff9b924bd04be671240cbc9d4b71"
 
-# Fixed Linea facts consumed only by this legacy Gelato check.
-# Kept under misc: (not externals:) so this standalone wiring file needs no .inputs sibling.
 misc:
+  - &RETIRED_l2GelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe" # LineaConstants.L2_OLD_GELATO_AUTOMATION
+  # Mirrors of linea.inputs.yaml / common.inputs.yaml anchors (same names, same values).
+  - &l2ChainId 59144
   - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
-  - &RETIRED_l2GelatoSyncAutomation "0xFbdDDF18Bc681Ae649991f1Aced55b2252a1acAe"
+  - &l2Weth "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
+  - &ethMainnetCcipChainSelector 5009297550715157269
 
 deployed:
   l1: []
@@ -22,7 +26,7 @@ l1:
 
 l2:
   rpcUrl: L2_STATE_MATE_RPC_URL
-  chainId: 59144
+  chainId: *l2ChainId
   contracts:
     customSender:
       name: CustomSenderReferral
@@ -41,3 +45,21 @@ l2:
         getOraclePool: null
         getReceiver: null
         supportsInterface: null
+
+    # chainlink-csr GelatoSyncAutomation; only its immutable lane identity is asserted.
+    retiredGelatoSyncAutomation:
+      name: GelatoSyncAutomation
+      address: *RETIRED_l2GelatoSyncAutomation
+      checks:
+        SENDER: *l2CustomSender # immutable
+        DEST_CHAIN_SELECTOR: *ethMainnetCcipChainSelector # immutable
+        WNATIVE: *l2Weth # immutable
+        getForwarder: null
+        owner: null
+        getDelay: null
+        getAmounts: null
+        getAmountToSync: null
+        getFeeOtoD: null
+        getFeeDtoO: null
+        getMaxFees: null
+        getLastExecution: null

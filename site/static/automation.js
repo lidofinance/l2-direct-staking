@@ -1,4 +1,4 @@
-import { AUTO_OWNER, AUTO_SAFE, COMMON_DEPLOYED, CRE_CONFIG_JSON, CRE_CONFIG_SHA256, CRE_DEPLOYED_SOURCE_SHA256, CRE_WORKFLOW_NAME, DON_FAMILY, LANES, RPC_DEFAULTS, SYNC_TOPIC, TRIGGER_SYNC_SEL } from './config.js';
+import { AUTO_SAFE, COMMON_DEPLOYED, CRE_CONFIG_JSON, CRE_CONFIG_SHA256, CRE_DEPLOYED_SOURCE_SHA256, CRE_WORKFLOW_NAME, DON_FAMILY, LANES, RPC_DEFAULTS, SYNC_TOPIC, TRIGGER_SYNC_SEL } from './config.js';
 import { laneData } from './core.js';
 import { creConfigSha, findConsolidated, paramsAgreement, parseAttributes, registryData, regsUsable, WF } from './registry.js';
 import { decBool, decU, rpcBatch, rpcBatchChunks, rpcFetch } from './rpc.js';
@@ -606,7 +606,7 @@ export async function refreshAutomationState(lanes) {
   // AUTO_SAFE is included EXPLICITLY, not discovered: it owns the consolidated registration even when
   // a lane's expectedAuthor points elsewhere, so a purely discovered owner set would be blind to the
   // workflow exactly when the author gate is broken — the window that most needs watching.
-  const owners = [...new Set([AUTO_OWNER, AUTO_SAFE,
+  const owners = [...new Set([AUTO_SAFE,
     ...currentLanes.filter(l => !l.error && l.d.creAuthor).map(l => l.d.creAuthor.toLowerCase())])];
   let regs = null, regError = null;
   try { regs = await registryData(owners); } catch (e) { regError = e.message; }

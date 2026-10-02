@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 ROOT_DIR="$(pwd)"
 source "$ROOT_DIR/script/shared/cre-env.sh"
 # just -E replaces the dotenv path; load missing root secrets as the CRE commands do.
@@ -38,7 +38,7 @@ echo "ENV DOCTOR — canonical variables and what they resolve to"
 echo "===================================================================="
 echo
 echo "Secrets tier (root .env — keys/tokens only):"
-for v in L2_LIDO_DEPLOYER_PRIVATE_KEY INITIAL_OWNER_PRIVATE_KEY ETHERSCAN_API_KEY GITHUB_API_TOKEN; do
+for v in ETHERSCAN_API_KEY GITHUB_API_TOKEN; do
   [[ -n "${!v:-}" ]] && INFO "$v = set" || INFO "$v = unset"
 done
 AO_KEY="${L2_AUTOMATION_OWNER_PRIVATE_KEY:-${L2_AUTOMATION_OWNER_PK:-}}"
@@ -58,9 +58,8 @@ else
 fi
 echo
 echo "Actor addresses:"
-INFO "DEPLOYER              = ${DEPLOYER:-<unset>}"
 INFO "L2_AUTOMATION_OWNER   = ${L2_AUTOMATION_OWNER:-<unset>}"
-WORKFLOW_OWNER="$(just _l2-input-anchor optimism creWorkflowOwner 2>/dev/null || true)"
+WORKFLOW_OWNER="$(just _l2-input-anchor optimism l2AutomationOwner 2>/dev/null || true)"
 INFO "CRE_WORKFLOW_OWNER    = ${WORKFLOW_OWNER:-<unset>}"
 if [[ -n "$AO_KEY" && -n "${L2_AUTOMATION_OWNER:-}" ]]; then
   DERIVED="$(cast wallet address --private-key "$AO_KEY" 2>/dev/null || true)"
@@ -72,12 +71,7 @@ if [[ -n "$AO_KEY" && -n "${L2_AUTOMATION_OWNER:-}" ]]; then
     BAD "AO key signs as $DERIVED but L2_AUTOMATION_OWNER = $L2_AUTOMATION_OWNER"
   fi
 fi
-if [[ -n "${L2_LIDO_DEPLOYER_PRIVATE_KEY:-}" && -n "${DEPLOYER:-}" ]]; then
-  DEP_DERIVED="$(cast wallet address --private-key "$L2_LIDO_DEPLOYER_PRIVATE_KEY" 2>/dev/null || true)"
-  [[ "$(lc "$DEP_DERIVED")" == "$(lc "$DEPLOYER")" ]] &&
-    OK "deployer key signs as $DEP_DERIVED == DEPLOYER" ||
-    BAD "deployer key signs as ${DEP_DERIVED:-<invalid>} but DEPLOYER = $DEPLOYER"
-fi
+
 echo
 echo "L1 (Ethereum mainnet):"
 if L1="$(resolve_l1_rpc 2>/dev/null)"; then
@@ -125,7 +119,7 @@ LANES=(optimism arbitrum base linea)
 for net in "${LANES[@]}"; do
   echo "──────── lane: $net ────────"
   IN="$ROOT_DIR/config/state/$net.inputs.yaml"
-  CRE_DEP="$ROOT_DIR/config/state/$net.deployed.yaml"
+  CRE_DEP="$ROOT_DIR/config/state/common.deployed.yaml"
   if [[ "${L2_NETWORK:-}" == "$net" ]]; then
     L2="${L2_RPC_URL:-}"
     RECV="${L2_CRE_RECEIVER:-}"
@@ -165,11 +159,8 @@ for net in "${LANES[@]}"; do
   fi
   INFO "trigger  ${TRIG:-<unset>}"
   INFO "receiver ${RECV:-<unset>}"
-  # Ownership migration is per-lane. Recognize the Safe, retired EOA, and LOL owner
-  # and report the phase (docs/automation-owner-redeploy.md S3).
+  # Every lane must use the configured Automation Multisig.
   ANCHOR_AO="$(anchor "$IN" l2AutomationOwner)"
-  ANCHOR_WF="$(anchor "$IN" creWorkflowOwner)"
-  ANCHOR_LOL="$(anchor "$IN" l2LiquidityOwner)"
   if [[ -n "$ANCHOR_AO" && "$ANCHOR_AO" != "null" ]]; then
     if [[ -z "${L2_AUTOMATION_OWNER:-}" || "$(lc "$ANCHOR_AO")" == "$(lc "$L2_AUTOMATION_OWNER")" ]]; then
       OK "l2AutomationOwner anchor == L2_AUTOMATION_OWNER ($ANCHOR_AO)"
@@ -177,20 +168,16 @@ for net in "${LANES[@]}"; do
       BAD "l2AutomationOwner anchor $ANCHOR_AO != L2_AUTOMATION_OWNER $L2_AUTOMATION_OWNER"
     fi
   else
-    INFO "no l2AutomationOwner anchor yet (lane still on the LOL-owned automation pair)"
+    BAD "missing l2AutomationOwner anchor"
   fi
   if [[ -n "$L2" && -n "$RECV" ]]; then
     PINNED="$(cast call "$RECV" 'getExpectedAuthor()(address)' --rpc-url "$L2" 2>/dev/null | tr -d '\r\n' || true)"
     if [[ -z "$PINNED" ]]; then
       INFO "on-chain getExpectedAuthor(): unreachable (RPC down or wrong address)"
-    elif [[ -n "$ANCHOR_WF" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_WF")" ]]; then
-      OK "on-chain CREReceiver.getExpectedAuthor() == creWorkflowOwner ($PINNED)"
-    elif [[ -n "${L2_AUTOMATION_OWNER:-}" && "$(lc "$PINNED")" == "$(lc "$L2_AUTOMATION_OWNER")" ]]; then
-      INFO "on-chain getExpectedAuthor() = $PINNED (retired per-lane workflow owner)"
-    elif [[ -n "$ANCHOR_LOL" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_LOL")" ]]; then
-      INFO "on-chain getExpectedAuthor() = $PINNED (LOL multisig) — lane not yet moved to the consolidated workflow owner; deploy-cre-workflow would abort here by design"
+    elif [[ -n "$ANCHOR_AO" && "$(lc "$PINNED")" == "$(lc "$ANCHOR_AO")" ]]; then
+      OK "on-chain CREReceiver.getExpectedAuthor() == l2AutomationOwner ($PINNED)"
     else
-      BAD "on-chain CREReceiver.getExpectedAuthor() = $PINNED — not creWorkflowOwner (${ANCHOR_WF:-<absent>}), retired owner (${L2_AUTOMATION_OWNER:-<unset>}), or l2LiquidityOwner (${ANCHOR_LOL:-<absent>})"
+      BAD "on-chain CREReceiver.getExpectedAuthor() = $PINNED — expected l2AutomationOwner (${ANCHOR_AO:-<absent>})"
     fi
   fi
   if [[ -n "$WFID" ]]; then

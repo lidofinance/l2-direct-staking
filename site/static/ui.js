@@ -1,14 +1,13 @@
-import { EOAS, NAMES, SAFES } from './config.js';
+import { DAO_AGENT, NAMES, SAFES } from './config.js';
 
 // ── Shared UI helpers ────────────────────────────────────────────────────────
-// Holder-kind marks: person = EOA, two people = Safe multisig, document = contract.
+// Mark known Safe multisigs; do not infer unknown holder types from an address.
 export const ICO = {
-  eoa: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="EOA"><circle cx="8" cy="4.5" r="3"/><path d="M8 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/></svg>',
   safe: '<svg class="hico" viewBox="0 0 20 16" width="13" height="11" fill="currentColor" aria-label="Safe multisig"><circle cx="7" cy="4.5" r="3"/><path d="M7 8.5c-3.3 0-6 2-6 4.5V14h12v-1c0-2.5-2.7-4.5-6-4.5z"/><circle cx="15" cy="5" r="2.4"/><path d="M15 8.8c-.7 0-1.4.1-2 .3 1.2 1 2 2.3 2 3.9v1h4v-1c0-1.9-1.7-3.5-4-4.2z"/></svg>',
   contract: '<svg class="hico" viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-label="contract"><path fill-rule="evenodd" d="M3.5 1H10l3 3v11H3.5V1zm5.5 1.2V5h2.8L9 2.2z"/></svg>',
 };
-const holderKind = a => EOAS.has(a) ? 'eoa' : SAFES.has(a) ? 'safe' : 'contract';
-export const holder = (a, name) => `${ICO[holderKind((a || '').toLowerCase())]} ${name ?? who(a)}`;
+const holderKind = a => SAFES.has(a) ? 'safe' : a === DAO_AGENT ? 'contract' : null;
+export const holder = (a, name) => `${ICO[holderKind((a || '').toLowerCase())] || ''} ${name ?? who(a)}`;
 
 export const netLogo = n => `<img src="${n.logo}" alt="" aria-hidden="true">`;
 export const netName = n => `<span class="net-name">${netLogo(n)}<b>${n.name}</b></span>`;

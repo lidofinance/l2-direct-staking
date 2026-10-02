@@ -1,0 +1,6 @@
+---
+# Deployment identities used by state-mate.
+# deploy-commit: 3d1d484c31d39881cdbe8423614e3043e89e027f
+deployed:
+  l1:
+    - &creWorkflowId "0x00baf350f6796ceb9860deb4eaf85e61efd3ab41b7f3fd5c9c9aca0fe2d4e242"

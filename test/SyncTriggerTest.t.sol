@@ -161,7 +161,7 @@ contract SyncTriggerTest is Test {
         assertEq(trigger.DEST_CHAIN_SELECTOR(), DEST_CHAIN);
         assertEq(trigger.WNATIVE(), address(weth));
         assertEq(trigger.owner(), owner);
-        // LINK fee payment is removed — the constructor grants no LINK allowance (regression guard).
+        // LINK fee payment is unsupported; the constructor grants no LINK allowance.
         assertEq(link.allowance(address(trigger), address(sender)), 0, "no LINK approval");
     }
 
@@ -457,7 +457,6 @@ contract SyncTriggerTest is Test {
 
     function test_setFeeOtoD_revertsOnWrongLength() public {
         // feeOtoD must be exactly 21 bytes (CustomSender re-decodes with FeeCodec.decodeCCIP).
-        // A 20-byte buffer previously passed the setter then self-DoSed inside sync.
         bytes memory tooShort = new bytes(20);
         vm.expectRevert(abi.encodeWithSelector(FeeCodec.FeeCodecInvalidDataLength.selector, uint256(20), uint256(21)));
         trigger.setFeeOtoD(tooShort);
@@ -592,7 +591,7 @@ contract SyncTriggerTest is Test {
 
     function test_shouldSyncAmount_zeroWithinMinDelayWindow() public {
         // the smallest legal delay still throttles: at MIN_DELAY a funded pool is NOT due until the
-        // window elapses (the old "zero delay → due immediately" path is no longer constructable).
+        // window elapses.
         _configureForSync(1 ether, 10 ether, trigger.MIN_DELAY());
         weth.mint(oraclePool, 10 ether); // >= min
         assertEq(trigger.shouldSyncAmount(), 0, "not due within the min-delay window");
@@ -709,8 +708,7 @@ contract SyncTriggerTest is Test {
         assertEq(sender.lastSyncAmount(), 5 ether, "synced amount");
         assertEq(sender.lastSyncValue(), uint256(maxFeeOtoD) + feeDtoO, "native fee forwarded");
         assertEq(trigger.getLastExecution(), uint48(block.timestamp), "lastExecution advanced");
-        // pin the pass-through arguments: a swapped fee pair or wrong selector would
-        // otherwise survive every unit test (the mock used to discard them).
+        // Verify that the destination selector and both fee blobs pass through unchanged.
         assertEq(sender.lastDestChainSelector(), DEST_CHAIN, "dest chain selector forwarded");
         assertEq(sender.lastFeeOtoDHash(), keccak256(_encodeFee(maxFeeOtoD, false)), "feeOtoD forwarded");
         assertEq(sender.lastFeeDtoOHash(), keccak256(_encodeFee(feeDtoO, false)), "feeDtoO forwarded");
@@ -750,9 +748,7 @@ contract SyncTriggerTest is Test {
     }
 
     function test_triggerSync_blocksImmediateRetriggerEvenAtMinDelay() public {
-        // The MIN_DELAY floor (the smallest legal delay) is enough to forbid a same-block retrigger: the
-        // old "delay == 0 → unbounded back-to-back syncs in one block" path is no longer constructable,
-        // so the rate-limiter holds regardless of DON cadence.
+        // MIN_DELAY forbids a same-block retrigger regardless of DON cadence.
         _armTriggerSync(1 ether, 10 ether, trigger.MIN_DELAY(), 25 ether, _encodeFee(0.1 ether, false), _encodeFee(0.05 ether, false));
 
         vm.prank(forwarder);
@@ -804,7 +800,7 @@ contract SyncTriggerTest is Test {
         assertEq(trigger.getMaxFees(), 0.15 ether, "native sum");
     }
 
-    // ─── payInLink rejection (LINK fee payment removed) ──────────────────
+    // ─── payInLink rejection (native payment only) ──────────────────
 
     function test_setFeeOtoD_revertsOnPayInLink() public {
         vm.expectRevert(SyncTrigger.SyncTriggerPayInLinkNotSupported.selector);
