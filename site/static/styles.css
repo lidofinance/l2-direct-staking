@@ -315,9 +315,6 @@ footer {
 }
 /* Value we can display but not resolve — never styled as a link, so it promises nothing. */
 .inert { color: var(--muted); border-bottom: 1px dotted var(--line); cursor: help; }
-.limits { padding: 6px 26px 20px; color: var(--ink-2); font-size: 13px; }
-.limits p { margin: 6px 0; max-width: 92ch; }
-.limits strong { color: var(--ink); }
 @media (max-width: 1120px) {
   .appbar { flex-wrap: wrap; }
   .tabs { order: 3; width: 100%; min-width: 0; margin-left: 0; overflow-x: auto; }
@@ -371,7 +368,6 @@ footer {
   .avatar { width: 30px; height: 30px; }
   .err-banner { margin: 12px 16px 6px; }
   .err-banner .retry { display: block; margin: 8px 0 0; }
-  .limits { padding: 6px 16px 16px; }
   #rpcdlg .head { padding: 16px 16px 12px; }
   #rpcdlg .rows { padding: 8px 16px 4px; }
   #rpcdlg .foot { padding: 12px 16px; flex-wrap: wrap; }
