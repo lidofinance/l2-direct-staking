@@ -68,6 +68,11 @@ async function attachSyncAmounts(L, rows) {
   });
 }
 
+// Explorer and cached rows end up in links and labels, so only well-formed hex passes.
+const HASH = /^0x[0-9a-f]{64}$/i;
+const wellFormed = e => HASH.test(e.tx ?? '') && e.topics.every(t => t == null || HASH.test(t)) &&
+  /^0x[0-9a-f]*$/i.test(e.data ?? '');
+
 async function automationLogs(L) {
   // The whole CREReceiver history is ~8 events per lane, so one query is the full record.
   const res = await rpcFetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
@@ -79,7 +84,8 @@ async function automationLogs(L) {
       topic: i.topics[0].toLowerCase(), topics: i.topics.map(t => t && t.toLowerCase()),
       data: i.data, block: i.block_number, tx: i.transaction_hash,
       ts: i.block_timestamp ? Math.floor(Date.parse(i.block_timestamp) / 1000) : null,
-    }));
+    }))
+    .filter(wellFormed);
   // Linea's explorer also omits block_timestamp here; backfill from the lane's own RPC by block.
   const missing = [...new Set(rows.filter(r => r.ts == null && r.block != null).map(r => r.block))];
   if (missing.length) {
@@ -135,7 +141,7 @@ function readAutomationCache() {
     if (!cache || typeof cache !== 'object') return {};
     return Object.fromEntries(Object.entries(cache)
       .filter(([name, rows]) => LANES.some(L => L.name === name) && Array.isArray(rows))
-      .map(([name, rows]) => [name, rows.filter(e => e && EVT[e.topic] && Array.isArray(e.topics)).map(sanitizeWei)]));
+      .map(([name, rows]) => [name, rows.filter(e => e && EVT[e.topic] && Array.isArray(e.topics) && wellFormed(e)).map(sanitizeWei)]));
   } catch { return {}; }
 }
 function saveAutomationCache() {

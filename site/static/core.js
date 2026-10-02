@@ -102,6 +102,7 @@ const laneChecks = (L, d) => laneGroups(L, d).flatMap(g => g.checks);
 function canSyncCause(d) {
   if (d.triggerHasRole === false) return 'SYNC_ROLE lost';
   if (d.float != null && d.maxFees != null && d.float < d.maxFees) return 'float below maxFees';
+  if (d.triggerHasRole == null || d.float == null || d.maxFees == null) return 'gate unreadable';
   return 'pool paused'; // the only remaining canSync gate
 }
 

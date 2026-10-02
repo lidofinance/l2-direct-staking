@@ -13,7 +13,9 @@ const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a
 const hex = n => '0x' + n.toString(16);
 const word = value => '0x' + BigInt(value).toString(16).padStart(64, '0');
 const txHash = n => '0x' + n.toString(16).padStart(64, '0');
-const event = (block, tx) => ({ block, tx, ts: block, cp: '0x123', kind: 'stake', label: 'Slow stake', amount: '1 WETH' });
+const event = (block, n) => ({ block, tx: txHash(n), ts: block, cp: '0x' + '1'.repeat(40),
+  kind: 'stake', label: 'Slow stake', amount: '1 WETH' });
+const OLD = 0xa0, REMOVED = 0xa1;
 
 // A JSON-RPC endpoint: `answer(method, params, url)` returns a result or throws a per-call error.
 const jsonRpc = answer => async (url, init) => {
@@ -46,7 +48,7 @@ async function progress() {
   const { LANES, ACTIVITY_SNAPSHOT } = await modules();
   return Object.fromEntries(LANES.map(L => {
     const block = ACTIVITY_SNAPSHOT[L.name].block + 10000;
-    return [L.name, { chainId: L.chainId, block, events: [event(block - 3000, 'old'), event(block - 100, 'removed')] }];
+    return [L.name, { chainId: L.chainId, block, events: [event(block - 3000, OLD), event(block - 100, REMOVED)] }];
   }));
 }
 const slowStakeLog = (L, block, n) => ({ address: L.sender, blockNumber: hex(block), transactionHash: txHash(n),
@@ -66,7 +68,7 @@ test('all lanes resume at the checkpoint overlap and replace reorged events', as
       return p.topics[0] === SLOW_STAKE_TOPIC ? [slowStakeLog(L, head - 99, 1), slowStakeLog(L, head - 99, 2)] : [];
     });
     const events = await activityData(L);
-    assert.deepEqual(events.map(e => e.tx), [txHash(1), txHash(2), 'old']);
+    assert.deepEqual(events.map(e => e.tx), [txHash(1), txHash(2), txHash(OLD)]);
     assert.equal(Math.min(...ranges.map(r => r[0])), from);
     assert.equal(Math.max(...ranges.map(r => r[1])), head);
     assert.equal(activityProgress[L.name].block, head);
@@ -101,6 +103,15 @@ test('older and invalid saved checkpoints fall back to the embedded snapshot', a
     Linea: { chainId: 59144, block: seed.Linea.block + 1000, events: [] } });
   assert.deepEqual(LANES.map(L => activityProgress[L.name].block),
     [seed.Optimism.block, seed.Arbitrum.block, seed.Base.block, seed.Linea.block + 1000]);
+});
+
+test('a saved checkpoint with a malformed event falls back to the embedded snapshot', async () => {
+  const { ACTIVITY_SNAPSHOT: seed } = await modules();
+  const saved = await progress();
+  saved.Optimism.events.push({ block: 1, ts: 1, tx: txHash(1) });
+  const { activityProgress } = await load(saved);
+  assert.equal(activityProgress.Optimism.block, seed.Optimism.block);
+  assert.equal(activityProgress.Arbitrum.block, saved.Arbitrum.block);
 });
 
 test('a lagging RPC cannot rewind the checkpoint', async () => {
@@ -201,7 +212,7 @@ test('pool transfers with a malformed transaction hash are dropped', async () =>
     return p.topics[2] === poolTopic ? [{ address: L.weth, blockNumber: hex(block + 1), transactionHash: '"><img src=x>',
       logIndex: '0x0', topics: [TRANSFER_TOPIC, word(0x1), poolTopic], data: word(1) }] : [];
   });
-  assert.deepEqual((await activityData(L)).map(e => e.tx), ['old']);
+  assert.deepEqual((await activityData(L)).map(e => e.tx), [txHash(OLD)]);
 });
 
 test('Activity opens on the latest 20 rows and Show all reveals the rest', async () => {
@@ -210,7 +221,7 @@ test('Activity opens on the latest 20 rows and Show all reveals the rest', async
   const panel = { innerHTML: '' };
   globalThis.document.getElementById = id => id === 'activity' ? panel : null;
   const rows = () => (panel.innerHTML.match(/<tr[ >]/g) ?? []).length - 1; // minus the header row
-  renderActivity([{ L: LANES[0], events: Array.from({ length: 30 }, (_, i) => event(1000 + i, txHash(i + 1))) }]);
+  renderActivity([{ L: LANES[0], events: Array.from({ length: 30 }, (_, i) => event(1000 + i, i + 1)) }]);
   assert.equal(rows(), 20);
   assert.match(panel.innerHTML, /Show all 30/);
   showAllActivity();

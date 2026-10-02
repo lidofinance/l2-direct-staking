@@ -100,6 +100,11 @@ function classifyTx(L, g) {
 
 const ACTIVITY_SEEN_KEY = 'direct-staking-watch.activity-seen';
 const ACTIVITY_PROGRESS_KEY = 'direct-staking-watch.activity-progress.v1';
+// One malformed saved row would throw inside renderActivity on every reload; such a record loses to the snapshot.
+const validEvent = e => Number.isSafeInteger(e?.block) && Number.isSafeInteger(e.ts) &&
+  /^0x[0-9a-f]{64}$/i.test(e.tx ?? '') && /^0x[0-9a-f]{40}$/i.test(e.cp ?? '') &&
+  ['kind', 'label', 'amount'].every(key => typeof e[key] === 'string');
+
 export const activityProgress = readActivityProgress();
 let latestActivity = null;
 let activitySeen = readActivitySeen();
@@ -120,7 +125,7 @@ function readActivityProgress() {
   return Object.fromEntries(LANES.map(L => {
     const seed = ACTIVITY_SNAPSHOT[L.name], item = saved?.[L.name];
     const valid = item?.chainId === L.chainId && Number.isSafeInteger(item.block) &&
-      item.block >= seed.block && Array.isArray(item.events);
+      item.block >= seed.block && Array.isArray(item.events) && item.events.every(validEvent);
     return [L.name, valid ? item : seed];
   }));
 }
