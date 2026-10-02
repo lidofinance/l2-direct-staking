@@ -54,7 +54,7 @@ export function decodeTupleArray(hex, layout) {
 }
 export const call = (to, data) => ({ method: 'eth_call', params: [{ to, data }, 'latest'] });
 export const bal = a => ({ method: 'eth_getBalance', params: [a, 'latest'] });
-export const decAddr = h => h && h.length >= 66 ? '0x' + h.slice(-40) : null;
+export const decAddr = h => /^0x[0-9a-f]{64}$/i.test(h ?? '') ? '0x' + h.slice(-40) : null;
 export const decBool = h => h ? BigInt(h) !== 0n : null;
 export const decU = h => h ? BigInt(h) : null;
 

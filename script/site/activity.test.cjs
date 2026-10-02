@@ -188,3 +188,32 @@ test('JSON-RPC rate limits retry before reporting failure', async () => {
     assert.deepEqual(result, [[]]);
   }
 });
+
+test('pool transfers with a malformed transaction hash are dropped', async () => {
+  const { LANES } = await modules();
+  const saved = await progress();
+  const { activityData } = await load(saved);
+  const L = LANES[0], block = saved[L.name].block;
+  const poolTopic = word(L.pool);
+  globalThis.fetch = jsonRpc((method, [p]) => {
+    if (method === 'eth_blockNumber') return hex(block + 100);
+    if (method === 'eth_getBlockByNumber') return { timestamp: p };
+    return p.topics[2] === poolTopic ? [{ address: L.weth, blockNumber: hex(block + 1), transactionHash: '"><img src=x>',
+      logIndex: '0x0', topics: [TRANSFER_TOPIC, word(0x1), poolTopic], data: word(1) }] : [];
+  });
+  assert.deepEqual((await activityData(L)).map(e => e.tx), ['old']);
+});
+
+test('Activity opens on the latest 20 rows and Show all reveals the rest', async () => {
+  const { LANES } = await modules();
+  const { renderActivity, showAllActivity } = await load();
+  const panel = { innerHTML: '' };
+  globalThis.document.getElementById = id => id === 'activity' ? panel : null;
+  const rows = () => (panel.innerHTML.match(/<tr[ >]/g) ?? []).length - 1; // minus the header row
+  renderActivity([{ L: LANES[0], events: Array.from({ length: 30 }, (_, i) => event(1000 + i, txHash(i + 1))) }]);
+  assert.equal(rows(), 20);
+  assert.match(panel.innerHTML, /Show all 30/);
+  showAllActivity();
+  assert.equal(rows(), 30);
+  assert.doesNotMatch(panel.innerHTML, /Show all/);
+});

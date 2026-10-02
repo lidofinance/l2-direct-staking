@@ -1,7 +1,7 @@
 import { ACTIVITY_SNAPSHOT } from './activity-snapshot.js';
 import { LANES, NAMES, RPC_DEFAULTS } from './config.js';
 import { RPC_CONFIRMATIONS, rpcBatchChunks, rpcBlockNumber, rpcHistoryLogs } from './rpc.js';
-import { ago, alink, eqa, fmtAmt, holder, netLogo, refreshingViews, setTabStatus, short, viewRefresh, ZERO } from './ui.js';
+import { ago, alink, eqa, esc, fmtAmt, holder, netLogo, refreshingViews, setTabStatus, short, viewRefresh, ZERO } from './ui.js';
 
 // ── Pool activity ────────────────────────────────────────────────────────────
 const SLOW_STAKE_TOPIC = '0xb9a1909fb1e8f533ab60d262ba908dc82a1d8dfaef2e6c4e4b2da76de8a1ca4d';
@@ -19,7 +19,7 @@ async function poolActivityData(L, fromBlock, toBlock) {
   for (const log of [...outbound, ...inbound]) {
     const key = `${log.transactionHash}:${log.logIndex}`;
     if (seen.has(key) || (log.topics?.[0] ?? '').toLowerCase() !== TRANSFER_TOPIC ||
-        !/^0x[0-9a-f]{64}$/i.test(log.data ?? '')) continue;
+        !/^0x[0-9a-f]{64}$/i.test(log.data ?? '') || !/^0x[0-9a-f]{64}$/i.test(log.transactionHash ?? '')) continue;
     seen.add(key);
     const from = topicAddress(log.topics[1]), to = topicAddress(log.topics[2]);
     const token = eqa(log.address, L.weth) ? 'WETH' : eqa(log.address, L.wsteth) ? 'wstETH' : null;
@@ -191,7 +191,7 @@ export function renderActivity(results) {
       <span class="upd" id="activity-upd" role="status" aria-live="polite"></span>
       ${viewRefresh('activity', 'Pool activity')}
     </div>
-    ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" data-action="activity-retry">⟳ retry</button></div>` : ''}
+    ${failed.length ? `<div class="err-banner">✕ Activity source unavailable: ${failed.map(esc).join(', ')}${stale ? ' · showing cached activity' : ''}<button class="retry" data-action="activity-retry">⟳ retry</button></div>` : ''}
     ${pending.length ? `<div class="loader"><span class="spin"></span> Loading ${pending.join(', ')} history…</div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>

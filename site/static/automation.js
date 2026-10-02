@@ -432,7 +432,7 @@ function renderAutomation() {
   </div>`;
 
   const laneRows = perLane.map((p, i) => {
-    if (!p) return `<tr><td>${laneWho(lanes[i].L)}</td><td colspan="4">${chip('crit', 'RPC error', lanes[i].error)}</td></tr>`;
+    if (!p) return `<tr><td>${laneWho(lanes[i].L)}</td><td colspan="4">${chip('crit', 'RPC error', esc(lanes[i].error))}</td></tr>`;
     const regBad = p.reg.rows
       ? [p.reg.rows.status, p.reg.rows.don, p.reg.rows.tag].find(c => c.level !== 'ok')
       : null;
@@ -459,8 +459,8 @@ function renderAutomation() {
       <h3>Automation by lane</h3>
       ${legendHtml()}
     </div>
-    ${automation.regError ? `<div class="err-banner">✕ registry unreadable: ${automation.regError}</div>` : ''}
-    ${automation.logErrors.length ? `<div class="err-banner">⚠ event source unreachable: ${automation.logErrors.join(', ')} · showing cached history<button class="retry" data-action="automation-retry">⟳ retry</button></div>` : ''}
+    ${automation.regError ? `<div class="err-banner">✕ registry unreadable: ${esc(automation.regError)}</div>` : ''}
+    ${automation.logErrors.length ? `<div class="err-banner">⚠ event source unreachable: ${automation.logErrors.map(esc).join(', ')} · showing cached history<button class="retry" data-action="automation-retry">⟳ retry</button></div>` : ''}
     <div class="scroll-x"><table class="syncm">
       <tr><th>Lane</th><th>Workflow</th><th>Author gate</th><th>Delivery</th><th>Last accepted report</th></tr>
       ${laneRows}
@@ -486,7 +486,7 @@ function renderAutomation() {
       <span class="desc">Latest ${visibleEvents.length} events.</span>
     </div>
     ${automation.logErrors.length || missingLanes.length ? `<div class="err-banner">⚠ incomplete: ${
-      [...automation.logErrors, ...missingLanes.map(n => n + ' (not loaded)')].join(', ')} — rows below are cached or partial</div>` : ''}
+      [...automation.logErrors.map(esc), ...missingLanes.map(n => n + ' (not loaded)')].join(', ')} — rows below are cached or partial</div>` : ''}
     ${evRows ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Event</th><th>Detail</th><th>Tx</th></tr>${evRows}</table></div>`
       : '<div class="err-banner">no CREReceiver events found</div>'}
@@ -526,6 +526,9 @@ function cdCron(schedule) {
   if (s0 === null || ![min, hour].every(known) || dom !== '*' || mon !== '*' || dow !== '*')
     return { level: 'warn', reads: 'pattern not glossed here', periodSec: null,
       note: 'read the six fields directly — this page only spells out the shapes this system uses', next: [] };
+  if (s0 > 59 || fixed(min) > 59 || fixed(hour) > 23)
+    return { level: 'crit', reads: 'value out of range', periodSec: null,
+      note: 'seconds and minutes run 0–59, hours 0–23', next: [] };
 
   const mStep = step(min), hStep = step(hour), mFix = fixed(min), hFix = fixed(hour);
   const reads =
@@ -581,7 +584,7 @@ export function laneTableHtml(lanes) {
   [...minutes].filter(([, n]) => n > 1).forEach(([mm]) =>
     issues.push({ level: 'warn', text: `two lanes both fire at :${mm} — the stagger that keeps executions apart is gone` }));
   const missing = LANES.filter(L => !list.some(ln => laneOfSelector(ln?.chainSelectorName) === L));
-  if (list.length && missing.length)
+  if (missing.length)
     issues.push({ level: 'crit', text: `no trigger for ${missing.map(L => L.name).join(', ')}` });
   return { issues, missing, html: `<div class="scroll-x"><table class="syncm">
     <tr><th>Network</th><th>Chain selector</th><th>Cron (seconds-first)</th><th>Next fires (UTC)</th></tr>

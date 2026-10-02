@@ -1,7 +1,7 @@
 import { ADMIN_ROLE, CONTROL_OWNER, CRE_AUTHOR, DAO_AGENT, L1, LANES, LOL, SYNC_ROLE, TRIGGER_SYNC_SEL } from './config.js';
 import { bal, call, decAddr, decBool, decU, pad, rpcBatch, SEL } from './rpc.js';
 import { syncVolumeStatus, syncVolumeValue } from './sync-volume.js';
-import { ago, alink, chip, fmtEth, holder, ICO, laneWho, legendHtml, netName, setOverviewStatus, setTabStatus, short, viewRefresh, worst } from './ui.js';
+import { ago, alink, chip, esc, fmtEth, holder, ICO, laneWho, legendHtml, netName, setOverviewStatus, setTabStatus, short, viewRefresh, worst } from './ui.js';
 
 // ── Overview and Access Control ──────────────────────────────────────────────
 function ownerCheck(actual, target) {
@@ -131,11 +131,11 @@ function l1AccessChecks(d) {
 }
 
 function l1BalanceChecks(d) {
-  const balRow = (label, v) => ({
+  const balRow = (label, v, unit = label.replace('Receiver ', '')) => ({
     key: label,
     ...(v == null ? { level: 'crit', value: 'unreadable', sub: '' }
-      : v > 10n ** 18n ? { level: 'crit', value: fmtEth(v) + ' ETH', sub: 'parked > 1' }
-      : v > 10n ** 12n ? { level: 'warn', value: fmtEth(v, 6), sub: 'transient?' }
+      : v > 10n ** 18n ? { level: 'crit', value: `${fmtEth(v)} ${unit}`, sub: 'parked > 1' }
+      : v > 10n ** 12n ? { level: 'warn', value: `${fmtEth(v, 6)} ${unit}`, sub: 'transient?' }
       : { level: 'ok', value: '~0', sub: 'as expected' }),
   });
   return [
@@ -194,7 +194,7 @@ function render(l1, lanes) {
   // sync matrix
   const num = (m, s) => `<span class="num"><div class="m">${m}</div><div class="s">${s}</div></span>`;
   const syncRows = lanes.map(l => {
-    if (l.error) return `<tr><td>${laneWho(l.L)}</td><td colspan="4"><span class="chip crit"><div class="m">✕ RPC error</div><div class="s">${l.error}</div></span></td></tr>`;
+    if (l.error) return `<tr><td>${laneWho(l.L)}</td><td colspan="4"><span class="chip crit"><div class="m">✕ RPC error</div><div class="s">${esc(l.error)}</div></span></td></tr>`;
     const d = l.d, [slv, sm, ss] = syncState(d), f = floatState(d);
     return `<tr>
       <td>${laneWho(l.L)}</td>
@@ -264,7 +264,7 @@ function render(l1, lanes) {
         ${chip(c.level, c.value, c.sub)}
       </div>`).join('')}</div>`;
   const l1Body = l1.error
-    ? `<div class="err-banner">RPC error: ${l1.error}</div>`
+    ? `<div class="err-banner">RPC error: ${esc(l1.error)}</div>`
     : l1Metrics(l1BalanceChecks(l1.d), 'l1-balance-grid', key => key.replace('Receiver ', '')) +
       l1Metrics(l1AccessChecks(l1.d), 'l1-access-grid', key => key);
   const l1Card = `<div class="card l1-card">
