@@ -20,16 +20,10 @@ const failed = (block, id = 1) => ({ blockNumber: hex(block), logIndex: '0x0',
 const lifecycle = (topic, block, id = 1, index = 0) => ({ blockNumber: hex(block), logIndex: hex(index),
   transactionHash: hash(id + 200), topics: [topic, hash(id)], data: '0x' });
 
-function mockSources({ head = 10000, indexed = head - 10, logs = [], state = hash(1), answer } = {}) {
+function mockSources({ head = 10000, logs = [], state = hash(1), answer } = {}) {
   const calls = [];
   globalThis.fetch = async (url, init) => {
-    if (!init?.body) {
-      const u = new URL(url);
-      if (u.pathname === '/api/v2/blocks') return response({ items: [{ height: indexed }] });
-      return response({ items: logs.filter(l => l.topics[0] === u.searchParams.get('topic') && Number(l.blockNumber) <= indexed)
-        .map(l => ({ topics: l.topics, data: l.data, block_number: Number(l.blockNumber), index: Number(l.logIndex),
-          transaction_hash: l.transactionHash, block_timestamp: new Date(timestamp * 1000).toISOString() })), next_page_params: null });
-    }
+    assert.ok(init?.body, 'receiver history must not use the explorer');
     const body = JSON.parse(init.body);
     const reply = c => {
       calls.push(c);
@@ -53,16 +47,71 @@ function mockSources({ head = 10000, indexed = head - 10, logs = [], state = has
 }
 const response = data => ({ ok: true, status: 200, json: async () => data });
 
+const PROGRESS_KEY = 'direct-staking-watch.receiver-progress.v1';
+async function checkpoint(logs = []) {
+  const { RECEIVER_SNAPSHOT: seed } = await import('../../site/static/receiver-snapshot.js');
+  const saved = { ...seed, block: seed.block + 10000, logs: logs.map(l => ({ ...l,
+    blockNumber: Number(l.blockNumber), logIndex: Number(l.logIndex), timeStamp: timestamp })) };
+  records.clear();
+  records.set(PROGRESS_KEY, JSON.stringify(saved));
+  return saved;
+}
+
 // Exercise the real data path with a provider whose backend is one block behind its head oracle.
 test('receiver logs and state use the same block behind the observed RPC head', async () => {
   const { failedMessageData } = await import('../../site/static/shuttles.js');
-  const calls = mockSources({ head: 10000, logs: [failed(9995)], answer(method, params) {
-    if (method === 'eth_getLogs' && Number(params[0].toBlock) > 9999 ||
-        method === 'eth_call' && Number(params[1]) > 9999) throw new Error('header not found');
+  const saved = await checkpoint(), head = saved.block + 100;
+  const calls = mockSources({ head, logs: [failed(head - 5)], answer(method, params) {
+    if (method === 'eth_getLogs' && Number(params[0].toBlock) > head - 1 ||
+        method === 'eth_call' && Number(params[1]) > head - 1) throw new Error('header not found');
   } });
   const messages = await failedMessageData();
   assert.equal(messages[0].state, 'active');
   const end = Math.max(...calls.filter(c => c.method === 'eth_getLogs').map(c => Number(c.params[0].toBlock)));
-  assert.ok(end < 10000);
+  assert.ok(end < head);
   assert.equal(Number(calls.find(c => c.method === 'eth_call').params[1]), end);
+});
+
+test('RPC covers the entire checkpoint overlap including failures below an explorer frontier', async () => {
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  const saved = await checkpoint(), head = saved.block + 5000;
+  // This event would be missed by an explorer with an interior gap and an indexed head at head.
+  const missed = failed(saved.block + 1);
+  const calls = mockSources({ head, logs: [missed] });
+  const messages = await failedMessageData();
+  assert.equal(messages[0].messageId, hash(1));
+  const ranges = calls.filter(c => c.method === 'eth_getLogs').map(c => c.params[0]);
+  assert.equal(Number(ranges[0].fromBlock), saved.block - 1799);
+  assert.equal(Number(ranges.at(-1).toBlock), head - 2);
+  ranges.forEach((r, i) => {
+    assert.ok(Number(r.toBlock) - Number(r.fromBlock) < 2000);
+    if (i) assert.equal(Number(r.fromBlock), Number(ranges[i - 1].toBlock) + 1);
+    assert.deepEqual(r.topics, [[FAILED, RETRIED, RECOVERED]]);
+  });
+});
+
+test('reorg refresh replaces the overlap while retaining older failures', async () => {
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  let saved = await checkpoint();
+  saved = await checkpoint([failed(saved.block - 3000, 1), failed(saved.block - 10, 2),
+    lifecycle(RETRIED, saved.block - 5, 1)]);
+  mockSources({ head: saved.block + 100, logs: [failed(saved.block - 9, 3)] });
+  const messages = await failedMessageData();
+  assert.deepEqual(messages.map(m => m.messageId), [hash(1), hash(3)]);
+  assert.ok(messages.every(m => m.lifecycle === null));
+  const persisted = JSON.parse(records.get(PROGRESS_KEY));
+  assert.equal(persisted.block, saved.block + 98);
+  assert.equal(persisted.logs.length, 2);
+});
+
+test('failed state reads preserve the checkpoint and retry the same history', async () => {
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  const saved = await checkpoint(), head = saved.block + 100;
+  const before = records.get(PROGRESS_KEY);
+  mockSources({ head, logs: [failed(head - 5)], state: null });
+  await assert.rejects(failedMessageData(), /state unreadable/);
+  assert.equal(records.get(PROGRESS_KEY), before);
+  const calls = mockSources({ head, logs: [failed(head - 5)] });
+  assert.equal((await failedMessageData()).length, 1);
+  assert.equal(Number(calls.find(c => c.method === 'eth_getLogs').params[0].fromBlock), saved.block - 1799);
 });
