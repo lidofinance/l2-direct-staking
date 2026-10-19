@@ -120,13 +120,16 @@ async function blockscoutIndexedBlock() {
   return indexedBlock;
 }
 
-async function failedMessageData() {
+export async function failedMessageData() {
   const [rpcHead, indexedHead] = await Promise.all([rpcBlockNumber(L1), blockscoutIndexedBlock()]);
+  // Leave room for backend head skew, and keep lifecycle logs and state at one block.
+  // This is an availability margin, not a finality guarantee.
+  const atBlock = Math.max(0, rpcHead - 2);
   const maxIndexLag = 7200;
   if (rpcHead - indexedHead > maxIndexLag)
     throw new Error(`L1 indexer is ${rpcHead - indexedHead} blocks behind RPC (maximum ${maxIndexLag})`);
-  const indexedBlock = Math.min(rpcHead, indexedHead);
-  const tail = await l1ReceiverTail(indexedBlock + 1, rpcHead);
+  const indexedBlock = Math.min(atBlock, indexedHead);
+  const tail = await l1ReceiverTail(indexedBlock + 1, atBlock);
   const failedLogs = await l1ReceiverLogs(MESSAGE_FAILED_TOPIC, indexedBlock, tail);
   const retriedLogs = await l1ReceiverLogs(MESSAGE_RECOVERED_TOPIC, indexedBlock, tail);
   const recoveredLogs = await l1ReceiverLogs(TOKENS_RECOVERED_TOPIC, indexedBlock, tail);
@@ -140,7 +143,7 @@ async function failedMessageData() {
     .map(message => [message.messageId, message])).values()];
   const hashes = await rpcBatch(L1.rpc, messages.map(message => ({ method: 'eth_call', params: [{
     to: L1.receiver, data: SEL.failedMessageHash + message.messageId.slice(2),
-  }, '0x' + rpcHead.toString(16)] })));
+  }, '0x' + atBlock.toString(16)] })));
   if (hashes.some(hash => !/^0x[0-9a-f]{64}$/i.test(hash ?? '')))
     throw new Error('failed-message state unreadable');
   return messages.map((message, i) => {
