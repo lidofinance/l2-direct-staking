@@ -223,6 +223,7 @@ tr.group a:hover { color: var(--accent); }
 .l1-card .card-head { align-items: center; padding-bottom: 16px; }
 .l1-card-copy { min-width: 0; }
 .l1-card-copy h3 { margin: 0; white-space: nowrap; }
+.l1-card-copy h3 b { font-weight: inherit; }
 .l1-card-copy .desc { display: block; margin-top: 2px; }
 .l1-card-links { margin-left: auto; display: flex; gap: 12px; flex: none; font-size: 12.5px; }
 .l1-card-links a { color: var(--ink-2); text-decoration: none; }
