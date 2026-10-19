@@ -1,5 +1,10 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 // The site modules expect a browser. Pacing and retry back-off wait on timers; fire them at once.
 const records = new Map();
@@ -74,6 +79,70 @@ test('all lanes resume at the checkpoint overlap and replace reorged events', as
     assert.equal(activityProgress[L.name].block, head);
   }
   assert.equal(JSON.parse(records.get(PROGRESS_KEY)).Linea.block, saved.Linea.block + 100);
+});
+
+test('snapshot updates retain an older row that enters the latest 50 after a reorg', async t => {
+  const { LANES } = await modules();
+  const saved = await progress();
+  for (const item of Object.values(saved)) item.events = [];
+  const L = LANES[0], block = saved[L.name].block;
+  const removed = { ...event(block - 1, REMOVED), ts: 1000 };
+  saved.Optimism.events = [removed, ...Array.from({ length: 25 }, (_, i) =>
+    ({ ...event(block - 3000 - i, 1000 + i), ts: 999 - i }))];
+  saved.Base.events = Array.from({ length: 25 }, (_, i) =>
+    ({ ...event(saved.Base.block - 3000 - i, 2000 + i), ts: 974 - i }));
+  const replacement = saved.Base.events.at(-1); // Initially the 51st row, outside every overlap.
+
+  // Run the real updater with mocked RPCs and an isolated output directory.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-snapshot-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'site/static'), { recursive: true });
+  const moduleURL = file => pathToFileURL(require.resolve(file)).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+    import fs from 'node:fs';
+    const { saved, liveLog } = JSON.parse(fs.readFileSync(0, 'utf8'));
+    globalThis.localStorage = { getItem() { return null; }, setItem() {} };
+    globalThis.document = { querySelectorAll() { return []; } };
+    const { LANES } = await import(${JSON.stringify(moduleURL('../../site/static/config.js'))});
+    const { activityProgress } = await import(${JSON.stringify(moduleURL('../../site/static/activity.js'))});
+    Object.assign(activityProgress, saved);
+    globalThis.fetch = (${jsonRpc.toString()})((method, [p], url) => {
+      const lane = LANES.find(l => url === 'https://' + l.name.toLowerCase() + '.example');
+      if (!lane) throw new Error('unexpected endpoint');
+      if (method === 'eth_chainId') return '0x' + lane.chainId.toString(16);
+      if (method === 'eth_blockNumber') return '0x' + saved[lane.name].block.toString(16);
+      if (method === 'eth_getBlockByNumber') return { timestamp: '0x3e8' };
+      if (method === 'eth_getLogs') return lane.name === 'Optimism' &&
+        p.topics[0] === liveLog.topics[0] && Number(p.fromBlock) <= Number(liveLog.blockNumber) &&
+        Number(p.toBlock) >= Number(liveLog.blockNumber) ? [liveLog] : [];
+      throw new Error('unexpected RPC method');
+    });
+    await import(${JSON.stringify(moduleURL('./update-activity-snapshot.cjs'))});
+  `], {
+    cwd: dir, encoding: 'utf8', timeout: 15000,
+    env: Object.fromEntries(LANES.map(l =>
+      ['RPC_' + l.name.toUpperCase() + '_REMOTE', 'https://' + l.name.toLowerCase() + '.example'])),
+    input: JSON.stringify({ saved, liveLog: slowStakeLog(L, block - 1, REMOVED) }),
+  });
+  assert.equal(child.status, 0, child.error?.message ?? child.stderr);
+  const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'site/static/activity-snapshot.js'), 'utf8')
+    .replace(/^export const ACTIVITY_SNAPSHOT = /, '').replace(/;\s*$/, ''));
+  const { activityData, activityProgress, renderActivity } = await load(persisted);
+  const panel = { innerHTML: '' };
+  globalThis.document.getElementById = id => id === 'activity' ? panel : null;
+  const results = () => LANES.map(lane => ({ L: lane, events: activityProgress[lane.name].events }));
+  renderActivity(results());
+  assert.ok(panel.innerHTML.includes(removed.tx));
+  assert.ok(!panel.innerHTML.includes(replacement.tx));
+
+  // The next canonical overlap no longer contains the recent Optimism event.
+  globalThis.fetch = jsonRpc(method => method === 'eth_blockNumber' ? hex(block + 1) : []);
+  await activityData(L);
+  renderActivity(results());
+  assert.equal((panel.innerHTML.match(/<tr[ >]/g) ?? []).length - 1, 50);
+  assert.ok(!panel.innerHTML.includes(removed.tx));
+  assert.ok(panel.innerHTML.includes(replacement.tx));
+  assert.ok(persisted.Optimism.events.length <= 50 && persisted.Base.events.length <= 50);
 });
 
 test('a failed source leaves events and cursor untouched and retry reads the same range', async () => {
@@ -159,12 +228,11 @@ test('RPC log errors retain the provider message while contract reverts remain n
 test('the bundled snapshot has valid, ordered events for every lane', async () => {
   const { ACTIVITY_SNAPSHOT: snapshots } = await modules();
   const { ACTIVITY_ROWS } = await load();
-  const total = Object.values(snapshots).reduce((sum, item) => sum + item.events.length, 0);
-  assert.ok(total > 0 && total <= ACTIVITY_ROWS);
   for (const [name, chainId] of [['Optimism', 10], ['Arbitrum', 42161], ['Base', 8453], ['Linea', 59144]]) {
     const item = snapshots[name];
     assert.equal(item.chainId, chainId);
     assert.ok(Number.isSafeInteger(item.block) && item.block > 0);
+    assert.ok(item.events.length > 0 && item.events.length <= ACTIVITY_ROWS);
     let previous = item.block;
     for (const e of item.events) {
       assert.ok(Number.isSafeInteger(e.block) && e.block > 0 && e.block <= previous);

@@ -28,9 +28,10 @@ Then open http://localhost:8000. GitHub Pages publishes `site/` as is.
 
 ## Activity snapshots
 
-`static/activity-snapshot.js` contains a checked block for each of Optimism,
-Arbitrum, Base and Linea and the 50 most recent events across them. The Activity
-tab displays these immediately,
+`static/activity-snapshot.js` contains a checked block and up to 50 recent events
+for each of Optimism, Arbitrum, Base and Linea. Retaining each lane's history
+allows older rows to enter the table when a reorg removes newer events.
+The Activity tab immediately displays the latest 50 events across all lanes,
 then reads RPC logs from the checkpoint with a 1,800-block overlap. It replaces
 that overlap and stores the new block and events together in `localStorage` only
 after both pool transfers and SlowStake events load successfully. A newer browser
