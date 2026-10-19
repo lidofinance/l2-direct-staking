@@ -6,6 +6,8 @@ import { ago, alink, eqa, esc, fmtAmt, holder, netLogo, refreshingViews, setTabS
 // ── Pool activity ────────────────────────────────────────────────────────────
 const SLOW_STAKE_TOPIC = '0xb9a1909fb1e8f533ab60d262ba908dc82a1d8dfaef2e6c4e4b2da76de8a1ca4d';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+// The table shows the newest rows across lanes; each lane keeps as many, since one lane can fill it.
+export const ACTIVITY_ROWS = 50;
 
 async function poolActivityData(L, fromBlock, toBlock) {
   // Both transfer directions share one range so classification sees every leg of a transaction.
@@ -66,7 +68,7 @@ export async function activityData(L) {
     poolActivityData(L, fromBlock, toBlock).catch(e => { throw new Error(`pool: ${e.message}`); }),
     slowStakeData(L, fromBlock, toBlock).catch(e => { throw new Error(`SlowStake: ${e.message}`); }),
   ]);
-  const fresh = [...pool, ...slowStakes].sort((a, b) => b.block - a.block).slice(0, 50);
+  const fresh = [...pool, ...slowStakes].sort((a, b) => b.block - a.block).slice(0, ACTIVITY_ROWS);
   const blockNumbers = [...new Set(fresh.map(e => e.block))];
   const blocks = await rpcBatchChunks(L.logsRpc, blockNumbers.map(n =>
     ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })));
@@ -76,7 +78,7 @@ export async function activityData(L) {
     e.ts = Number(BigInt(timestamp));
   });
   // Both sources and the cursor commit together, so a failed read retries the same range.
-  const events = [...fresh, ...previous.events.filter(e => e.block < fromBlock)].slice(0, 50);
+  const events = [...fresh, ...previous.events.filter(e => e.block < fromBlock)].slice(0, ACTIVITY_ROWS);
   activityProgress[L.name] = { chainId: L.chainId, block: toBlock, events };
   try { localStorage.setItem(ACTIVITY_PROGRESS_KEY, JSON.stringify(activityProgress)); } catch {}
   return events;
@@ -113,9 +115,6 @@ let activityFailed = false;
 // so the highlight survives auto-refreshes while the user is looking at the table.
 let activityViewBoundary = readActivitySeen();
 let lastActivityResults = null;
-// The table opens on the latest rows; "Show all" reveals the rest of what was already fetched.
-const ACTIVITY_PREVIEW_ROWS = 20;
-let activityShowAll = false;
 let activityTabActive = false;
 let activityRenderedAt = null;
 // The cursor and its events form one record; a saved one wins only if it is ahead of the bundled snapshot.
@@ -165,7 +164,7 @@ export function renderActivity(results) {
   const stale = results.some(r => r.error && r.events);
   const rows = results.filter(r => r.events)
     .flatMap(r => r.events.map(e => ({ L: r.L, ...e })))
-    .sort((a, b) => b.ts - a.ts).slice(0, 60);
+    .sort((a, b) => b.ts - a.ts).slice(0, ACTIVITY_ROWS);
   activityFailed = failed.length > 0;
   latestActivity = rows.length ? {
     ts: rows[0].ts,
@@ -180,8 +179,7 @@ export function renderActivity(results) {
   lastActivityResults = results;
   const isFresh = e => !!activityViewBoundary && (e.ts > activityViewBoundary.ts ||
     e.ts === activityViewBoundary.ts && !activityViewBoundary.txs.includes(e.tx));
-  const shown = activityShowAll ? rows : rows.slice(0, ACTIVITY_PREVIEW_ROWS);
-  const tr = shown.map(e => `<tr${isFresh(e) ? ' class="fresh"' : ''}>
+  const tr = rows.map(e => `<tr${isFresh(e) ? ' class="fresh"' : ''}>
     <td><span class="num"><div class="m">${ago(e.ts)}</div><div class="s">${new Date(e.ts * 1000).toLocaleString()}</div></span></td>
     <td><span class="who"><span class="avatar">${netLogo(e.L)}</span><span class="name">${e.L.name}</span></span></td>
     <td><span class="tag ${e.kind}">${e.label}</span></td>
@@ -200,9 +198,7 @@ export function renderActivity(results) {
     ${pending.length ? `<div class="loader"><span class="spin"></span> Loading ${pending.join(', ')} history…</div>` : ''}
     ${rows.length ? `<div class="scroll-x"><table>
       <tr><th>Age</th><th>Lane</th><th>Action</th><th>Amount</th><th>Counterparty</th><th>Tx</th></tr>
-      ${tr}</table></div>${rows.length > shown.length ? `<div class="show-all">
-        <button type="button" class="refresh alt" data-action="activity-show-all">Show all ${rows.length}</button>
-      </div>` : ''}` : failed.length || pending.length ? '' : '<div class="err-banner">no transfers found</div>'}
+      ${tr}</table></div>` : failed.length || pending.length ? '' : '<div class="err-banner">no transfers found</div>'}
   </div>`;
   updateActivityUpd();
 }
@@ -214,11 +210,6 @@ export function setActivityTabActive(active) {
   activityViewBoundary = activitySeen;   // highlight what arrived since the last visit
   markActivitySeen();
   if (lastActivityResults) renderActivity(lastActivityResults);
-}
-
-export function showAllActivity() {
-  activityShowAll = true;
-  renderActivity(lastActivityResults);
 }
 
 export function updateActivityUpd() {

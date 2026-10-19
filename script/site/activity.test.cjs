@@ -158,11 +158,13 @@ test('RPC log errors retain the provider message while contract reverts remain n
 
 test('the bundled snapshot has valid, ordered events for every lane', async () => {
   const { ACTIVITY_SNAPSHOT: snapshots } = await modules();
+  const { ACTIVITY_ROWS } = await load();
+  const total = Object.values(snapshots).reduce((sum, item) => sum + item.events.length, 0);
+  assert.ok(total > 0 && total <= ACTIVITY_ROWS);
   for (const [name, chainId] of [['Optimism', 10], ['Arbitrum', 42161], ['Base', 8453], ['Linea', 59144]]) {
     const item = snapshots[name];
     assert.equal(item.chainId, chainId);
     assert.ok(Number.isSafeInteger(item.block) && item.block > 0);
-    assert.ok(item.events.length > 0 && item.events.length <= 50);
     let previous = item.block;
     for (const e of item.events) {
       assert.ok(Number.isSafeInteger(e.block) && e.block > 0 && e.block <= previous);
@@ -215,16 +217,12 @@ test('pool transfers with a malformed transaction hash are dropped', async () =>
   assert.deepEqual((await activityData(L)).map(e => e.tx), [txHash(OLD)]);
 });
 
-test('Activity opens on the latest 20 rows and Show all reveals the rest', async () => {
+test('Activity shows the latest 50 rows at once', async () => {
   const { LANES } = await modules();
-  const { renderActivity, showAllActivity } = await load();
+  const { renderActivity } = await load();
   const panel = { innerHTML: '' };
   globalThis.document.getElementById = id => id === 'activity' ? panel : null;
   const rows = () => (panel.innerHTML.match(/<tr[ >]/g) ?? []).length - 1; // minus the header row
-  renderActivity([{ L: LANES[0], events: Array.from({ length: 30 }, (_, i) => event(1000 + i, i + 1)) }]);
-  assert.equal(rows(), 20);
-  assert.match(panel.innerHTML, /Show all 30/);
-  showAllActivity();
-  assert.equal(rows(), 30);
-  assert.doesNotMatch(panel.innerHTML, /Show all/);
+  renderActivity([{ L: LANES[0], events: Array.from({ length: 60 }, (_, i) => event(1000 + i, i + 1)) }]);
+  assert.equal(rows(), 50);
 });

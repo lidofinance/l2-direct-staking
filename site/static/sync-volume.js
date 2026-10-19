@@ -27,9 +27,9 @@ function saveSyncProgress(L, progress) {
 export const syncAmount = log => (log.topics?.[0] ?? '').toLowerCase() === SYNC_TOPIC &&
   /^0x[0-9a-f]{128}$/i.test(log.data ?? '') ? BigInt('0x' + log.data.slice(66, 130)) : null;
 
-// Cumulative CustomSender.Sync totals were verified through these per-lane checkpoint blocks on
-// 2026-08-20. Only the immutable tail after each block is read on load; localStorage advances the
-// cursor after every successful refresh.
+// Cumulative CustomSender.Sync totals were verified through these per-lane checkpoint blocks, the
+// last before 2026-10-15 00:00 UTC. Only the immutable tail after each block is read on load;
+// localStorage advances the cursor after every successful refresh.
 async function syncLogsRange(L, fromBlock, toBlock) {
   return (await blockscoutAddressLogs(L.bs, L.sender, SYNC_TOPIC, { fromBlock }))
     .filter(log => log.blockNumber <= toBlock);
