@@ -90,9 +90,26 @@ function parseFailedLifecycleLog(log) {
   return { kind, messageId, tx, block, logIndex, timestamp: logQuantity(log.timeStamp) };
 }
 
-async function l1ReceiverLogs(topic, toBlock) {
-  return (await blockscoutAddressLogs(L1.bs, L1.receiver, topic, { since: FAILURES_SINCE }))
-    .filter(log => log.blockNumber <= toBlock);
+async function l1ReceiverLogs(topic, indexedBlock, tail) {
+  return [...(await blockscoutAddressLogs(L1.bs, L1.receiver, topic, { since: FAILURES_SINCE }))
+    .filter(log => log.blockNumber <= indexedBlock),
+    ...tail.filter(log => (log.topics?.[0] ?? '').toLowerCase() === topic)];
+}
+
+// Blocks the explorer has not indexed yet come from RPC; the default L1 RPC serves logs for ~10k recent blocks.
+async function l1ReceiverTail(fromBlock, toBlock) {
+  const ranges = [];
+  for (let first = fromBlock; first <= toBlock; first += 2000)
+    ranges.push({ method: 'eth_getLogs', params: [{ address: L1.receiver,
+      topics: [[MESSAGE_FAILED_TOPIC, MESSAGE_RECOVERED_TOPIC, TOKENS_RECOVERED_TOPIC]],
+      fromBlock: '0x' + first.toString(16), toBlock: '0x' + Math.min(first + 1999, toBlock).toString(16) }] });
+  const pages = await rpcBatch(L1.rpc, ranges);
+  if (pages.some(page => !Array.isArray(page))) throw new Error('invalid logs response');
+  const logs = pages.flat();
+  const blockNumbers = [...new Set(logs.map(log => log.blockNumber))];
+  const blocks = await rpcBatch(L1.rpc, blockNumbers.map(n =>
+    ({ method: 'eth_getBlockByNumber', params: [n, false] })));
+  return logs.map(log => ({ ...log, timeStamp: logQuantity(blocks[blockNumbers.indexOf(log.blockNumber)]?.timestamp) }));
 }
 
 async function blockscoutIndexedBlock() {
@@ -105,13 +122,14 @@ async function blockscoutIndexedBlock() {
 
 async function failedMessageData() {
   const [rpcHead, indexedHead] = await Promise.all([rpcBlockNumber(L1), blockscoutIndexedBlock()]);
-  const maxIndexLag = 64;
+  const maxIndexLag = 7200;
   if (rpcHead - indexedHead > maxIndexLag)
     throw new Error(`L1 indexer is ${rpcHead - indexedHead} blocks behind RPC (maximum ${maxIndexLag})`);
-  const atBlock = Math.min(rpcHead, indexedHead);
-  const failedLogs = await l1ReceiverLogs(MESSAGE_FAILED_TOPIC, atBlock);
-  const retriedLogs = await l1ReceiverLogs(MESSAGE_RECOVERED_TOPIC, atBlock);
-  const recoveredLogs = await l1ReceiverLogs(TOKENS_RECOVERED_TOPIC, atBlock);
+  const indexedBlock = Math.min(rpcHead, indexedHead);
+  const tail = await l1ReceiverTail(indexedBlock + 1, rpcHead);
+  const failedLogs = await l1ReceiverLogs(MESSAGE_FAILED_TOPIC, indexedBlock, tail);
+  const retriedLogs = await l1ReceiverLogs(MESSAGE_RECOVERED_TOPIC, indexedBlock, tail);
+  const recoveredLogs = await l1ReceiverLogs(TOKENS_RECOVERED_TOPIC, indexedBlock, tail);
   const decoded = failedLogs.map(parseFailedMessageLog);
   const lifecycle = [...retriedLogs, ...recoveredLogs].map(parseFailedLifecycleLog);
   if (decoded.some(message => !message) || lifecycle.some(event => !event))
@@ -122,7 +140,7 @@ async function failedMessageData() {
     .map(message => [message.messageId, message])).values()];
   const hashes = await rpcBatch(L1.rpc, messages.map(message => ({ method: 'eth_call', params: [{
     to: L1.receiver, data: SEL.failedMessageHash + message.messageId.slice(2),
-  }, '0x' + atBlock.toString(16)] })));
+  }, '0x' + rpcHead.toString(16)] })));
   if (hashes.some(hash => !/^0x[0-9a-f]{64}$/i.test(hash ?? '')))
     throw new Error('failed-message state unreadable');
   return messages.map((message, i) => {
