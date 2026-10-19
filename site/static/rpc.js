@@ -125,6 +125,21 @@ export async function rpcBatchChunks(url, calls, size = 5) {
   return results;
 }
 
+// Normalize block quantities before joining, so numeric and mixed-case hex values share a lookup.
+export async function rpcBlockTimestamps(url, blockNumbers) {
+  const numbers = [...new Set(blockNumbers.map(n => Number(BigInt(n))))];
+  const blocks = await rpcBatchChunks(url, numbers.map(n =>
+    ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })));
+  return new Map(numbers.map((n, i) => {
+    const timestamp = blocks[i]?.timestamp;
+    if (timestamp == null || !/^(0x[0-9a-f]+|\d+)$/i.test(String(timestamp)))
+      throw new Error('block timestamp unavailable');
+    const ts = Number(BigInt(timestamp));
+    if (!Number.isSafeInteger(ts) || ts <= 0) throw new Error('block timestamp unavailable');
+    return [n, ts];
+  }));
+}
+
 export async function rpcRequest(url, method, params) {
   const res = await rpcFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
