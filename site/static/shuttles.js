@@ -1,5 +1,5 @@
 import { L1, LANE_BY_CCIP_SELECTOR } from './config.js';
-import { blockscoutAddressLogs, rpcBatch, rpcBlockNumber, rpcFetch, SEL } from './rpc.js';
+import { blockscoutAddressLogs, rpcBatch, rpcBlockNumber, rpcBlockTimestamps, rpcFetch, rpcHistoryLogs, SEL } from './rpc.js';
 import { ago, alink, chip, esc, fmtAmt, laneWho, setOverviewStatus, short, viewRefresh } from './ui.js';
 
 // ── Shuttle failures ────────────────────────────────────────────────────────
@@ -98,18 +98,10 @@ async function l1ReceiverLogs(topic, indexedBlock, tail) {
 
 // Blocks the explorer has not indexed yet come from RPC; the default L1 RPC serves logs for ~10k recent blocks.
 async function l1ReceiverTail(fromBlock, toBlock) {
-  const ranges = [];
-  for (let first = fromBlock; first <= toBlock; first += 2000)
-    ranges.push({ method: 'eth_getLogs', params: [{ address: L1.receiver,
-      topics: [[MESSAGE_FAILED_TOPIC, MESSAGE_RECOVERED_TOPIC, TOKENS_RECOVERED_TOPIC]],
-      fromBlock: '0x' + first.toString(16), toBlock: '0x' + Math.min(first + 1999, toBlock).toString(16) }] });
-  const pages = await rpcBatch(L1.rpc, ranges);
-  if (pages.some(page => !Array.isArray(page))) throw new Error('invalid logs response');
-  const logs = pages.flat();
-  const blockNumbers = [...new Set(logs.map(log => log.blockNumber))];
-  const blocks = await rpcBatch(L1.rpc, blockNumbers.map(n =>
-    ({ method: 'eth_getBlockByNumber', params: [n, false] })));
-  return logs.map(log => ({ ...log, timeStamp: logQuantity(blocks[blockNumbers.indexOf(log.blockNumber)]?.timestamp) }));
+  const logs = await rpcHistoryLogs({ ...L1, logsRpc: L1.rpc }, L1.receiver,
+    [[MESSAGE_FAILED_TOPIC, MESSAGE_RECOVERED_TOPIC, TOKENS_RECOVERED_TOPIC]], fromBlock, toBlock);
+  const timestamps = await rpcBlockTimestamps(L1.rpc, logs.map(log => log.blockNumber));
+  return logs.map(log => ({ ...log, timeStamp: timestamps.get(Number(BigInt(log.blockNumber))) }));
 }
 
 async function blockscoutIndexedBlock() {
