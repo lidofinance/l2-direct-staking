@@ -115,3 +115,166 @@ test('failed state reads preserve the checkpoint and retry the same history', as
   assert.equal((await failedMessageData()).length, 1);
   assert.equal(Number(calls.find(c => c.method === 'eth_getLogs').params[0].fromBlock), saved.block - 1799);
 });
+
+test('provider failures never advance history or render a false no-failures result', async () => {
+  const { failedMessageData, refreshShuttles } = await import('../../site/static/shuttles.js');
+  const cases = [
+    { method: 'eth_getLogs', result: null, error: /invalid logs response/ },
+    { method: 'eth_getLogs', thrown: 'history pruned', error: /refresh the bundled snapshot.*history pruned/ },
+    { method: 'eth_getBlockByNumber', result: null, error: /timestamp unavailable/ },
+  ];
+  for (const c of cases) {
+    const saved = await checkpoint(), before = records.get(PROGRESS_KEY);
+    mockSources({ head: saved.block + 100, logs: [failed(saved.block + 5)], answer(method) {
+      if (method !== c.method) return undefined;
+      if (c.thrown) throw new Error(c.thrown);
+      return c.result;
+    } });
+    await assert.rejects(failedMessageData(), c.error);
+    assert.equal(records.get(PROGRESS_KEY), before);
+    const panel = { innerHTML: '' };
+    globalThis.document.getElementById = id => id === 'shuttle' ? panel : null;
+    await refreshShuttles();
+    assert.match(panel.innerHTML, /err-banner/);
+    assert.doesNotMatch(panel.innerHTML, /No failures/);
+    assert.equal(records.get(PROGRESS_KEY), before);
+  }
+});
+
+test('mixed-case RPC quantities and topics decode with same-block lifecycle ordering', async () => {
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  const saved = await checkpoint(), block = saved.block + 5;
+  const logs = [1, 2, 3, 4].map(id => ({ ...failed(block, id), logIndex: '0xA' }));
+  logs.push(lifecycle(RETRIED, block, 1, 11), lifecycle(RECOVERED, block, 2, 12),
+    lifecycle(RETRIED, block, 3, 9), lifecycle(RECOVERED, block, 4, 13));
+  logs.forEach(log => {
+    log.blockNumber = '0x' + Number(log.blockNumber).toString(16).toUpperCase();
+    log.topics = log.topics.map(t => '0x' + t.slice(2).toUpperCase());
+    log.transactionHash = '0x' + log.transactionHash.slice(2).toUpperCase();
+  });
+  mockSources({ head: saved.block + 100, logs, state: hash(0), answer(method, [p]) {
+    if (method === 'eth_call' && p.data.endsWith(word(4))) return hash(1);
+  } });
+  const messages = await failedMessageData();
+  assert.deepEqual(messages.map(m => m.state), ['retried', 'recovered', 'unknown', 'active']);
+  assert.equal(messages[0].lifecycle.logIndex, 11);
+  assert.equal(messages[2].lifecycle, null);
+});
+
+test('malformed event payloads fail without saving partial history', async () => {
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  const saved = await checkpoint(), before = records.get(PROGRESS_KEY);
+  mockSources({ head: saved.block + 100, logs: [{ ...failed(saved.block + 5), data: '0x' }] });
+  await assert.rejects(failedMessageData(), /unrecognized receiver event/);
+  assert.equal(records.get(PROGRESS_KEY), before);
+});
+
+test('older, wrong-network, malformed and incompatible browser checkpoints fall back to the seed', async () => {
+  const { L1 } = await import('../../site/static/config.js');
+  const { RECEIVER_SNAPSHOT: seed } = await import('../../site/static/receiver-snapshot.js');
+  const { receiverCheckpoint } = await import('../../site/static/receiver-history.js');
+  const { decodeReceiverHistory } = await import('../../site/static/shuttles.js');
+  const newer = { ...seed, block: seed.block + 1000 };
+  for (const saved of [
+    { ...seed, block: seed.block - 1 }, { ...newer, chainId: 10 },
+    { ...newer, receiver: '0x' + '1'.repeat(40) }, { ...newer, logs: null },
+    { ...newer, fromBlock: seed.fromBlock + 1 }, { ...newer, since: seed.since + 1 },
+    { ...newer, logs: [{ ...failed(seed.block), blockNumber: seed.block, logIndex: 0, timeStamp: timestamp, data: '0x' }] },
+  ]) {
+    records.set(PROGRESS_KEY, JSON.stringify(saved));
+    assert.deepEqual(receiverCheckpoint(L1, decodeReceiverHistory), seed);
+  }
+});
+
+test('a lagging RPC cannot rewind receiver history', async () => {
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  const saved = await checkpoint(), before = records.get(PROGRESS_KEY);
+  const calls = mockSources({ head: saved.block + 1 });
+  await assert.rejects(failedMessageData(), /behind the receiver checkpoint/);
+  assert.equal(calls.filter(c => c.method === 'eth_getLogs').length, 0);
+  assert.equal(records.get(PROGRESS_KEY), before);
+});
+
+test('receiver history and state honor the configured Ethereum RPC override', async t => {
+  const { L1 } = await import('../../site/static/config.js');
+  const { failedMessageData } = await import('../../site/static/shuttles.js');
+  const oldRPC = L1.rpc;
+  t.after(() => { L1.rpc = oldRPC; });
+  L1.rpc = 'https://custom-ethereum.example';
+  const saved = await checkpoint();
+  mockSources({ head: saved.block + 100, logs: [failed(saved.block + 5)] });
+  const fetch = globalThis.fetch, urls = [];
+  globalThis.fetch = (url, init) => { urls.push(String(url)); return fetch(url, init); };
+  assert.equal((await failedMessageData()).length, 1);
+  assert.ok(urls.length >= 4);
+  assert.ok(urls.every(url => url === L1.rpc));
+});
+
+test('a complete empty RPC history renders no failures', async () => {
+  const { refreshShuttles } = await import('../../site/static/shuttles.js');
+  const saved = await checkpoint();
+  mockSources({ head: saved.block + 100 });
+  const panel = { innerHTML: '' };
+  globalThis.document.getElementById = id => id === 'shuttle' ? panel : null;
+  await refreshShuttles();
+  assert.match(panel.innerHTML, /No failures since 1 Aug 2026/);
+  assert.doesNotMatch(panel.innerHTML, /err-banner/);
+});
+
+test('the real updater rebuilds the full window and preserves the old file on failure', async t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const { pathToFileURL } = require('node:url');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'receiver-snapshot-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const output = path.join(dir, 'site/static/receiver-snapshot.js');
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  const scriptURL = pathToFileURL(require.resolve('./update-receiver-snapshot.cjs')).href;
+  const { FAILURES_SINCE } = await import('../../site/static/receiver-history.js');
+  for (const mode of ['success', 'wrong-chain', 'missing-page']) {
+    fs.writeFileSync(output, 'old snapshot');
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', `
+      import fs from 'node:fs';
+      import assert from 'node:assert/strict';
+      const { logs, since, mode } = JSON.parse(fs.readFileSync(0, 'utf8'));
+      globalThis.setTimeout = resolve => { queueMicrotask(resolve); return 0; };
+      globalThis.fetch = async (url, init) => {
+        assert.equal(url, 'https://archive.example');
+        const body = JSON.parse(init.body);
+        const reply = ({ id, method, params: [p] }) => {
+          let result;
+          if (method === 'eth_chainId') result = mode === 'wrong-chain' ? '0xa' : '0x1';
+          else if (method === 'eth_blockNumber') result = '0x1f40'; // 8000; checkpoint = 6200
+          else if (method === 'eth_getBlockByNumber') result = { timestamp: '0x' + (since + Number(p) - 10).toString(16) };
+          else if (method === 'eth_getLogs') {
+            assert.equal(p.topics[0].length, 3);
+            assert.ok(Number(p.toBlock) - Number(p.fromBlock) < 2000);
+            result = mode === 'missing-page' ? null : logs.filter(l =>
+              Number(l.blockNumber) >= Number(p.fromBlock) && Number(l.blockNumber) <= Number(p.toBlock));
+          } else throw new Error('unexpected method ' + method);
+          return { jsonrpc: '2.0', id, result };
+        };
+        return { ok: true, status: 200, json: async () => Array.isArray(body) ? body.map(reply) : reply(body) };
+      };
+      process.argv.push('--rebuild');
+      await import(${JSON.stringify(scriptURL)});
+    `], { cwd: dir, encoding: 'utf8', timeout: 15000,
+      env: { ...process.env, RPC_ETHEREUM_REMOTE: 'https://archive.example' },
+      input: JSON.stringify({ mode, since: FAILURES_SINCE, logs: [failed(10), lifecycle(RETRIED, 12)] }) });
+    if (mode !== 'success') {
+      assert.equal(child.status, 1, child.stderr);
+      assert.match(child.stderr, mode === 'wrong-chain' ? /wrong chain/ : /invalid logs response/);
+      assert.equal(fs.readFileSync(output, 'utf8'), 'old snapshot');
+      continue;
+    }
+    assert.equal(child.status, 0, child.error?.message ?? child.stderr);
+    const snapshot = JSON.parse(fs.readFileSync(output, 'utf8').replace(/^export const RECEIVER_SNAPSHOT = /, '').replace(/;\s*$/, ''));
+    assert.equal(snapshot.fromBlock, 10);
+    assert.equal(snapshot.block, 6200);
+    assert.equal(snapshot.logs.length, 2);
+    assert.equal(snapshot.logs[0].timeStamp, FAILURES_SINCE);
+    assert.ok(!fs.readFileSync(output, 'utf8').includes('archive.example'));
+  }
+});
