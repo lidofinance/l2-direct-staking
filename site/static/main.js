@@ -1,4 +1,4 @@
-import { activityProgress, refreshActivity, renderActivity, setActivityTabActive, showAllActivity, updateActivityUpd } from './activity.js';
+import { activityProgress, refreshActivity, renderActivity, setActivityTabActive, updateActivityUpd } from './activity.js';
 import { refreshAutomationLogs, refreshAutomationState } from './automation.js';
 import { cdFiles, cdTakeFile, decodeCalldataInput, refreshCalldata, renderArtifactChecks } from './calldata.js';
 import { LANES } from './config.js';
@@ -81,7 +81,6 @@ document.addEventListener('click', event => {
   // Buttons inside re-rendered markup; module functions are out of reach of inline handlers.
   const action = event.target.closest('[data-action]');
   if (action?.dataset.action === 'activity-retry') { action.disabled = true; refreshActivity(); }
-  if (action?.dataset.action === 'activity-show-all') showAllActivity();
   if (action?.dataset.action === 'automation-retry') { action.disabled = true; refreshAutomationLogs(); }
 });
 selectTab(location.hash.slice(1));

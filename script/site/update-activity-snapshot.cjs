@@ -15,6 +15,7 @@ globalThis.document = { querySelectorAll() { return []; } };
     if (Number(BigInt(await rpcRequest(rpc, 'eth_chainId', []))) !== lane.chainId)
       throw new Error(`${lane.name}: wrong chain`);
     await activityData({ ...lane, rpc, logsRpc: rpc });
+    // Retain each lane's history: a reorg can bring older rows back into the global top 50.
     const snapshot = activityProgress[lane.name];
     // Save after each lane; lanes not reached yet keep their previous snapshot.
     fs.writeFileSync(path, 'export const ACTIVITY_SNAPSHOT = ' + JSON.stringify(activityProgress, null, 2) + ';\n');
