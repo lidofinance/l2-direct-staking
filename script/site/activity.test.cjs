@@ -202,6 +202,16 @@ test('RPC log requests cover the full range in chunks of at most 2000 blocks', a
     [[8201, 10200], [10201, 12200], [12201, 13000]]);
 });
 
+test('RPC log requests honor a lane-specific block range', async () => {
+  const { LANES, rpcHistoryLogs } = await modules();
+  const requests = [];
+  globalThis.fetch = jsonRpc((method, [p]) => { requests.push(p); return []; });
+  await rpcHistoryLogs({ ...LANES[0], logsRpc: 'https://logs.example', logsBlockRange: 10000 },
+    '0x123', [], 1, 25000);
+  assert.deepEqual(requests.map(p => [Number(p.fromBlock), Number(p.toBlock)]),
+    [[1, 10000], [10001, 20000], [20001, 25000]]);
+});
+
 test('missing timestamps fail without advancing progress', async () => {
   const { LANES } = await modules();
   const saved = await progress();
@@ -257,6 +267,24 @@ test('activity uses the chain RPC by default and respects custom endpoints', asy
   await activityData(LANES[0]);
   await activityData({ ...LANES[0], rpc: 'https://custom.example' });
   assert.deepEqual(urls, ['https://mainnet.optimism.io', 'https://custom.example']);
+});
+
+test('activity keeps 2000-block ranges when automation uses larger RPC ranges', async () => {
+  const { LANES } = await modules();
+  const saved = await progress();
+  const { activityData } = await load(saved);
+  for (const L of LANES.filter(lane => lane.name === 'Arbitrum' || lane.name === 'Linea')) {
+    const requests = [];
+    globalThis.fetch = jsonRpc((method, [p], url) => {
+      assert.equal(url, L.activityRpc ?? L.receiptsRpc);
+      if (method === 'eth_blockNumber') return hex(saved[L.name].block + 15000);
+      if (method === 'eth_getLogs') requests.push(p);
+      return [];
+    });
+    await activityData(L);
+    assert.ok(requests.length > 0);
+    assert.ok(requests.every(p => Number(p.toBlock) - Number(p.fromBlock) < 2000));
+  }
 });
 
 test('JSON-RPC rate limits retry before reporting failure', async () => {

@@ -1,7 +1,7 @@
 import { AUTO_OWNER, AUTO_SAFE, COMMON_DEPLOYED, CRE_CONFIG_JSON, CRE_CONFIG_SHA256, CRE_DEPLOYED_SOURCE_SHA256, CRE_WORKFLOW_NAME, DON_FAMILY, LANES, RPC_DEFAULTS, SYNC_TOPIC, TRIGGER_SYNC_SEL } from './config.js';
 import { laneData } from './core.js';
 import { creConfigSha, findConsolidated, paramsAgreement, parseAttributes, registryData, regsUsable, WF } from './registry.js';
-import { decBool, decU, rpcBatch, rpcBatchChunks, rpcFetch } from './rpc.js';
+import { decBool, decU, rpcBatch, rpcBatchChunks, rpcBlockNumber, rpcFetch, rpcHistoryLogs } from './rpc.js';
 import { SHA256_OK } from './sha256.js';
 import { syncAmount } from './sync-volume.js';
 import { ago, chip, esc, fmtEth, holder, laneWho, legendHtml, netLogo, setTabStatus, short, viewRefresh, who, worst } from './ui.js';
@@ -73,20 +73,50 @@ const HASH = /^0x[0-9a-f]{64}$/i;
 const wellFormed = e => HASH.test(e.tx ?? '') && e.topics.every(t => t == null || HASH.test(t)) &&
   /^0x[0-9a-f]*$/i.test(e.data ?? '');
 
-async function automationLogs(L) {
-  // The whole CREReceiver history is ~8 events per lane, so one query is the full record.
+async function blockscoutAutomationLogs(L) {
   const res = await rpcFetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const page = await res.json();
-  const rows = (page.items ?? [])
+  return (await res.json()).items ?? [];
+}
+
+export async function automationLogs(L) {
+  // Arbitrum and Linea read the bounded full record from RPC. Base overlays a recent RPC tail on its
+  // explorer history because that explorer can return a successful but stale page.
+  let items, retained = [];
+  if (L.automationRpc) {
+    const rpcLane = { ...L, logsRpc: L.automationRpc, logsBlockRange: L.automationBlockRange };
+    const head = await rpcBlockNumber(rpcLane);
+    const fromBlock = Math.max(0, head - L.automationTailBlocks + 1);
+    const [history, tail] = await Promise.all([
+      blockscoutAutomationLogs(L),
+      rpcHistoryLogs(rpcLane, L.creReceiver, [], fromBlock, head),
+    ]);
+    items = [...history.filter(row => row.block_number < fromBlock), ...tail];
+    retained = (automation.logs[L.name] ?? []).filter(row => row.block < fromBlock);
+  } else if (L.logsRpc) {
+    items = await rpcHistoryLogs(L, L.creReceiver, [], L.automationFromBlock, await rpcBlockNumber(L));
+  } else {
+    items = await blockscoutAutomationLogs(L);
+  }
+  const rows = [...new Map(items
     .filter(i => EVT[(i.topics?.[0] ?? '').toLowerCase()])
-    .map(i => ({
-      topic: i.topics[0].toLowerCase(), topics: i.topics.map(t => t && t.toLowerCase()),
-      data: i.data, block: i.block_number, tx: i.transaction_hash,
-      ts: i.block_timestamp ? Math.floor(Date.parse(i.block_timestamp) / 1000) : null,
-    }))
-    .filter(wellFormed);
-  // Linea's explorer also omits block_timestamp here; backfill from the lane's own RPC by block.
+    .map(i => {
+      const rpcTimestamp = i.blockTimestamp == null ? 0 : Number(BigInt(i.blockTimestamp));
+      return {
+        topic: i.topics[0].toLowerCase(), topics: i.topics.map(t => t && t.toLowerCase()),
+        data: i.data, block: i.blockNumber == null ? i.block_number : Number(BigInt(i.blockNumber)),
+        tx: i.transactionHash ?? i.transaction_hash,
+        logIndex: i.logIndex == null ? i.index : Number(BigInt(i.logIndex)),
+        ts: rpcTimestamp > 0 ? rpcTimestamp
+          : i.block_timestamp ? Math.floor(Date.parse(i.block_timestamp) / 1000) : null,
+      };
+    })
+    .filter(wellFormed)
+    .map(row => [`${row.tx}:${row.logIndex ?? row.topics.join(':') + ':' + row.data}`, row])).values()];
+  rows.push(...retained.filter(old => !rows.some(row => row.tx === old.tx &&
+    (old.logIndex != null ? row.logIndex === old.logIndex
+      : row.data === old.data && row.topics.join(':') === old.topics.join(':')))));
+  // Some sources omit the timestamp; backfill it from the lane's own RPC by block.
   const missing = [...new Set(rows.filter(r => r.ts == null && r.block != null).map(r => r.block))];
   if (missing.length) {
     const calls = missing.map(n =>
@@ -267,13 +297,11 @@ function eventDetail(e) {
   return `${holder(addr(e.topics[1]))} → ${holder(addr(e.topics[2]))}`;
 }
 
-const RECENT_EVENTS_PER_LANE = 3;
+const RECENT_EVENTS_LIMIT = 10;
 export function recentAutomationEvents(logs) {
-  return LANES.flatMap(L => [...(logs[L.name] ?? [])]
+  return LANES.flatMap(L => (logs[L.name] ?? []).map(e => ({ ...e, L })))
     .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
-    .slice(0, RECENT_EVENTS_PER_LANE)
-    .map(e => ({ ...e, L })))
-    .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+    .slice(0, RECENT_EVENTS_LIMIT);
 }
 
 function renderAutomation() {
@@ -496,7 +524,7 @@ function renderAutomation() {
   const evCard = `<div class="card">
     <div class="card-head">
       <h3>Recent events</h3>
-      <span class="desc">Latest ${RECENT_EVENTS_PER_LANE} events per lane.</span>
+      <span class="desc">Latest ${RECENT_EVENTS_LIMIT} events across all lanes.</span>
     </div>
     ${automation.logErrors.length || missingLanes.length ? `<div class="err-banner">⚠ incomplete: ${
       [...automation.logErrors.map(esc), ...missingLanes.map(n => n + ' (not loaded)')].join(', ')} — rows below are cached or partial</div>` : ''}

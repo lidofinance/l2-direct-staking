@@ -64,7 +64,7 @@ export async function rpcFetch(url, init) {
   url = String(url);
   const origin = new URL(url).origin;
   // Explorers and the chains' own public RPCs rate-limit per IP; custom endpoints run unpaced.
-  const paced = [L1, ...LANES].some(L => [L.bs, L.receiptsRpc, L.activityRpc]
+  const paced = [L1, ...LANES].some(L => [L.bs, L.logsRpc, L.automationRpc, L.receiptsRpc, L.activityRpc]
     .some(u => u && new URL(u).origin === origin)) || origin === 'https://base.gateway.tenderly.co';
   const request = async () => {
     let res;
@@ -161,10 +161,11 @@ const logRangeCache = new Map();
 
 export async function rpcHistoryLogs(L, address, topics, fromBlock, toBlock) {
   const url = L.logsRpc;
+  const blockRange = L.logsBlockRange ?? 2000;
   const result = [];
   const ranges = [];
-  for (let first = fromBlock; first <= toBlock; first += 2000)
-    ranges.push([first, Math.min(first + 1999, toBlock)]);
+  for (let first = fromBlock; first <= toBlock; first += blockRange)
+    ranges.push([first, Math.min(first + blockRange - 1, toBlock)]);
   for (let i = 0; i < ranges.length; i += 4) {
     const pages = ranges.slice(i, i + 4).map(([first, last]) => {
       const key = 'dsw.logs.v1:' + JSON.stringify([L.chainId, url, address, topics, first, last]);

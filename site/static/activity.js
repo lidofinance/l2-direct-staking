@@ -58,7 +58,8 @@ async function slowStakeData(L, fromBlock, toBlock) {
 export async function activityData(L) {
   // PublicNode rejects log reads on some lanes; use the public chain RPCs for activity.
   // A user-supplied endpoint still takes precedence for every activity request.
-  L = { ...L, logsRpc: L.rpc === RPC_DEFAULTS[L.name] ? L.activityRpc ?? L.receiptsRpc ?? L.rpc : L.rpc };
+  L = { ...L, logsRpc: L.rpc === RPC_DEFAULTS[L.name] ? L.activityRpc ?? L.receiptsRpc ?? L.rpc : L.rpc,
+    logsBlockRange: 2000 };
   const previous = activityProgress[L.name];
   const toBlock = await rpcBlockNumber(L);
   if (toBlock < previous.block) throw new Error('RPC head is behind the activity checkpoint');
