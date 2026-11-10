@@ -33,6 +33,18 @@ test('recent events tolerate missing and short lane histories', async () => {
   assert.deepEqual(rows.map(row => row.L.name), ['Linea', 'Base', 'Base']);
 });
 
+test('recent events select the newest logs when timestamps are equal', async () => {
+  const { recentAutomationEvents } = await import('../../site/static/automation.js');
+  const logs = Array.from({ length: 12 }, (_, logIndex) => ({ ts: 100, block: 10, logIndex }));
+  logs.push({ ts: 100, block: 11, logIndex: 0 });
+
+  const rows = recentAutomationEvents({ Base: logs });
+
+  assert.deepEqual(rows.map(row => [row.block, row.logIndex]),
+    [[11, 0], [10, 11], [10, 10], [10, 9], [10, 8], [10, 7], [10, 6], [10, 5], [10, 4], [10, 3]]);
+  assert.equal(logs[0].logIndex, 0);
+});
+
 test('Arbitrum and Linea automation history uses their log RPCs', async () => {
   const { LANES } = await import('../../site/static/config.js');
   const { automationLogs } = await import('../../site/static/automation.js');
@@ -60,6 +72,37 @@ test('Arbitrum and Linea automation history uses their log RPCs', async () => {
   assert.ok(urls.some(url => url.startsWith('https://arb1.arbitrum.io/rpc')));
   assert.ok(urls.some(url => url.startsWith('https://linea.gateway.tenderly.co')));
   assert.ok(!urls.some(url => url.includes('arbitrum.blockscout.com') || url.includes('api-explorer.linea.build')));
+});
+
+test('automation head and logs honor custom RPC endpoints with bounded history requests', async () => {
+  const { LANES } = await import('../../site/static/config.js');
+  const { automationLogs } = await import('../../site/static/automation.js');
+  for (const lane of LANES.filter(L => L.logsRpc || L.automationRpc)) {
+    const L = { ...lane, rpc: `https://${lane.name.toLowerCase()}.custom.example` };
+    const methods = [];
+    globalThis.fetch = async (url, init) => {
+      if (!init?.body) return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      assert.equal(String(url), L.rpc);
+      const body = JSON.parse(init.body);
+      const reply = call => {
+        methods.push(call.method);
+        if (call.method === 'eth_getLogs')
+          assert.ok(Number(call.params[0].toBlock) - Number(call.params[0].fromBlock) <
+            (L.automationBlockRange ?? L.logsBlockRange));
+        return { jsonrpc: '2.0', id: call.id,
+          result: call.method === 'eth_blockNumber'
+            ? '0x' + (L.name === 'Arbitrum' ? 522790846 : (L.automationFromBlock ?? 0) + 2500).toString(16) : [] };
+      };
+      return { ok: true, status: 200,
+        json: async () => Array.isArray(body) ? body.map(reply) : reply(body) };
+    };
+
+    await automationLogs(L);
+
+    assert.ok(methods.includes('eth_blockNumber'));
+    assert.ok(methods.includes('eth_getLogs'));
+    if (L.name === 'Arbitrum') assert.equal(methods.filter(method => method === 'eth_getLogs').length, 4);
+  }
 });
 
 test('Base merges its explorer history with a recent RPC tail', async () => {
@@ -120,6 +163,46 @@ test('Base retains cached events outside the RPC tail and replaces events inside
   assert.deepEqual(rows.map(row => row.tx), [retained.tx]);
 });
 
+test('retained Base sync amounts retry receipts after a null result', async t => {
+  const { LANES, SYNC_TOPIC } = await import('../../site/static/config.js');
+  const { automation, automationLogs } = await import('../../site/static/automation.js');
+  const L = LANES.find(lane => lane.name === 'Base');
+  const topic = '0xbe82131bb3404498c769b0511da41a4ad409fa7152562c2b6669241cbe3bb884';
+  const retained = { topic, topics: [topic, '0x' + '0'.repeat(64), '0x340b2b0b' + '0'.repeat(56)],
+    data: '0x', block: 2600000, ts: 1, tx: '0x' + '8'.repeat(64), wei: null };
+  automation.logs.Base = [retained];
+  t.after(() => { delete automation.logs.Base; });
+  let receipts = 0, available = false;
+  globalThis.fetch = async (url, init) => {
+    if (!init?.body) return { ok: true, status: 200, json: async () => ({ items: [] }) };
+    const body = JSON.parse(init.body);
+    const reply = call => {
+      let result = [];
+      if (call.method === 'eth_blockNumber') result = '0x2dc6c0';
+      if (call.method === 'eth_getTransactionReceipt') {
+        receipts++;
+        result = available ? { logs: [{ address: L.sender, topics: [SYNC_TOPIC],
+          data: '0x' + '0'.repeat(64) + '2a'.padStart(64, '0') }] } : null;
+      }
+      return { jsonrpc: '2.0', id: call.id, result };
+    };
+    return { ok: true, status: 200,
+      json: async () => Array.isArray(body) ? body.map(reply) : reply(body) };
+  };
+
+  const unread = await automationLogs(L);
+
+  assert.equal(unread[0].wei, undefined);
+  assert.equal(unread[0].amtUnread, true);
+  assert.equal(retained.wei, null);
+  automation.logs.Base = unread;
+  available = true;
+  const rows = await automationLogs(L);
+
+  assert.equal(receipts, 2);
+  assert.equal(rows[0].wei, '42');
+});
+
 test('automation preserves distinct same-topic logs in one transaction', async () => {
   const { LANES } = await import('../../site/static/config.js');
   const { automationLogs } = await import('../../site/static/automation.js');
@@ -139,4 +222,5 @@ test('automation preserves distinct same-topic logs in one transaction', async (
   const rows = await automationLogs(L);
 
   assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => row.logIndex), [2, 1]);
 });

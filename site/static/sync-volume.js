@@ -1,4 +1,4 @@
-import { LANES, SYNC_TOPIC } from './config.js';
+import { LANES, RPC_DEFAULTS, SYNC_TOPIC } from './config.js';
 import { blockscoutAddressLogs, rpcHistoryLogs, rpcSafeBlock } from './rpc.js';
 import { fmtEth } from './ui.js';
 
@@ -39,6 +39,7 @@ async function syncLogsRange(L, fromBlock, toBlock) {
 }
 
 async function syncVolumeData(L) {
+  if (L.logsRpc && L.rpc !== RPC_DEFAULTS[L.name]) L = { ...L, logsRpc: L.rpc };
   const progress = readSyncProgress(L);
   const toBlock = await rpcSafeBlock(L);
   if (toBlock <= progress.block) return { wei: BigInt(progress.wei), count: progress.count };

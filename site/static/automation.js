@@ -72,6 +72,8 @@ async function attachSyncAmounts(L, rows) {
 const HASH = /^0x[0-9a-f]{64}$/i;
 const wellFormed = e => HASH.test(e.tx ?? '') && e.topics.every(t => t == null || HASH.test(t)) &&
   /^0x[0-9a-f]*$/i.test(e.data ?? '');
+const newestLaneEventFirst = (a, b) => (b.ts ?? 0) - (a.ts ?? 0) ||
+  (b.block ?? 0) - (a.block ?? 0) || (b.logIndex ?? 0) - (a.logIndex ?? 0);
 
 async function blockscoutAutomationLogs(L) {
   const res = await rpcFetch(`${L.bs}/api/v2/addresses/${L.creReceiver}/logs`);
@@ -82,9 +84,11 @@ async function blockscoutAutomationLogs(L) {
 export async function automationLogs(L) {
   // Arbitrum and Linea read the bounded full record from RPC. Base overlays a recent RPC tail on its
   // explorer history because that explorer can return a successful but stale page.
+  const customRpc = L.rpc !== RPC_DEFAULTS[L.name];
   let items, retained = [];
   if (L.automationRpc) {
-    const rpcLane = { ...L, logsRpc: L.automationRpc, logsBlockRange: L.automationBlockRange };
+    const rpcLane = { ...L, logsRpc: customRpc ? L.rpc : L.automationRpc,
+      logsBlockRange: L.automationBlockRange };
     const head = await rpcBlockNumber(rpcLane);
     const fromBlock = Math.max(0, head - L.automationTailBlocks + 1);
     const [history, tail] = await Promise.all([
@@ -92,9 +96,11 @@ export async function automationLogs(L) {
       rpcHistoryLogs(rpcLane, L.creReceiver, [], fromBlock, head),
     ]);
     items = [...history.filter(row => row.block_number < fromBlock), ...tail];
-    retained = (automation.logs[L.name] ?? []).filter(row => row.block < fromBlock);
+    retained = (automation.logs[L.name] ?? []).filter(row => row.block < fromBlock)
+      .map(row => row.wei === null ? { ...row, wei: undefined } : row);
   } else if (L.logsRpc) {
-    items = await rpcHistoryLogs(L, L.creReceiver, [], L.automationFromBlock, await rpcBlockNumber(L));
+    const rpcLane = customRpc ? { ...L, logsRpc: L.rpc } : L;
+    items = await rpcHistoryLogs(rpcLane, L.creReceiver, [], L.automationFromBlock, await rpcBlockNumber(rpcLane));
   } else {
     items = await blockscoutAutomationLogs(L);
   }
@@ -126,7 +132,7 @@ export async function automationLogs(L) {
     rows.forEach(r => { if (r.ts == null) r.ts = stamps.get(r.block) ?? null; });
   }
   await attachSyncAmounts(L, rows);
-  return rows.sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  return rows.sort(newestLaneEventFirst);
 }
 
 // ── Automation ───────────────────────────────────────────────────────────────
@@ -299,7 +305,7 @@ function eventDetail(e) {
 
 const RECENT_EVENTS_LIMIT = 10;
 export function recentAutomationEvents(logs) {
-  return LANES.flatMap(L => (logs[L.name] ?? []).map(e => ({ ...e, L })))
+  return LANES.flatMap(L => [...(logs[L.name] ?? [])].sort(newestLaneEventFirst).map(e => ({ ...e, L })))
     .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
     .slice(0, RECENT_EVENTS_LIMIT);
 }
