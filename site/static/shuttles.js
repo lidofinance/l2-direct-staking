@@ -1,15 +1,13 @@
 import { L1, LANE_BY_CCIP_SELECTOR } from './config.js';
-import { blockscoutAddressLogs, rpcBatch, rpcBlockNumber, rpcFetch, SEL } from './rpc.js';
+import { rpcBatch, rpcBlockNumber, SEL } from './rpc.js';
+import { FAILURES_SINCE, MESSAGE_FAILED_TOPIC, MESSAGE_RECOVERED_TOPIC, TOKENS_RECOVERED_TOPIC,
+  receiverCheckpoint, readReceiverHistory, saveReceiverCheckpoint } from './receiver-history.js';
 import { ago, alink, chip, esc, fmtAmt, laneWho, setOverviewStatus, short, viewRefresh } from './ui.js';
 
 // ── Shuttle failures ────────────────────────────────────────────────────────
 // MessageFailed discovers the incident and carries the complete CCIP message. Contract state and
 // lifecycle events provide the current verdict; an old failure event alone must never look active.
-const MESSAGE_FAILED_TOPIC = '0xef8a84d7e9c9d42c79a42cba16e93688c646989f43846843e163672cc887e253';
-const MESSAGE_RECOVERED_TOPIC = '0xef3bf8c64bc480286c4f3503b870ceb23e648d2d902e31fb7bb46680da6de8ad';
-const TOKENS_RECOVERED_TOPIC = '0x6e2f4b2b871174c4882a9b21bf5a2f421274d3dba05cc997af4528bdc393c027';
 const ZERO32 = '0x' + '0'.repeat(64);
-const FAILURES_SINCE = Date.parse('2026-08-01T00:00:00Z') / 1000;
 
 const logQuantity = value => {
   try {
@@ -90,46 +88,10 @@ function parseFailedLifecycleLog(log) {
   return { kind, messageId, tx, block, logIndex, timestamp: logQuantity(log.timeStamp) };
 }
 
-async function l1ReceiverLogs(topic, indexedBlock, tail) {
-  return [...(await blockscoutAddressLogs(L1.bs, L1.receiver, topic, { since: FAILURES_SINCE }))
-    .filter(log => log.blockNumber <= indexedBlock),
-    ...tail.filter(log => (log.topics?.[0] ?? '').toLowerCase() === topic)];
-}
-
-// Blocks the explorer has not indexed yet come from RPC; the default L1 RPC serves logs for ~10k recent blocks.
-async function l1ReceiverTail(fromBlock, toBlock) {
-  const ranges = [];
-  for (let first = fromBlock; first <= toBlock; first += 2000)
-    ranges.push({ method: 'eth_getLogs', params: [{ address: L1.receiver,
-      topics: [[MESSAGE_FAILED_TOPIC, MESSAGE_RECOVERED_TOPIC, TOKENS_RECOVERED_TOPIC]],
-      fromBlock: '0x' + first.toString(16), toBlock: '0x' + Math.min(first + 1999, toBlock).toString(16) }] });
-  const pages = await rpcBatch(L1.rpc, ranges);
-  if (pages.some(page => !Array.isArray(page))) throw new Error('invalid logs response');
-  const logs = pages.flat();
-  const blockNumbers = [...new Set(logs.map(log => log.blockNumber))];
-  const blocks = await rpcBatch(L1.rpc, blockNumbers.map(n =>
-    ({ method: 'eth_getBlockByNumber', params: [n, false] })));
-  return logs.map(log => ({ ...log, timeStamp: logQuantity(blocks[blockNumbers.indexOf(log.blockNumber)]?.timestamp) }));
-}
-
-async function blockscoutIndexedBlock() {
-  const res = await rpcFetch(`${L1.bs}/api/v2/blocks?type=block`);
-  if (!res.ok) throw new Error(`index status HTTP ${res.status}`);
-  const indexedBlock = logQuantity((await res.json()).items?.[0]?.height);
-  if (indexedBlock == null) throw new Error('indexed block unreadable');
-  return indexedBlock;
-}
-
-async function failedMessageData() {
-  const [rpcHead, indexedHead] = await Promise.all([rpcBlockNumber(L1), blockscoutIndexedBlock()]);
-  const maxIndexLag = 7200;
-  if (rpcHead - indexedHead > maxIndexLag)
-    throw new Error(`L1 indexer is ${rpcHead - indexedHead} blocks behind RPC (maximum ${maxIndexLag})`);
-  const indexedBlock = Math.min(rpcHead, indexedHead);
-  const tail = await l1ReceiverTail(indexedBlock + 1, rpcHead);
-  const failedLogs = await l1ReceiverLogs(MESSAGE_FAILED_TOPIC, indexedBlock, tail);
-  const retriedLogs = await l1ReceiverLogs(MESSAGE_RECOVERED_TOPIC, indexedBlock, tail);
-  const recoveredLogs = await l1ReceiverLogs(TOKENS_RECOVERED_TOPIC, indexedBlock, tail);
+export function decodeReceiverHistory(logs) {
+  const failedLogs = logs.filter(log => log.topics[0].toLowerCase() === MESSAGE_FAILED_TOPIC);
+  const retriedLogs = logs.filter(log => log.topics[0].toLowerCase() === MESSAGE_RECOVERED_TOPIC);
+  const recoveredLogs = logs.filter(log => log.topics[0].toLowerCase() === TOKENS_RECOVERED_TOPIC);
   const decoded = failedLogs.map(parseFailedMessageLog);
   const lifecycle = [...retriedLogs, ...recoveredLogs].map(parseFailedLifecycleLog);
   if (decoded.some(message => !message) || lifecycle.some(event => !event))
@@ -138,12 +100,24 @@ async function failedMessageData() {
     throw new Error('receiver event timestamp unavailable');
   const messages = [...new Map(decoded.filter(message => message.timestamp >= FAILURES_SINCE)
     .map(message => [message.messageId, message])).values()];
+  return { messages, lifecycle };
+}
+
+export async function failedMessageData() {
+  const rpcHead = await rpcBlockNumber(L1);
+  // Leave room for backend head skew, and keep lifecycle logs and state at one block.
+  // This is an availability margin, not a finality guarantee.
+  const atBlock = Math.max(0, rpcHead - 2);
+  const previous = receiverCheckpoint(L1, decodeReceiverHistory);
+  if (!previous) throw new Error('Receiver snapshot unavailable; rebuild the bundled receiver history');
+  const candidate = await readReceiverHistory(L1, previous, atBlock);
+  const { messages, lifecycle } = decodeReceiverHistory(candidate.logs);
   const hashes = await rpcBatch(L1.rpc, messages.map(message => ({ method: 'eth_call', params: [{
     to: L1.receiver, data: SEL.failedMessageHash + message.messageId.slice(2),
-  }, '0x' + rpcHead.toString(16)] })));
+  }, '0x' + atBlock.toString(16)] })));
   if (hashes.some(hash => !/^0x[0-9a-f]{64}$/i.test(hash ?? '')))
     throw new Error('failed-message state unreadable');
-  return messages.map((message, i) => {
+  const result = messages.map((message, i) => {
     const later = lifecycle.filter(event => event.messageId === message.messageId &&
       (event.block > message.block || event.block === message.block && event.logIndex > message.logIndex))
       .sort((a, b) => b.block - a.block || b.logIndex - a.logIndex)[0] ?? null;
@@ -151,6 +125,8 @@ async function failedMessageData() {
     return { ...message, failedHash, lifecycle: later,
       state: failedHash !== ZERO32 ? 'active' : later?.kind ?? 'unknown' };
   });
+  saveReceiverCheckpoint(candidate);
+  return result;
 }
 
 function renderShuttles(messages, error) {

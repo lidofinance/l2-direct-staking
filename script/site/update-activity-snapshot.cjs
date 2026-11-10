@@ -8,21 +8,17 @@ globalThis.document = { querySelectorAll() { return []; } };
 (async () => {
   const { LANES } = await import('../../site/static/config.js');
   const { rpcRequest } = await import('../../site/static/rpc.js');
-  const { ACTIVITY_ROWS, activityData, activityProgress } = await import('../../site/static/activity.js');
+  const { activityData, activityProgress } = await import('../../site/static/activity.js');
   for (const lane of LANES) {
     const rpc = process.env[`RPC_${lane.name.toUpperCase()}_REMOTE`];
     if (!rpc) throw new Error(`Missing RPC_${lane.name.toUpperCase()}_REMOTE`);
     if (Number(BigInt(await rpcRequest(rpc, 'eth_chainId', []))) !== lane.chainId)
       throw new Error(`${lane.name}: wrong chain`);
     await activityData({ ...lane, rpc, logsRpc: rpc });
-    // Keep only the rows the table shows; new events are newer, so a dropped one never returns to it.
-    const shown = new Set(Object.values(activityProgress).flatMap(p => p.events)
-      .sort((a, b) => b.ts - a.ts).slice(0, ACTIVITY_ROWS));
-    const snapshots = Object.fromEntries(Object.entries(activityProgress)
-      .map(([name, p]) => [name, { ...p, events: p.events.filter(e => shown.has(e)) }]));
-    const snapshot = snapshots[lane.name];
+    // Retain each lane's history: a reorg can bring older rows back into the global top 50.
+    const snapshot = activityProgress[lane.name];
     // Save after each lane; lanes not reached yet keep their previous snapshot.
-    fs.writeFileSync(path, 'export const ACTIVITY_SNAPSHOT = ' + JSON.stringify(snapshots, null, 2) + ';\n');
+    fs.writeFileSync(path, 'export const ACTIVITY_SNAPSHOT = ' + JSON.stringify(activityProgress, null, 2) + ';\n');
     console.log(`${lane.name}: block ${snapshot.block}, ${snapshot.events.length} events`);
   }
 })().catch(error => { console.error(error.message.replace(/https?:\/\/\S+/g, '[RPC]')); process.exitCode = 1; });

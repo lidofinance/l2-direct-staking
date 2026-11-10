@@ -1,6 +1,6 @@
 import { ACTIVITY_SNAPSHOT } from './activity-snapshot.js';
 import { LANES, NAMES, RPC_DEFAULTS } from './config.js';
-import { RPC_CONFIRMATIONS, rpcBatchChunks, rpcBlockNumber, rpcHistoryLogs } from './rpc.js';
+import { RPC_CONFIRMATIONS, rpcBlockTimestamps, rpcBlockNumber, rpcHistoryLogs } from './rpc.js';
 import { ago, alink, eqa, esc, fmtAmt, holder, netLogo, refreshingViews, setTabStatus, short, viewRefresh, ZERO } from './ui.js';
 
 // ── Pool activity ────────────────────────────────────────────────────────────
@@ -69,14 +69,8 @@ export async function activityData(L) {
     slowStakeData(L, fromBlock, toBlock).catch(e => { throw new Error(`SlowStake: ${e.message}`); }),
   ]);
   const fresh = [...pool, ...slowStakes].sort((a, b) => b.block - a.block).slice(0, ACTIVITY_ROWS);
-  const blockNumbers = [...new Set(fresh.map(e => e.block))];
-  const blocks = await rpcBatchChunks(L.logsRpc, blockNumbers.map(n =>
-    ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })));
-  fresh.forEach(e => {
-    const timestamp = blocks[blockNumbers.indexOf(e.block)]?.timestamp;
-    if (!timestamp) throw new Error('block timestamp unavailable');
-    e.ts = Number(BigInt(timestamp));
-  });
+  const timestamps = await rpcBlockTimestamps(L.logsRpc, fresh.map(e => e.block));
+  fresh.forEach(e => { e.ts = timestamps.get(e.block); });
   // Both sources and the cursor commit together, so a failed read retries the same range.
   const events = [...fresh, ...previous.events.filter(e => e.block < fromBlock)].slice(0, ACTIVITY_ROWS);
   activityProgress[L.name] = { chainId: L.chainId, block: toBlock, events };
