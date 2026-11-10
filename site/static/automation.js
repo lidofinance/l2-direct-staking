@@ -267,6 +267,15 @@ function eventDetail(e) {
   return `${holder(addr(e.topics[1]))} → ${holder(addr(e.topics[2]))}`;
 }
 
+const RECENT_EVENTS_PER_LANE = 3;
+export function recentAutomationEvents(logs) {
+  return LANES.flatMap(L => [...(logs[L.name] ?? [])]
+    .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+    .slice(0, RECENT_EVENTS_PER_LANE)
+    .map(e => ({ ...e, L })))
+    .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+}
+
 function renderAutomation() {
   const lanes = automation.lanes;
   if (!lanes) return; // the log fetch alone cannot draw the planes; first paint comes from refresh()
@@ -474,9 +483,7 @@ function renderAutomation() {
   </div>`;
 
   // Recent control-plane history.
-  const events = LANES.flatMap(L => (automation.logs[L.name] ?? []).map(e => ({ L, ...e })))
-    .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
-  const visibleEvents = events.slice(0, 12);
+  const visibleEvents = recentAutomationEvents(automation.logs);
   const evRows = visibleEvents.map(e => `<tr>
     <td><span class="num"><div class="m">${ago(e.ts)}</div>
         <div class="s">${e.ts ? new Date(e.ts * 1000).toLocaleString() : 'block ' + e.block}</div></span></td>
@@ -489,7 +496,7 @@ function renderAutomation() {
   const evCard = `<div class="card">
     <div class="card-head">
       <h3>Recent events</h3>
-      <span class="desc">Latest ${visibleEvents.length} events.</span>
+      <span class="desc">Latest ${RECENT_EVENTS_PER_LANE} events per lane.</span>
     </div>
     ${automation.logErrors.length || missingLanes.length ? `<div class="err-banner">⚠ incomplete: ${
       [...automation.logErrors.map(esc), ...missingLanes.map(n => n + ' (not loaded)')].join(', ')} — rows below are cached or partial</div>` : ''}
