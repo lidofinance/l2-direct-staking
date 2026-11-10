@@ -1,5 +1,5 @@
-import { LANES, SYNC_TOPIC } from './config.js';
-import { blockscoutAddressLogs, rpcSafeBlock } from './rpc.js';
+import { LANES, RPC_DEFAULTS, SYNC_TOPIC } from './config.js';
+import { blockscoutAddressLogs, rpcHistoryLogs, rpcSafeBlock } from './rpc.js';
 import { fmtEth } from './ui.js';
 
 // ── Synced to L1 (CustomSender Sync volume) ──────────────────────────────────
@@ -31,11 +31,15 @@ export const syncAmount = log => (log.topics?.[0] ?? '').toLowerCase() === SYNC_
 // last before 2026-10-15 00:00 UTC. Only the immutable tail after each block is read on load;
 // localStorage advances the cursor after every successful refresh.
 async function syncLogsRange(L, fromBlock, toBlock) {
-  return (await blockscoutAddressLogs(L.bs, L.sender, SYNC_TOPIC, { fromBlock }))
+  const logs = L.logsRpc
+    ? await rpcHistoryLogs(L, L.sender, [SYNC_TOPIC], fromBlock, toBlock)
+    : await blockscoutAddressLogs(L.bs, L.sender, SYNC_TOPIC, { fromBlock });
+  return logs
     .filter(log => log.blockNumber <= toBlock);
 }
 
 async function syncVolumeData(L) {
+  if (L.logsRpc && L.rpc !== RPC_DEFAULTS[L.name]) L = { ...L, logsRpc: L.rpc };
   const progress = readSyncProgress(L);
   const toBlock = await rpcSafeBlock(L);
   if (toBlock <= progress.block) return { wei: BigInt(progress.wei), count: progress.count };

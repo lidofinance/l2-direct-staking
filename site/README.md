@@ -27,6 +27,19 @@ Then open http://localhost:8000. GitHub Pages publishes `site/` as is.
 | `sha256.js` | Synchronous sha256 |
 | `main.js` | Refresh loop, tabs, event wiring |
 
+## Automation events
+
+Recent events shows the latest 10 CREReceiver events across all lanes. Arbitrum
+and Linea read automation history from their deployment blocks through JSON-RPC.
+Base combines explorer history with the latest 300,000 blocks from JSON-RPC,
+replacing explorer and cached rows in that window while retaining older cached
+events. Gaps older than that window still depend on the explorer's history.
+RPC history and receipt reads use the selected custom endpoint when set. Custom
+providers must support the configured history ranges: 10,000,000 blocks on
+Arbitrum, 50,000,000 on Linea, and 50,000 for the Base automation tail. Activity
+keeps its 2,000-block limit. Events with the same timestamp are ordered by block
+and log index within their lane.
+
 ## Activity snapshots
 
 `static/activity-snapshot.js` contains a checked block and up to 50 recent events
