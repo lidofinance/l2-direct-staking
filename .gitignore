@@ -9,7 +9,6 @@ node_modules
 
 .DS_Store
 /broadcast/
-/docs/cla-cre-migration
 
 # CRE workflow build artifacts
 cre-workflows/**/dist

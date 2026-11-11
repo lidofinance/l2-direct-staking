@@ -8,29 +8,27 @@ import {PausableImmutableOraclePool} from "@csr/utils/PausableImmutableOraclePoo
 import {SyncTrigger} from "src/SyncTrigger.sol";
 
 import {CREReceiver} from "src/cre/CREReceiver.sol";
-import {UpgradeTestBase} from "test/helpers/UpgradeTestBase.sol";
+import {PoolTestBase} from "test/helpers/PoolTestBase.sol";
 
 /**
  * @title CREIntegrationTests
  * @notice Shared CRE integration test logic, network-agnostic.
- * @dev Subclasses populate state via their network-specific UpgradeTestBase.
- *      Same pattern as PoolUpgradeTests.sol.
+ * @dev Subclasses populate state via their network-specific PoolTestBase.
+ *      Same pattern as PoolTests.sol.
  */
-abstract contract CREIntegrationTests is UpgradeTestBase {
+abstract contract CREIntegrationTests is PoolTestBase {
     CREReceiver internal creReceiver;
-    // creForwarder is inherited from UpgradeTestBase (the address the on-fork handoff wires in);
-    // creAuthor is set by _deployAndSetupCRE to the LOL multisig the handoff pins as expectedAuthor.
     address internal creAuthor;
 
     function test_creReceiverTriggersSyncViaReport() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
 
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        // Fund the float so canSync (executability) holds; the migration already granted SYNC_ROLE.
+        // Fund the float so canSync (executability) holds; the fixture grants SYNC_ROLE.
         vm.deal(address(syncTrigger), 1 ether);
 
         assertGt(syncTrigger.shouldSyncAmount(), 0, "sync should be due (amount > 0)");
@@ -53,24 +51,22 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     }
 
     function test_creReceiverRespectsOnlyForwarder() public {
-        _deployAndSetupCRE();
+        _createCREFixture();
 
         bytes memory report = abi.encode(address(1), hex"");
 
         address attacker = makeAddr("attacker");
         vm.prank(attacker);
-        vm.expectRevert(
-            abi.encodeWithSelector(CREReceiver.UnauthorizedForwarder.selector, attacker, creForwarder)
-        );
+        vm.expectRevert(abi.encodeWithSelector(CREReceiver.UnauthorizedForwarder.selector, attacker, creForwarder));
         creReceiver.onReport(_buildCREMetadata(creAuthor), report);
     }
 
     function test_creReceiverRotatesExpectedAuthor() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         address newAuthor = makeAddr("rotatedAuthor");
-        // The bound receiver is LOL-owned after the on-fork handoff, so the rotation is a LOL action.
-        vm.prank(lidoL2LiquidityOwner);
+        // Only the automation owner can rotate the report author.
+        vm.prank(automationOwner);
         creReceiver.setExpectedAuthor(newAuthor);
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
@@ -96,41 +92,37 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         );
     }
 
-    /// @notice The production deploy path pins `expectedAuthor` to the LOL multisig (Safe) — NOT the
-    ///         Lido Deployer EOA — so the CRE workflow owner, the `expectedAuthor` pin, and the
-    ///         CREReceiver owner are all the same Safe address (ADR-0001 / DOC.md §3.2). A report
-    ///         authored by the Safe is accepted; one authored by the deployer EOA is rejected.
-    function test_productionExpectedAuthorIsLolMultisig() public {
-        (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver prodReceiver) =
-            _deployAndMigrateL2Production();
+    /// @notice The automation owner authors reports; the liquidity owner has no report authority.
+    function test_onlyAutomationOwnerAuthorsReports() public {
+        (PausableImmutableOraclePool newPool, address newSyncTrigger, CREReceiver prodReceiver) = _createL2Fixture();
 
-        // Invariant: workflow owner == expectedAuthor == CREReceiver owner == the LOL multisig.
-        assertEq(prodReceiver.getExpectedAuthor(), lidoL2LiquidityOwner, "expectedAuthor must be LOL multisig");
-        assertEq(Ownable(address(prodReceiver)).owner(), lidoL2LiquidityOwner, "CREReceiver owner must be LOL multisig");
-        // It must NOT be the Stage-1 broadcaster (the deployer EOA used inside the production path).
-        assertTrue(prodReceiver.getExpectedAuthor() != lidoStage1Deployer, "expectedAuthor must not be the deployer EOA");
+        // Invariant: workflow owner == expectedAuthor == CREReceiver owner == the automation owner.
+        assertEq(prodReceiver.getExpectedAuthor(), automationOwner, "expectedAuthor must be automation owner");
+        assertEq(Ownable(address(prodReceiver)).owner(), automationOwner, "CREReceiver owner must be automation owner");
+        // It must NOT be the liquidity owner.
+        assertTrue(
+            prodReceiver.getExpectedAuthor() != lidoL2LiquidityOwner, "expectedAuthor must not be the liquidity owner"
+        );
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
-        // Production wiring sets the SyncTrigger forwarder to the CREReceiver. The migration hands the
-        // trigger over drained (handoff sweeps the float), so fund it here — the post-migration
-        // `fund-trigger` operational step.
+        // Fund the trigger so the accepted report can pay for a sync.
         vm.deal(newSyncTrigger, 1 ether);
         bytes memory report = abi.encode(newSyncTrigger, abi.encodeCall(SyncTrigger.triggerSync, ()));
 
-        // A report authored by the Lido Deployer EOA (a plausible mis-pin / stale workflow) is rejected.
+        // A report authored by the liquidity owner (a plausible mis-pin / stale workflow) is rejected.
         vm.prank(prodReceiver.getForwarder());
         vm.expectRevert(
-            abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, lidoStage1Deployer, lidoL2LiquidityOwner)
+            abi.encodeWithSelector(CREReceiver.InvalidAuthor.selector, lidoL2LiquidityOwner, automationOwner)
         );
-        prodReceiver.onReport(_buildCREMetadata(lidoStage1Deployer), report);
+        prodReceiver.onReport(_buildCREMetadata(lidoL2LiquidityOwner), report);
 
-        // A report authored by the LOL multisig (Safe) is accepted and drives the sync.
+        // A report authored by the automation owner (Safe) is accepted and drives the sync.
         uint256 poolWethBefore = IERC20(L2_WETH).balanceOf(address(newPool));
         vm.prank(prodReceiver.getForwarder());
-        prodReceiver.onReport(_buildCREMetadata(lidoL2LiquidityOwner), report);
+        prodReceiver.onReport(_buildCREMetadata(automationOwner), report);
         assertLt(
             IERC20(L2_WETH).balanceOf(address(newPool)),
             poolWethBefore,
@@ -139,25 +131,20 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     }
 
     function test_creReceiverRejectsDisallowedTarget() public {
-        (, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        _createCREFixture();
 
         address other = makeAddr("rogueTarget");
         bytes memory report = abi.encode(other, abi.encodeCall(SyncTrigger.triggerSync, ()));
 
         vm.prank(creForwarder);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                CREReceiver.CallNotAllowed.selector, other, SyncTrigger.triggerSync.selector
-            )
+            abi.encodeWithSelector(CREReceiver.CallNotAllowed.selector, other, SyncTrigger.triggerSync.selector)
         );
         creReceiver.onReport(_buildCREMetadata(creAuthor), report);
-
-        // Silence unused variable warning.
-        syncTrigger;
     }
 
     function test_crePathRespectsDelay() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
@@ -170,7 +157,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     }
 
     function test_crePathRespectsMinAmount() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         uint256 belowMin = uint256(L2_SYNC_MIN_AMOUNT) - 1;
         _provisionPoolAndAccumulateWeth(newPool, belowMin);
@@ -180,19 +167,16 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     }
 
     function test_crePathCapsAtMaxAmount() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         deal(L2_WETH, address(newPool), uint256(L2_SYNC_MAX_AMOUNT) + 50 ether);
         vm.warp(block.timestamp + L2_SYNC_DELAY);
 
         assertEq(syncTrigger.shouldSyncAmount(), uint256(L2_SYNC_MAX_AMOUNT), "should cap at max");
-
-        // Silence unused variable warning.
-        newPool;
     }
 
     function test_syncTriggerRejectsDirectCallAfterCRESetup() public {
-        (, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (, SyncTrigger syncTrigger) = _createCREFixture();
 
         address randomCaller = makeAddr("random");
         vm.prank(randomCaller);
@@ -201,7 +185,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     }
 
     function test_creUpdatesLastExecutionAfterTrigger() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
@@ -212,9 +196,7 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
 
         uint48 lastExecBefore = syncTrigger.getLastExecution();
 
-        bytes memory report = abi.encode(
-            address(syncTrigger), abi.encodeCall(SyncTrigger.triggerSync, ())
-        );
+        bytes memory report = abi.encode(address(syncTrigger), abi.encodeCall(SyncTrigger.triggerSync, ()));
         vm.prank(creForwarder);
         creReceiver.onReport(_buildCREMetadata(creAuthor), report);
 
@@ -223,11 +205,11 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
     }
 
     /// @notice Cross-checks that canSync() tracks real on-chain executability for the fee-float case
-    ///         (the most material stall in LOW-2): below getMaxFees().maxNativeFee canSync is false AND
+    ///         below getMaxFees() canSync is false AND
     ///         triggerSync reverts with the named SyncTriggerInsufficientFloat; at the float canSync is
     ///         true AND the CRE-driven sync succeeds. shouldSyncAmount (due-ness) stays nonzero throughout.
     function test_canSyncTracksFloatExecutability() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
@@ -264,10 +246,10 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         assertLt(IERC20(L2_WETH).balanceOf(address(newPool)), poolWethBefore, "sync drained pool WETH");
     }
 
-    /// @notice Pausing the OraclePool (a documented kill switch, DOC §3.4) flips canSync() to false so
+    /// @notice Pausing the OraclePool (a documented kill switch, DOC.md, Ownership and access control) flips canSync() to false so
     ///         the DON halts cleanly, and the chain agrees: the CRE-driven triggerSync reverts.
     function test_canSyncFalseWhenPoolPaused() public {
-        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _deployAndSetupCRE();
+        (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) = _createCREFixture();
 
         uint256 stakeAmount = uint256(L2_SYNC_MIN_AMOUNT) + 1 ether;
         _provisionPoolAndAccumulateWeth(newPool, stakeAmount);
@@ -291,18 +273,12 @@ abstract contract CREIntegrationTests is UpgradeTestBase {
         creReceiver.onReport(_buildCREMetadata(creAuthor), report);
     }
 
-    /// @dev Bind to the DEPLOYED canary and drive it to the sealed production end state
-    ///      ({_deployAndMigrateL2Canary}), then adopt the deployed CREReceiver instead of deploying a
-    ///      fresh one. The handoff/finalize interlocks already assert the wiring (trigger forwarder =
-    ///      receiver, receiver forwarder = {creForwarder}, expectedAuthor = LOL), so no re-checks here.
-    function _deployAndSetupCRE()
-        internal
-        returns (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger)
-    {
+    /// @dev Use the current ownership model and wire reports through the fixture receiver.
+    function _createCREFixture() internal returns (PausableImmutableOraclePool newPool, SyncTrigger syncTrigger) {
         address syncTriggerAddr;
-        (newPool, syncTriggerAddr, creReceiver) = _deployAndMigrateL2Canary();
+        (newPool, syncTriggerAddr, creReceiver) = _createL2Fixture();
         syncTrigger = SyncTrigger(payable(syncTriggerAddr));
-        creAuthor = lidoL2LiquidityOwner;
+        creAuthor = automationOwner;
     }
 
     /// @dev Builds CRE metadata: abi.encodePacked(bytes32 workflowId, bytes10 workflowName, address workflowOwner)

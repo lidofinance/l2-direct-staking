@@ -12,11 +12,11 @@ for c in yq cast jq bc; do
   }
 done
 
-# Resolve L2 RPC: prefer RPC_<NET> (shell env), fall back to L2_RPC_URL (legacy .env file).
+# Resolve L2 RPC: prefer RPC_<NET> (shell env), fall back to L2_RPC_URL (lane overlay).
 _net_upper=$(echo "$L2_NETWORK" | tr '[:lower:]' '[:upper:]')
 _rpc_var="RPC_${_net_upper}"
 L2_RPC_URL="${!_rpc_var:-${L2_RPC_URL:-}}"
-: "${L2_RPC_URL:?Set ${_rpc_var} (or legacy L2_RPC_URL) for $L2_NETWORK}"
+: "${L2_RPC_URL:?Set ${_rpc_var} (or L2_RPC_URL) for $L2_NETWORK}"
 
 sm_inputs="${ROOT_DIR}/config/state/${L2_NETWORK}.inputs.yaml"
 sm_deployed="${ROOT_DIR}/config/state/${L2_NETWORK}.deployed.yaml"
@@ -50,13 +50,11 @@ rdcall() {
 EXPECTED_CHAIN_ID="$(yq1 "$sm_inputs" l2ChainId)"
 WETH="$(yq1 "$sm_inputs" l2Weth)"
 WSTETH="$(yq1 "$sm_inputs" l2Wsteth)"
-OLD_POOL="$(yq1 "$sm_inputs" RETIRED_l2OraclePool)"
-# CustomSender is a pre-existing external in .inputs; env (printed by deploy-test) wins.
+# Resolve sender and pool from checked-in state, with explicit environment overrides.
 SENDER="${L2_CUSTOM_SENDER:-$(yq1 "$sm_inputs" l2CustomSender)}"
-# New pool: env (printed by deploy-test) wins; else the freshly-generated .deployed.yaml anchor.
 POOL="${L2_ORACLE_POOL:-$([[ -f "$sm_deployed" ]] && yq1 "$sm_deployed" l2OraclePool || true)}"
 
-: "${L2_SMOKE_PRIVATE_KEY:?required — the canary signer key (needs native ETH for the dust stake + gas; wstETH only if SMOKE_SEED_WSTETH>0)}"
+: "${L2_SMOKE_PRIVATE_KEY:?required — the smoke-test signer key (needs native ETH for the dust stake + gas; wstETH only if SMOKE_SEED_WSTETH>0)}"
 SIGNER="$(cast wallet address --private-key "$L2_SMOKE_PRIVATE_KEY" 2>/dev/null | tr -d '\r\n')" || die "invalid L2_SMOKE_PRIVATE_KEY"
 
 STAKE_TOKEN="${SMOKE_STAKE_TOKEN:-native}"
@@ -76,7 +74,7 @@ else
   MODE="DRY RUN (set SMOKE_CONFIRM=yes to execute)"
 fi
 echo "===================================================================="
-echo "SMOKE-STAKE (live canary): $L2_NETWORK    [$MODE]"
+echo "SMOKE-STAKE (live smoke test): $L2_NETWORK    [$MODE]"
 echo "  RPC URL:        $(cre_env_host "$L2_RPC_URL")"
 echo "  Signer:         $SIGNER"
 echo "  New OraclePool: $POOL"
@@ -92,7 +90,7 @@ echo "  Dust stake:     $DUST wei (~ $(cast from-wei "$DUST") ETH) via $STAKE_TO
 echo "  Min amount out: $MIN_OUT wei"
 echo "===================================================================="
 
-nonzero_addr "$POOL" || die "new OraclePool unresolved — set L2_ORACLE_POOL or populate l2OraclePool in $sm_deployed (got '$POOL')"
+nonzero_addr "$POOL" || die "OraclePool unresolved — set L2_ORACLE_POOL or populate l2OraclePool in $sm_deployed (got '$POOL')"
 nonzero_addr "$SENDER" || die "CustomSender unresolved — set L2_CUSTOM_SENDER or populate l2CustomSender in $sm_inputs (got '$SENDER')"
 is_addr "$WETH" || die "l2Weth unresolved from $sm_inputs"
 is_addr "$WSTETH" || die "l2Wsteth unresolved from $sm_inputs"
@@ -107,20 +105,17 @@ head_age=$(($(date +%s) - head_ts))
 ((head_age <= 600)) || die "RPC head block is ${head_age}s old — looks like a stale fork or lagging node, not live $L2_NETWORK (check \$${_rpc_var})"
 echo "      PASS chain-id=$actual_chain_id (head ${head_age}s old)"
 
-# ── [2/4] Migration done: sender points at the NEW pool ──
-echo "[2/4] CHECK CustomSender.getOraclePool() == new pool (activate done)"
+# ── [2/4] Sender points at the configured pool ──
+echo "[2/4] CHECK CustomSender.getOraclePool() == configured pool"
 live_pool="$(parse_num "$(cast call "$SENDER" 'getOraclePool()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
 is_addr "$live_pool" || die "CustomSender.getOraclePool() unreadable at $SENDER (wrong sender address / RPC?)"
 if ! eqa "$live_pool" "$POOL"; then
-  if is_addr "$OLD_POOL" && eqa "$live_pool" "$OLD_POOL"; then
-    die "CustomSender still points at the OLD pool ($live_pool) — run activate first (fastStake would hit the old pool)"
-  fi
-  die "CustomSender.getOraclePool()=$live_pool != target new pool $POOL — refusing (would seed one pool, stake into another)"
+  die "CustomSender.getOraclePool()=$live_pool != target pool $POOL — refusing (would seed one pool, stake into another)"
 fi
-echo "      PASS sender -> new pool $POOL"
+echo "      PASS sender -> pool $POOL"
 
 # ── [3/4] Pool sanity ──
-echo "[3/4] CHECK new pool immutables + not paused"
+echo "[3/4] CHECK pool immutables + not paused"
 p_in="$(parse_num "$(cast call "$POOL" 'TOKEN_IN()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
 p_out="$(parse_num "$(cast call "$POOL" 'TOKEN_OUT()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
 p_sender="$(parse_num "$(cast call "$POOL" 'SENDER()(address)' --rpc-url "$L2_RPC_URL" 2>/dev/null || true)")"
@@ -130,7 +125,7 @@ is_uint "$p_fee" || die "could not read pool.getFee(); refusing to stake"
 eqa "$p_in" "$WETH" || die "pool.TOKEN_IN()=$p_in != l2Weth $WETH"
 eqa "$p_out" "$WSTETH" || die "pool.TOKEN_OUT()=$p_out != l2Wsteth $WSTETH"
 eqa "$p_sender" "$SENDER" || die "pool.SENDER()=$p_sender != $SENDER"
-[[ "$p_paused" == "false" ]] || die "pool is paused (paused()=$p_paused) — swap is whenNotPaused; unpause before the canary"
+[[ "$p_paused" == "false" ]] || die "pool is paused (paused()=$p_paused) — swap is whenNotPaused; unpause before the smoke test"
 echo "      PASS TOKEN_IN=WETH, TOKEN_OUT=wstETH, SENDER ok, paused=false, fee=$p_fee (PRECISION 1e18)"
 
 # Snapshot pool balances; stake-only mode needs the existing wstETH reserve.

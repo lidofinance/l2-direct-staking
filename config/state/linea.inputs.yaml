@@ -1,10 +1,7 @@
 ---
 # Linea-specific deploy parameters and external facts. State-mate composes this lane delta with
-# config/state/l2.common.inputs.yaml ahead of the shared config/state/l2.yaml wiring.
+# config/state/common.inputs.yaml ahead of the shared config/state/l2.yaml wiring.
 config:
-  # ── CRE WorkflowRegistry metadata ──
-  - &creWorkflowName "direct-staking-sync-test"
-  - &creWorkflowTag "direct-staking-sync-test"
   # ── Lane-specific SyncTrigger limits and fee encodings ──
   - &maxGasLimit 3000000                 # 3M     SyncTrigger.getMaxGasLimit() — Linea EVM2EVMOnRamp (v1.5) maxPerMsgGasLimit (lowest of the four)
   # ── Encoded fee blobs (the on-chain form; cross-checked vs getFeeOtoD/getFeeDtoO) ──
@@ -18,27 +15,23 @@ config:
   - &l2GovExecutorName "LineaBridgeExecutor" # governanceExecutor.name → ABI selector
   # Linea's executor has no OVM_L2_CROSS_DOMAIN_MESSENGER getter; null → the shared check is skipped.
   - &ovmL2CrossDomainMessenger null
-  # NOTE: L2_SYNC_TRIGGER_INITIAL_FLOAT = 0.5e18 — see optimism.inputs.yaml note (deploy input, not a
-  # state-mate check: the trigger's balance drifts as it fronts per-sync fees).
 
 externals:
   # ── Fixed third-party / external facts ──
   # ⚠ Cross-chain address reuse: a hex below can be a DIFFERENT contract on another chain/role
-  #   (deterministic deploys) — e.g. l2PriceOracle / RETIRED_l2OraclePool / the L1 adapters recur across
-  #   lanes. Always resolve via THIS lane's *MigrationConstants.sol; full reuse map in docs/audit-scope.md.
+  #   (deterministic deploys) — e.g. l2PriceOracle / the L1 adapters recur across
+  #   lanes. Always resolve via THIS lane's *Constants.sol.
   - &l2ChainId 59144
   - &l2GovernanceExecutor "0x74Be82F00CC867614803ffd7f36A2a4aF0405670"
   - &lineaMessageService "0x508Ca82Df566dCD1B0DE8296e70a96332cD644ec" # LineaBridgeExecutor.LINEA_MESSAGE_SERVICE
-  - &RETIRED_l2OraclePool "0x6F357d53d6bE3238180316BA5F8f11467e164588"
-  - &l2OldSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
-  # ── Our pre-existing CustomSender (deployed BEFORE this migration). This migration deploys only
-  #   OraclePool/SyncTrigger/CREReceiver — those live in the generated linea.deployed.yaml.
-  #   Pinned to LineaMigrationConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
+  - &RETIRED_l2ChainlinkSyncAutomation "0x9c27c304cFdf0D9177002ff186A4aE0A5489Aace"
+  # CustomSender proxy and implementation; pool/trigger/receiver addresses live in deployed.yaml.
+  # Pinned to LineaConstants.{L2_CUSTOM_SENDER,_IMPL,L2_PROXY_ADMIN} by verify-constants-sync. ──
   - &l2CustomSender "0x328de900860816d29D1367F6903a24D8ed40C997"
   - &l2CustomSenderImpl "0xBf96561e4519182CFA4cebBf95494D9CA5a316f9"
   - &l2ProxyAdmin "0x4c8c4A15c1e810e481c412A9B06Be5f79dC02192"
   # Chainlink CRE Keystone forwarder (production) — sole caller of CREReceiver.onReport(); fixed per
-  #   network & Chainlink-operated. Pinned to LineaMigrationConstants.CRE_FORWARDER (verify-constants-sync).
+  #   network & Chainlink-operated. Pinned to LineaConstants.CRE_FORWARDER (verify-constants-sync).
   - &l2CreForwarder "0x9eF6468C5f37b976E57d52054c693269479A784d"
   - &l2Weth "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f"
   - &l2Wsteth "0xB5beDd42000b71FddE22D3eE8a79Bd49A568fC8F"

@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity ^0.8.20;
+
+import {PoolTestBase} from "test/helpers/PoolTestBase.sol";
+import {LineaL2Defaults} from "script/linea/LineaConfig.s.sol";
+import {LineaConstants as C} from "script/linea/LineaConstants.sol";
+
+/// @notice Populates PoolTestBase with Linea mainnet constants.
+/// @dev Lane configuration from LineaL2Defaults.
+abstract contract LineaPoolTestBase is PoolTestBase, LineaL2Defaults {
+    function setUp() public virtual override {
+        // L2 governance executor (network-specific)
+        LIDO_L2_GOVERNANCE_EXECUTOR = C.LIDO_L2_GOVERNANCE_EXECUTOR;
+
+        // L1 adapter (network-specific)
+        L1_ADAPTER = C.L1_LINEA_ADAPTER;
+
+        // L2
+        L2_CUSTOM_SENDER = C.L2_CUSTOM_SENDER;
+        L2_CUSTOM_SENDER_IMPL = C.L2_CUSTOM_SENDER_IMPL;
+        L2_PROXY_ADMIN = C.L2_PROXY_ADMIN;
+        L2_PRICE_ORACLE = C.L2_PRICE_ORACLE;
+        L2_WETH = C.L2_WETH;
+        L2_WSTETH = C.L2_WSTETH;
+        L2_CCIP_ROUTER = C.L2_CCIP_ROUTER;
+        L2_LINK_TOKEN = C.L2_LINK_TOKEN;
+
+        // Chain (network-specific)
+        L2_CCIP_CHAIN_SELECTOR = C.LINEA_CCIP_CHAIN_SELECTOR;
+        L2_CHAIN_ID = C.LINEA_CHAIN_ID;
+
+        // Sync defaults
+        L2_SYNC_DESTINATION_MAX_FEE = C.L2_SYNC_DESTINATION_MAX_FEE;
+        L2_SYNC_DESTINATION_GAS_LIMIT = C.L2_SYNC_DESTINATION_GAS_LIMIT;
+        L2_SYNC_MIN_AMOUNT = C.L2_SYNC_MIN_AMOUNT;
+        L2_SYNC_MAX_AMOUNT = C.L2_SYNC_MAX_AMOUNT;
+        L2_SYNC_DELAY = C.L2_SYNC_DELAY;
+
+        // Old sync automations (to verify revocation)
+        L2_OLD_CHAINLINK_AUTOMATION = C.L2_OLD_CHAINLINK_AUTOMATION;
+        L2_OLD_GELATO_AUTOMATION = C.L2_OLD_GELATO_AUTOMATION;
+
+        // Measured 2026-07-29 on a Linea mainnet fork by `test_creWriteGasCarrier`.
+        CRE_WRITE_GAS_BASELINE = 318_392;
+
+        super.setUp();
+    }
+
+    function _l2RpcUrl() internal view override returns (string memory) {
+        return vm.envString("L2_LINEA_RPC_URL");
+    }
+
+    function _l1RpcUrl() internal view override returns (string memory) {
+        return vm.envString("L1_RPC_URL");
+    }
+
+    function _defaultL2Config(address liquidityOwner) internal pure override returns (LaneConfig memory) {
+        return defaultL2Config(liquidityOwner);
+    }
+}

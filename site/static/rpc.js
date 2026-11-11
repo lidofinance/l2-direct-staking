@@ -106,7 +106,8 @@ async function rpcBatchChunk(url, calls, idBase, attempt = 0) {
   const byId = new Map(out.map(r => [r.id, r]));
   return calls.map((call, i) => {
     const response = byId.get(idBase + i);
-    if (call.method === 'eth_getLogs' && response?.error) throw new Error(response.error.message);
+    if (call.method === 'eth_getLogs' && response?.error)
+      throw new Error(`eth_getLogs (${response.error.code ?? 'RPC error'}): ${response.error.message || 'request failed'}`);
     return response?.result ?? null; // per-call revert → null
   });
 }
